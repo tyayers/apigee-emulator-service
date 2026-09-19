@@ -1,0 +1,7 @@
+.git
+.github
+dist/
+apigee-emulator-service
+.cloudrun_url
+.cloudrun_trace_session
+*.log

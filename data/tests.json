@@ -1,0 +1,26 @@
+[
+  {
+    "name": "completions-test1",
+    "proxy": "REST-AI-Completions",
+    "verb": "POST",
+    "headers": {
+      "x-api-key": "starter-app-key-123"
+    },
+    "payload": "{\n  \"model\": \"google/gemini-3.8-flash\",\n  \"stream\": true,\n  \"max_tokens\": 100,\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": \"Why is the sky blue?\"\n  }]\n}\n",
+    "assertions": [
+      "status.code == 200"
+    ],
+    "deployment": "ai-deployment-1.yaml"
+  },
+  {
+    "name": "testproxy-hello-world",
+    "proxy": "TestProxy",
+    "verb": "GET",
+    "path": "/testproxy",
+    "headers": {
+      "x-api-key": "test-api-key-12345"
+    },
+    "payload": "",
+    "deployment": "default"
+  }
+]

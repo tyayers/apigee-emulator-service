@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apigee Emulator Tester</title>
+  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2394a3b8%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><polyline points=%2216 18 22 12 16 6%22/><polyline points=%228 6 2 12 8 18%22/></svg>">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-icon">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="16 18 22 12 16 6"/>
+            <polyline points="8 6 2 12 8 18"/>
+          </svg>
+        </span>
+        <div>
+          <h1>Apigee Emulator Tester</h1>
+          <p class="subtitle">Proxy Testing &amp; Live Trace Inspector</p>
+        </div>
+      </div>
+    </div>
+    <div class="header-center">
+      <nav class="view-nav">
+        <button id="nav-btn-tester" class="nav-tab active" title="Proxy API Tester & Trace Inspector">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="16 18 22 12 16 6"/>
+            <polyline points="8 6 2 12 8 18"/>
+          </svg>
+          API Tester
+        </button>
+        <button id="nav-btn-analytics" class="nav-tab" title="Apigee & AI Usage Analytics">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 20V10M12 20V4M6 20v-6"/>
+          </svg>
+          Analytics
+          <span id="nav-analytics-badge" class="badge-mini">0</span>
+        </button>
+      </nav>
+      <div id="emulator-status-badge" class="status-badge status-loading">
+        <span class="status-dot"></span>
+        <span id="emulator-status-text">Checking Emulator...</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <button id="btn-deploy-all" class="btn btn-primary" title="Deploy all packaged bundles to the Apigee emulator">
+        <svg class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        Deploy All Bundles
+      </button>
+      <button id="btn-reset-emulator" class="btn btn-outline-danger" title="Clear emulator state">
+        <svg class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+          <path d="M21 3v5h-5"/>
+          <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+          <path d="M3 21v-5h5"/>
+        </svg>
+        Reset State
+      </button>
+      <button id="btn-refresh" class="btn btn-outline" title="Refresh emulator status">
+        <svg class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"/>
+          <polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="view-tester" class="app-container">
+    <!-- Left Column: Bundles & Deployed Proxies (Fixed Width Sidebar) -->
+    <aside class="sidebar">
+      <section class="card">
+        <div class="card-header">
+          <h2>Active Proxies</h2>
+          <span id="active-proxies-count" class="badge">0</span>
+        </div>
+        <div class="card-body">
+          <ul id="active-proxies-list" class="proxy-list">
+            <li class="empty-state">No proxies currently deployed.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Packaged Bundles</h2>
+          <span id="bundles-count" class="badge">0</span>
+        </div>
+        <div class="card-body">
+          <ul id="bundles-list" class="bundle-list">
+            <li class="empty-state">Loading bundles...</li>
+          </ul>
+        </div>
+        <div class="card-footer">
+          <button id="btn-deploy-selected" class="btn btn-secondary btn-sm" disabled>
+            Deploy Selected
+          </button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Quick Tools</h2>
+        </div>
+        <div class="card-body tool-links">
+          <a href="/viewer.html" target="_blank" class="tool-link">
+            <svg class="tool-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+            Advanced Flow Viewer
+          </a>
+          <a href="/v1/emulator/tree" target="_blank" class="tool-link">
+            <svg class="tool-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="7"/>
+              <rect x="14" y="3" width="7" height="7"/>
+              <rect x="14" y="14" width="7" height="7"/>
+              <rect x="3" y="14" width="7" height="7"/>
+            </svg>
+            Emulator Deployment Tree
+          </a>
+        </div>
+      </section>
+    </aside>
+
+    <!-- Right Column: Postman Tester & Live Trace Inspector -->
+    <section class="content">
+      <!-- Tester Card -->
+      <div class="card tester-card">
+        <div class="card-header">
+          <div class="tester-title">
+            <h2>Proxy API Tester</h2>
+            <span class="tag">Postman Style</span>
+          </div>
+          <div class="preset-selector-group">
+            <label for="test-preset-select">Preset:</label>
+            <select id="test-preset-select" class="form-select">
+              <option value="">-- Load a Sample Test --</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <!-- Request Bar -->
+          <div class="request-bar">
+            <select id="req-method" class="method-select">
+              <option value="GET">GET</option>
+              <option value="POST" selected>POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+              <option value="PATCH">PATCH</option>
+            </select>
+            <div class="url-input-container">
+              <span id="runtime-base-label" class="url-prefix">/</span>
+              <input type="text" id="req-path" class="url-input" placeholder="testproxy or v1/chat/completions" value="testproxy">
+            </div>
+            <button id="btn-send-req" class="btn btn-accent">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+              Send
+            </button>
+          </div>
+
+          <!-- Request Options & Context -->
+          <div class="request-options">
+            <label class="checkbox-label" title="Automatically start a trace session and capture policy steps">
+              <input type="checkbox" id="chk-record-trace" checked>
+              <span>Record &amp; Inspect Trace</span>
+            </label>
+            <div class="proxy-context">
+              <label for="req-proxy-name">Target Proxy:</label>
+              <select id="req-proxy-name" class="form-select form-select-sm">
+                <option value="TestProxy">TestProxy</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="tabs-header">
+            <button class="tab-btn active" data-tab="tab-headers">Headers <span id="header-count-badge" class="badge-mini">2</span></button>
+            <button class="tab-btn" data-tab="tab-body">Body</button>
+          </div>
+
+          <!-- Headers Tab -->
+          <div id="tab-headers" class="tab-content active">
+            <div class="headers-table-wrapper">
+              <table id="headers-table" class="key-value-table">
+                <thead>
+                  <tr>
+                    <th style="width: 30px;"></th>
+                    <th>Header Key</th>
+                    <th>Value</th>
+                    <th style="width: 40px;"></th>
+                  </tr>
+                </thead>
+                <tbody id="headers-tbody">
+                  <!-- Injected via JS -->
+                </tbody>
+              </table>
+            </div>
+            <div class="table-actions">
+              <button id="btn-add-header" class="btn btn-sm btn-outline">
+                <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add Header
+              </button>
+              <button id="btn-add-apikey" class="btn btn-sm btn-outline">
+                <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M21 3l-9.5 9.5"/><path d="M15.5 8.5l3 3"/></svg>
+                Add x-api-key
+              </button>
+            </div>
+          </div>
+
+          <!-- Body Tab -->
+          <div id="tab-body" class="tab-content">
+            <div class="editor-toolbar">
+              <button id="btn-prettify-body" class="btn btn-sm btn-outline">Format JSON</button>
+              <button id="btn-clear-body" class="btn btn-sm btn-outline">Clear</button>
+            </div>
+            <textarea id="req-body" class="code-editor" placeholder="Enter JSON or text request payload..."></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Response & Trace Section -->
+      <div class="card response-card">
+        <div class="card-header response-header">
+          <div class="response-meta">
+            <h2>Response</h2>
+            <div id="resp-status-badge" class="status-tag status-none">No Request Sent</div>
+            <div id="resp-time-badge" class="meta-tag hidden">0 ms</div>
+            <div id="resp-size-badge" class="meta-tag hidden">0 B</div>
+          </div>
+          <div class="response-tabs">
+            <button class="tab-btn active" data-tab="tab-resp-body">Body</button>
+            <button class="tab-btn" data-tab="tab-resp-headers">Headers</button>
+            <button class="tab-btn" data-tab="tab-resp-trace">Execution Trace <span id="trace-indicator" class="dot-badge hidden"></span></button>
+          </div>
+        </div>
+
+        <div class="card-body response-body-container">
+          <!-- Response Body Tab -->
+          <div id="tab-resp-body" class="tab-content active">
+            <div class="code-container">
+              <button id="btn-copy-response" class="copy-btn" title="Copy response to clipboard">
+                <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy
+              </button>
+              <pre id="resp-body-content" class="code-viewer">Click "Send" above to invoke the proxy.</pre>
+            </div>
+          </div>
+
+          <!-- Response Headers Tab -->
+          <div id="tab-resp-headers" class="tab-content">
+            <table class="key-value-table">
+              <thead>
+                <tr>
+                  <th>Header</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody id="resp-headers-tbody">
+                <tr><td colspan="2" class="empty-state">No headers to display.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Execution Trace Tab -->
+          <div id="tab-resp-trace" class="tab-content">
+            <div id="trace-summary-bar" class="trace-summary-bar hidden">
+              <div class="trace-summary-info">
+                <span class="trace-label">Session:</span>
+                <span id="trace-session-id" class="code-snippet">-</span>
+                <button id="btn-copy-session" class="btn-icon-only" title="Copy Session ID">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+              </div>
+              <div class="trace-actions">
+                <div class="trace-view-toggle">
+                  <button id="btn-trace-view-timeline" class="btn btn-sm btn-outline active">Timeline</button>
+                  <button id="btn-trace-view-json" class="btn btn-sm btn-outline">Raw JSON</button>
+                </div>
+                <button id="btn-download-trace" class="btn btn-sm btn-outline" title="Download trace.json">
+                  <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Download JSON
+                </button>
+                <button id="btn-view-trace-analytics" class="btn btn-sm btn-outline-accent hidden" title="View captured analytics in Analytics dashboard">
+                  <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M18 20V10M12 20V4M6 20v-6"/>
+                  </svg>
+                  <span>Analytics Saved</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Trace Visual Timeline (Expanded Vertically) -->
+            <div id="trace-timeline-view">
+              <div id="trace-pipeline-container" class="trace-pipeline-container">
+                <div class="empty-state">No execution trace recorded. Send a request with "Record &amp; Inspect Trace" enabled.</div>
+              </div>
+            </div>
+
+            <!-- Trace Raw JSON View (Collapsible) -->
+            <div id="trace-json-view" class="hidden">
+              <div class="code-container">
+                <button id="btn-copy-trace-json" class="copy-btn" title="Copy trace JSON to clipboard">
+                  <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  Copy JSON
+                </button>
+                <pre id="trace-raw-content" class="code-viewer"></pre>
+              </div>
+            </div>
+
+            <!-- Detailed Step Inspection Drawer -->
+            <div id="trace-step-detail" class="trace-step-detail hidden">
+              <div class="step-detail-header">
+                <div class="step-detail-title-group">
+                  <span id="step-detail-phase" class="step-detail-phase">Policy Execution</span>
+                  <h3 id="step-detail-title">Policy Step</h3>
+                </div>
+                <button id="btn-close-step-detail" class="btn-close" title="Close details">&times;</button>
+              </div>
+              <div id="step-detail-body" class="step-detail-body"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- View 2: Analytics Dashboard -->
+  <main id="view-analytics" class="app-container analytics-container hidden">
+    <!-- Analytics Header Toolbar -->
+    <div class="analytics-toolbar">
+      <div class="analytics-toolbar-left">
+        <div class="analytics-title-group">
+          <h2>Usage &amp; AI Analytics</h2>
+          <span class="tag">Firestore: apigee_analytics</span>
+          <span id="analytics-db-tag" class="tag tag-dim">projects/aigateway-lab8/databases/(default)</span>
+        </div>
+        <p class="analytics-subtitle">Inspecting the last 500 records captured from live Apigee proxy traces</p>
+      </div>
+      <div class="analytics-toolbar-right">
+        <label class="checkbox-label" title="Automatically poll Firestore for new analytics records">
+          <input type="checkbox" id="chk-analytics-autorefresh">
+          <span>Live Poll (15s)</span>
+        </label>
+        <button id="btn-seed-analytics" class="btn btn-sm btn-outline" title="Populate realistic demo AI analytics records">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          Seed Demo Data
+        </button>
+        <button id="btn-export-csv" class="btn btn-sm btn-outline" title="Export records as CSV">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export CSV
+        </button>
+        <button id="btn-export-json" class="btn btn-sm btn-outline" title="Export records as JSON">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export JSON
+        </button>
+        <button id="btn-refresh-analytics" class="btn btn-sm btn-secondary" title="Fetch latest 500 records">
+          <svg id="icon-refresh-analytics" class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"/>
+            <polyline points="1 20 1 14 7 14"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    <!-- KPI Summary Grid (6 cards) -->
+    <div class="analytics-kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Total Requests</div>
+        <div id="kpi-total-requests" class="kpi-value">-</div>
+        <div id="kpi-status-split" class="kpi-subtext">2xx: - &bull; Errors: -</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Total AI Tokens</div>
+        <div id="kpi-total-tokens" class="kpi-value">-</div>
+        <div id="kpi-tokens-split" class="kpi-subtext">Prompt: - &bull; Comp: -</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Avg Response Time</div>
+        <div id="kpi-avg-duration" class="kpi-value">- ms</div>
+        <div id="kpi-target-latency" class="kpi-subtext">Target: - ms</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Success Rate</div>
+        <div id="kpi-success-rate" class="kpi-value">- %</div>
+        <div id="kpi-error-count" class="kpi-subtext">0 error calls</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Top AI Model</div>
+        <div id="kpi-top-model" class="kpi-value" style="font-size: 1.15rem; font-family: var(--font-mono);">-</div>
+        <div id="kpi-top-model-count" class="kpi-subtext">- requests</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Active AI Providers</div>
+        <div id="kpi-active-providers" class="kpi-value">-</div>
+        <div id="kpi-providers-list" class="kpi-subtext">-</div>
+      </div>
+    </div>
+
+    <!-- Charts & Visualizations Grid -->
+    <div class="analytics-charts-grid">
+      <!-- Chart 1: Requests & Status Over Time -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <h3>Request Traffic &amp; Errors Over Time</h3>
+            <p class="chart-subtitle">Chronological timeline of API invocations</p>
+          </div>
+          <div class="chart-legend">
+            <span class="legend-item"><span class="legend-color legend-2xx"></span> 2xx Success</span>
+            <span class="legend-item"><span class="legend-color legend-4xx"></span> 4xx Client</span>
+            <span class="legend-item"><span class="legend-color legend-5xx"></span> 5xx Server</span>
+          </div>
+        </div>
+        <div id="chart-timeline" class="chart-body chart-svg-container">
+          <div class="empty-state">Loading timeline chart...</div>
+        </div>
+      </div>
+
+      <!-- Chart 2: AI Model Distribution -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <h3>AI Model Share</h3>
+            <p class="chart-subtitle">Breakdown of calls by LLM model</p>
+          </div>
+        </div>
+        <div id="chart-models" class="chart-body chart-svg-container">
+          <div class="empty-state">Loading model distribution...</div>
+        </div>
+      </div>
+
+      <!-- Chart 3: Token Consumption -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <h3>Token Usage by Model</h3>
+            <p class="chart-subtitle">Prompt vs Completion token distribution</p>
+          </div>
+          <div class="chart-legend">
+            <span class="legend-item"><span class="legend-color legend-prompt"></span> Prompt</span>
+            <span class="legend-item"><span class="legend-color legend-comp"></span> Completion</span>
+          </div>
+        </div>
+        <div id="chart-tokens" class="chart-body chart-svg-container">
+          <div class="empty-state">Loading token usage chart...</div>
+        </div>
+      </div>
+
+      <!-- Chart 4: Latency Performance Distribution -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <h3>Latency Distribution</h3>
+            <p class="chart-subtitle">Request duration histogram</p>
+          </div>
+        </div>
+        <div id="chart-latency" class="chart-body chart-svg-container">
+          <div class="empty-state">Loading latency distribution...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Interactive Filter Toolbar & Table -->
+    <div class="card analytics-table-card">
+      <div class="card-header analytics-filter-header">
+        <div class="filter-controls">
+          <div class="filter-search-wrap">
+            <input type="text" id="analytics-search" class="form-input filter-search-input" placeholder="Search proxy, model, route, path, session ID...">
+          </div>
+          <select id="analytics-filter-proxy" class="form-select filter-select">
+            <option value="">All Proxies</option>
+          </select>
+          <select id="analytics-filter-model" class="form-select filter-select">
+            <option value="">All Models</option>
+          </select>
+          <select id="analytics-filter-provider" class="form-select filter-select">
+            <option value="">All Providers</option>
+          </select>
+          <select id="analytics-filter-status" class="form-select filter-select">
+            <option value="">All Statuses</option>
+            <option value="success">2xx Success</option>
+            <option value="4xx">4xx Errors</option>
+            <option value="5xx">5xx Errors</option>
+          </select>
+          <button id="btn-reset-filters" class="btn btn-sm btn-outline">Reset Filters</button>
+        </div>
+        <div class="filter-summary">
+          <span id="analytics-filter-counter" class="analytics-counter-text">Showing 0 of 0 records</span>
+        </div>
+      </div>
+
+      <!-- Table Section -->
+      <div class="card-body analytics-table-wrapper">
+        <table class="key-value-table analytics-table">
+          <thead>
+            <tr>
+              <th data-sort="timestamp" class="sortable-th active-sort desc">Timestamp <span class="sort-icon">&darr;</span></th>
+              <th data-sort="proxy" class="sortable-th">Proxy <span class="sort-icon"></span></th>
+              <th>Method &amp; Path</th>
+              <th data-sort="model" class="sortable-th">AI Model &amp; Provider <span class="sort-icon"></span></th>
+              <th data-sort="totalTokens" class="sortable-th">Tokens <span class="sort-icon"></span></th>
+              <th data-sort="statusCode" class="sortable-th">Status <span class="sort-icon"></span></th>
+              <th data-sort="durationMs" class="sortable-th">Duration <span class="sort-icon"></span></th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="analytics-table-body">
+            <tr><td colspan="8" class="empty-state">No analytics records loaded. Click Refresh or Send a request.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination Footer -->
+      <div class="card-footer analytics-pagination">
+        <div class="pagination-info">
+          <span>Rows per page:</span>
+          <select id="analytics-page-size" class="form-select form-select-sm">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="500">500</option>
+          </select>
+          <span id="analytics-page-text">Page 1 of 1</span>
+        </div>
+        <div class="pagination-buttons">
+          <button id="btn-page-prev" class="btn btn-sm btn-outline" disabled>&larr; Previous</button>
+          <button id="btn-page-next" class="btn btn-sm btn-outline" disabled>Next &rarr;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Detailed Record Inspection Drawer / Modal -->
+    <div id="analytics-record-drawer" class="analytics-drawer hidden">
+      <div class="drawer-backdrop" id="analytics-drawer-backdrop"></div>
+      <div class="drawer-panel">
+        <div class="drawer-header">
+          <div>
+            <div class="drawer-pre-title">Firestore Document: apigee_analytics</div>
+            <h3 id="drawer-record-id">Record Details</h3>
+          </div>
+          <button id="btn-close-analytics-drawer" class="btn-close">&times;</button>
+        </div>
+
+        <div class="drawer-tabs">
+          <button class="drawer-tab-btn active" data-tab="drawer-tab-ai">AI Variables</button>
+          <button class="drawer-tab-btn" data-tab="drawer-tab-general">Call Metadata</button>
+          <button class="drawer-tab-btn" data-tab="drawer-tab-raw">Raw JSON</button>
+        </div>
+
+        <div class="drawer-body">
+          <div id="drawer-tab-ai" class="drawer-tab-content active">
+            <div id="drawer-ai-content"></div>
+          </div>
+          <div id="drawer-tab-general" class="drawer-tab-content">
+            <div id="drawer-general-content"></div>
+          </div>
+          <div id="drawer-tab-raw" class="drawer-tab-content">
+            <div class="code-container">
+              <button id="btn-copy-drawer-json" class="copy-btn">Copy JSON</button>
+              <pre id="drawer-raw-json" class="code-viewer"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="app-footer">
+    <span>Apigee Emulator Tester &bull; Go Service &bull; Ingress via Envoy</span>
+  </footer>
+
+  <script src="app.js?v=3"></script>
+</body>
+</html>

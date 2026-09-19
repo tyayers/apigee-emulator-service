@@ -1,0 +1,131 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/apigee/apigee-templater/main/schema/gateway.schema.1.0.json
+name: ai-completions
+displayName: OpenAI Chat Completions API Proxy
+type: feature
+description: Feature for the OpenAI Chat Completions API
+documentation: "https://gcp-samples.github.io/apigee-template-repository?file=features%2Fai-endpoint-completions.yaml"
+gateway: apigee
+schemaVersion: 1.0.0
+categories: []
+parameters:
+  - name: CompletionsBasePath
+    default: /v1/chat/completions
+endpoints:
+  - name: completions
+    basePath: "{CompletionsBasePath}"
+    routes: []
+    flows:
+      - name: PreFlow
+        mode: Request
+        steps:
+          - name: OAS-Validation
+    faultRules: []
+targets: []
+policies:
+  - name: OAS-Validation
+    type: OASValidation
+    content:
+      OASValidation:
+        metadata:
+          continueOnError: "false"
+          enabled: "true"
+          name: OAS-Validation
+        DisplayName: OAS-Validation
+        Properties: {}
+        Options:
+          ValidateMessageBody: "true"
+        OASResource: oas://openapi.yaml
+resources:
+  - name: openapi.yaml
+    type: oas
+    content: |
+      openapi: 3.0.0
+      info:
+        title: OpenAI Chat Completions API
+        description: Basic request structure validation for OpenAI Chat Completions API.
+        version: 1.0.0
+      paths:
+        /:
+          post:
+            summary: Create chat completion
+            requestBody:
+              required: true
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    required:
+                      - model
+                      - messages
+                    additionalProperties: false
+                    properties:
+                      model:
+                        type: string
+                      messages:
+                        type: array
+                        items:
+                          type: object
+                          required:
+                            - role
+                            - content
+                          additionalProperties: false
+                          properties:
+                            role:
+                              type: string
+                            content:
+                              nullable: true
+                              oneOf:
+                                - type: string
+                                - type: array
+                                  items:
+                                    type: object
+                            name:
+                              type: string
+                            tool_calls:
+                              type: array
+                              items:
+                                type: object
+                            tool_call_id:
+                              type: string
+                      temperature:
+                        type: number
+                      top_p:
+                        type: number
+                      n:
+                        type: integer
+                      stream:
+                        type: boolean
+                      stop:
+                        oneOf:
+                          - type: string
+                          - type: array
+                            items:
+                              type: string
+                      max_tokens:
+                        type: integer
+                      presence_penalty:
+                        type: number
+                      frequency_penalty:
+                        type: number
+                      logit_bias:
+                        type: object
+                      user:
+                        type: string
+                      tools:
+                        type: array
+                        items:
+                          type: object
+                      tool_choice:
+                        oneOf:
+                          - type: string
+                          - type: object
+                      response_format:
+                        type: object
+                      seed:
+                        type: integer
+                      service_tier:
+                        type: string
+            responses:
+              "200":
+                description: Successful response
+tests: []

@@ -1,0 +1,13 @@
+# Go binary
+apigee-emulator-service
+
+# Build & deployment artifacts
+dist/
+.cloudrun_url
+.cloudrun_trace_session
+
+# Editor & OS files
+.DS_Store
+*.swp
+*~
+bundles

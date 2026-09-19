@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/apigee/apigee-templater/main/schema/gateway.schema.1.0.json
+gateway: apigee
+schemaVersion: 1.0.0
+type: feature
+documentation: "https://gcp-samples.github.io/apigee-template-repository?file=features%2Fai-endpoint-messages.yaml"
+description: Endpoint for Anthropic models.
+endpoints:
+  - name: anthropic
+    basePath: /v1/messages
+    routes: []
+    flows: []
+    faultRules: []
+parameters: []
+targets: []
+policies: []
+resources: []
+tests: []

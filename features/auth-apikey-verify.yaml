@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/apigee/apigee-templater/main/schema/gateway.schema.1.0.json
+gateway: apigee
+schemaVersion: 1.0.0
+type: feature
+documentation: "https://gcp-samples.github.io/apigee-template-repository?file=features%2Fauth-apikey-verify.yaml"
+parameters: []
+defaultEndpoint:
+  name: default
+  basePath: /ai-auth
+  routes:
+    - name: default
+      target: default
+  flows:
+    - name: PreFlow
+      mode: Request
+      steps:
+        - name: VA-VerifyKey
+        - name: AM-RemoveKey
+  faultRules: []
+  defaultFaultRule:
+    name: default-fault
+    steps:
+      - name: AM-Unauthorized
+        condition: fault.name == "InvalidApiKey" OR fault.name == "FailedToResolveAPIKey"
+defaultTarget:
+  name: default
+  url: https://aiplatform.googleapis.com
+  flows: []
+  faultRules: []
+endpoints: []
+targets: []
+policies:
+  - name: AM-Unauthorized
+    type: AssignMessage
+    content:
+      AssignMessage:
+        metadata:
+          continueOnError: "false"
+          enabled: "true"
+          name: AM-Unauthorized
+        DisplayName: AM-Unauthorized
+        Properties: {}
+        Set:
+          StatusCode: "401"
+          Payload: Unauthorized.
+        IgnoreUnresolvedVariables: "true"
+        AssignTo:
+          metadata:
+            createNew: "false"
+            transport: http
+            type: request
+  - name: AM-RemoveKey
+    type: AssignMessage
+    content:
+      AssignMessage:
+        metadata:
+          continueOnError: "false"
+          enabled: "true"
+          name: AM-RemoveKey
+        DisplayName: AM-RemoveKey
+        Properties: {}
+        Remove:
+          Headers:
+            Header:
+              metadata:
+                name: x-ai-key
+        AssignVariable:
+          Name: originalHostName
+          Ref: request.header.host
+        IgnoreUnresolvedVariables: "true"
+        AssignTo:
+          metadata:
+            createNew: "false"
+            transport: http
+            type: request
+  - name: VA-VerifyKey
+    type: VerifyAPIKey
+    content:
+      VerifyAPIKey:
+        metadata:
+          continueOnError: "false"
+          enabled: "true"
+          name: VA-VerifyKey
+        DisplayName: VA-VerifyKey
+        Properties: {}
+        APIKey:
+          metadata:
+            ref: request.header.x-ai-key
+resources: []
+tests: []

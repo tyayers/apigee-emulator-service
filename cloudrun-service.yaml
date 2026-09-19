@@ -1,0 +1,231 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: apigee-emulator
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/launch-stage: BETA
+spec:
+  template:
+    metadata:
+      annotations:
+        # Multi-container support requires Gen 2 execution environment
+        run.googleapis.com/execution-environment: gen2
+        # Ensure Envoy only starts and routes once Apigee emulator and Manager are healthy
+        run.googleapis.com/container-dependencies: '{"envoy":["apigee","manager"]}'
+        # Keep 1 instance warm to preserve deployed proxies and avoid 20s Cassandra cold starts
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/cpu-throttling: "false"
+        client.knative.dev/user-image: MANAGER_IMAGE_PLACEHOLDER
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      containers:
+      # ------------------------------------------------------------------------
+      # Container 1: Apigee Local Emulator (Sidecar)
+      # Listens internally on:
+      #   - Port 8080: Management API (/v1/emulator/*)
+      #   - Port 8998: Runtime Proxy Traffic
+      # ------------------------------------------------------------------------
+      - name: apigee
+        image: gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+        startupProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 12
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 24
+
+      # ------------------------------------------------------------------------
+      # Container 2: Envoy Proxy (Ingress Container)
+      # Receives external Cloud Run traffic on port 8000 and routes:
+      #   - /v1/emulator/*  -> 127.0.0.1:8080 (Apigee Management)
+      #   - x-apigee-target: management -> 127.0.0.1:8080
+      #   - /*              -> 127.0.0.1:8998 (Apigee Runtime Proxies)
+      # ------------------------------------------------------------------------
+      - name: envoy
+        image: docker.io/envoyproxy/envoy:v1.31-latest
+        args:
+        - envoy
+        - --config-yaml
+        - |
+          static_resources:
+            listeners:
+            - name: ingress_listener
+              address:
+                socket_address:
+                  address: 0.0.0.0
+                  port_value: 8000
+              per_connection_buffer_limit_bytes: 104857600
+              filter_chains:
+              - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    stream_idle_timeout: 0s
+                    access_log:
+                    - name: envoy.access_loggers.stdout
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                    route_config:
+                      name: local_route
+                      virtual_hosts:
+                      - name: apigee_services
+                        domains: ["*"]
+                        routes:
+                        # Health check for Cloud Run and external monitoring
+                        - match:
+                            prefix: "/healthz"
+                          direct_response:
+                            status: 200
+                            body:
+                              inline_string: "OK\n"
+
+                        # Explicit header override to reach Management API
+                        - match:
+                            prefix: "/"
+                            headers:
+                            - name: "x-apigee-target"
+                              string_match:
+                                exact: "management"
+                          route:
+                            cluster: emulator_management
+                            timeout: 300s
+
+                        # Management API endpoints (deploy, setup, reset, tree, trace, maps)
+                        - match:
+                            prefix: "/v1/emulator"
+                          route:
+                            cluster: emulator_management
+                            timeout: 300s
+                        - match:
+                            prefix: "/emulator"
+                          route:
+                            cluster: emulator_management
+                            timeout: 300s
+
+                        # Apigee Emulator Tester Web UI & Management API
+                        - match:
+                            prefix: "/tester"
+                          route:
+                            cluster: manager_service
+                            timeout: 300s
+                        - match:
+                            prefix: "/manage"
+                          route:
+                            cluster: manager_service
+                            timeout: 300s
+
+                        # All other paths route to Apigee Runtime Message Processor (Port 8998)
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: emulator_runtime
+                            timeout: 0s
+
+                    http_filters:
+                    - name: envoy.filters.http.router
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+            clusters:
+            # Apigee Management Port
+            - name: emulator_management
+              connect_timeout: 5s
+              per_connection_buffer_limit_bytes: 104857600
+              type: STRICT_DNS
+              dns_lookup_family: V4_ONLY
+              lb_policy: ROUND_ROBIN
+              load_assignment:
+                cluster_name: emulator_management
+                endpoints:
+                - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: 8080
+
+            # Apigee Message Processor Runtime Port
+            - name: emulator_runtime
+              connect_timeout: 5s
+              per_connection_buffer_limit_bytes: 104857600
+              type: STRICT_DNS
+              dns_lookup_family: V4_ONLY
+              lb_policy: ROUND_ROBIN
+              load_assignment:
+                cluster_name: emulator_runtime
+                endpoints:
+                - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: 8998
+
+            # Apigee Emulator Manager Service Port
+            - name: manager_service
+              connect_timeout: 5s
+              per_connection_buffer_limit_bytes: 104857600
+              type: STRICT_DNS
+              dns_lookup_family: V4_ONLY
+              lb_policy: ROUND_ROBIN
+              load_assignment:
+                cluster_name: manager_service
+                endpoints:
+                - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: 8082
+        ports:
+        - name: http1
+          containerPort: 8000
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        startupProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 2
+          periodSeconds: 3
+          timeoutSeconds: 2
+          failureThreshold: 5
+
+      # ------------------------------------------------------------------------
+      # Container 3: Apigee Emulator Manager Web UI & API (Sidecar)
+      # Hosts the Manager UI and test runner on Port 8082
+      # Packaged with pre-compiled bundles in /app/data/bundles
+      # ------------------------------------------------------------------------
+      - name: manager
+        image: MANAGER_IMAGE_PLACEHOLDER
+        env:
+        - name: PORT
+          value: "8082"
+        - name: EMULATOR_MGMT_URL
+          value: "http://127.0.0.1:8080"
+        - name: EMULATOR_RUNTIME_URL
+          value: "http://127.0.0.1:8998"
+        - name: DATA_DIR
+          value: "/app/data"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8082
+          initialDelaySeconds: 2
+          periodSeconds: 3
+          timeoutSeconds: 2
+          failureThreshold: 5

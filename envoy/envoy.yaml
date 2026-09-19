@@ -1,0 +1,116 @@
+static_resources:
+  listeners:
+  - name: ingress_listener
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 8000
+    per_connection_buffer_limit_bytes: 104857600
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          stream_idle_timeout: 0s
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: apigee_services
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/healthz"
+                direct_response:
+                  status: 200
+                  body:
+                    inline_string: "OK\n"
+              - match:
+                  prefix: "/"
+                  headers:
+                  - name: "x-apigee-target"
+                    string_match:
+                      exact: "management"
+                route:
+                  cluster: emulator_management
+                  timeout: 300s
+              - match:
+                  prefix: "/v1/emulator"
+                route:
+                  cluster: emulator_management
+                  timeout: 300s
+              - match:
+                  prefix: "/emulator"
+                route:
+                  cluster: emulator_management
+                  timeout: 300s
+              - match:
+                  prefix: "/tester"
+                route:
+                  cluster: manager_service
+                  timeout: 300s
+              - match:
+                  prefix: "/manage"
+                route:
+                  cluster: manager_service
+                  timeout: 300s
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: emulator_runtime
+                  timeout: 0s
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: emulator_management
+    connect_timeout: 5s
+    per_connection_buffer_limit_bytes: 104857600
+    type: STRICT_DNS
+    dns_lookup_family: V4_ONLY
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: emulator_management
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 8080
+  - name: emulator_runtime
+    connect_timeout: 5s
+    per_connection_buffer_limit_bytes: 104857600
+    type: STRICT_DNS
+    dns_lookup_family: V4_ONLY
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: emulator_runtime
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 8998
+  - name: manager_service
+    connect_timeout: 5s
+    per_connection_buffer_limit_bytes: 104857600
+    type: STRICT_DNS
+    dns_lookup_family: V4_ONLY
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: manager_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 8082
+
