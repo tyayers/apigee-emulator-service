@@ -174,10 +174,12 @@ users:
           attributes: []
 tests:
   - name: testproxy-test1
+    description: This tests if the /testproxy path actually returns a 200.
     proxy: TestProxy
     path: /testproxy
     method: GET
     headers:
       x-api-key: test-api-key-12345
     assertions:
-      - status.code == 200
+      - response.status == 200
+      - request.headers.x-api-key exists

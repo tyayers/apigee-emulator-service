@@ -78,10 +78,15 @@ func (dm *DeploymentManager) ListDeployments() ([]DeploymentConfig, error) {
 					if s, ok := tMap["name"].(string); ok {
 						tc.Name = s
 					}
+					if s, ok := tMap["description"].(string); ok {
+						tc.Description = s
+					}
 					if s, ok := tMap["proxy"].(string); ok {
 						tc.Proxy = s
 					}
 					if s, ok := tMap["verb"].(string); ok {
+						tc.Verb = s
+					} else if s, ok := tMap["method"].(string); ok {
 						tc.Verb = s
 					}
 					if s, ok := tMap["path"].(string); ok {
@@ -135,29 +140,39 @@ func (dm *DeploymentManager) ListDeployments() ([]DeploymentConfig, error) {
 func (dm *DeploymentManager) LoadAllTests() ([]TestCase, error) {
 	var allTests []TestCase
 
-	// 1. From data/tests.json if present
-	testsJSONPath := filepath.Join(dm.DataDir, "tests.json")
-	if data, err := os.ReadFile(testsJSONPath); err == nil {
-		var list []TestCase
-		if err := json.Unmarshal(data, &list); err == nil {
-			allTests = append(allTests, list...)
+	isDuplicate := func(candidate TestCase) bool {
+		for _, ex := range allTests {
+			if strings.EqualFold(ex.Name, candidate.Name) {
+				return true
+			}
+			if strings.EqualFold(ex.Proxy, candidate.Proxy) &&
+				strings.EqualFold(ex.Verb, candidate.Verb) &&
+				strings.EqualFold(ex.Path, candidate.Path) {
+				return true
+			}
 		}
+		return false
 	}
 
-	// 2. From deployments
+	// 1. From deployments (primary source of truth)
 	deps, err := dm.ListDeployments()
 	if err == nil {
 		for _, dep := range deps {
 			for _, t := range dep.Tests {
-				// avoid duplicates
-				exists := false
-				for _, ex := range allTests {
-					if ex.Name == t.Name {
-						exists = true
-						break
-					}
+				if !isDuplicate(t) {
+					allTests = append(allTests, t)
 				}
-				if !exists {
+			}
+		}
+	}
+
+	// 2. From data/tests.json if present
+	testsJSONPath := filepath.Join(dm.DataDir, "tests.json")
+	if data, err := os.ReadFile(testsJSONPath); err == nil {
+		var list []TestCase
+		if err := json.Unmarshal(data, &list); err == nil {
+			for _, t := range list {
+				if !isDuplicate(t) {
 					allTests = append(allTests, t)
 				}
 			}
@@ -168,37 +183,14 @@ func (dm *DeploymentManager) LoadAllTests() ([]TestCase, error) {
 	if len(allTests) == 0 {
 		allTests = []TestCase{
 			{
-				Name:       "testproxy-get",
-				Proxy:      "TestProxy",
-				Verb:       "GET",
-				Path:       "/testproxy",
-				Headers:    map[string]string{"x-api-key": "test-api-key-12345"},
-				Payload:    "",
-				Assertions: []string{"status.code == 200"},
-			},
-			{
-				Name:  "chat-completions-gemini-3.8-flash",
-				Proxy: "REST-AI-Completions",
-				Verb:  "POST",
-				Path:  "/v1/chat/completions",
-				Headers: map[string]string{
-					"x-api-key":    "starter-app-key-123",
-					"Content-Type": "application/json",
-				},
-				Payload:    `{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"Hello from Apigee Emulator Manager!"}]}`,
-				Assertions: []string{"status.code == 200"},
-			},
-			{
-				Name:  "chat-completions-streaming",
-				Proxy: "REST-AI-Completions",
-				Verb:  "POST",
-				Path:  "/v1/chat/completions",
-				Headers: map[string]string{
-					"x-api-key":    "starter-app-key-123",
-					"Content-Type": "application/json",
-				},
-				Payload:    `{"model":"gemini-3.8-flash","stream":true,"messages":[{"role":"user","content":"Count from 1 to 5."}]}`,
-				Assertions: []string{"status.code == 200"},
+				Name:        "testproxy-test1",
+				Description: "This tests if the /testproxy path actually returns a 200.",
+				Proxy:       "TestProxy",
+				Verb:        "GET",
+				Path:        "/testproxy",
+				Headers:     map[string]string{"x-api-key": "test-api-key-12345"},
+				Payload:     "",
+				Assertions:  []string{"status.code == 200"},
 			},
 		}
 	}

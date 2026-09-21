@@ -80,15 +80,15 @@ docker stop apigee
 
 The [`deploy.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/deploy.sh) script compiles AFT YAML files into proxy bundles, generates environment configs, packages test data, and deploys everything to the emulator.
 
-### Deploying TestProxy Directly
+### Deploying Deployments Directly
 
-To compile and deploy [`proxies/TestProxy.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/proxies/TestProxy.yaml):
+To compile and deploy [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml):
 
 ```bash
-./deploy.sh proxies/TestProxy.yaml
+./deploy.sh data/deployments/deployment-1.yaml
 ```
 
-This compiles `TestProxy`, packages test data (`products.json`, `developerapps.json`, etc.), resets the emulator, and deploys `TestProxy` to the `test` environment.
+This compiles the proxies defined in the deployment, packages test data (`products.json`, `developerapps.json`, etc.), resets the emulator, and deploys to the `test` environment.
 
 ---
 
@@ -272,19 +272,15 @@ Optional flags:
 
 ---
 
-### Deploying TestProxy to Cloud Run
-
-Deploy [`proxies/TestProxy.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/proxies/TestProxy.yaml) or [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) directly to Cloud Run:
+### Deploying Deployments to Cloud Run
+ 
+Deploy [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) directly to Cloud Run:
 
 ```bash
-# Deploy TestProxy
-./cloudrun.sh proxies/TestProxy.yaml
-
-# Or deploy deployment-1.yaml
 ./cloudrun.sh data/deployments/deployment-1.yaml
 ```
 
----
+
 
 ### Testing & Tracing on Cloud Run
 

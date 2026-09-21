@@ -107,24 +107,14 @@
 
       <section class="card">
         <div class="card-header">
-          <h2>Quick Tools</h2>
+          <h2>Links</h2>
         </div>
         <div class="card-body tool-links">
-          <a href="/viewer.html" target="_blank" class="tool-link">
+          <a href="https://github.com/tyayers/apigee-emulator-service" target="_blank" rel="noopener noreferrer" class="tool-link">
             <svg class="tool-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-              <circle cx="12" cy="12" r="3"/>
+              <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
             </svg>
-            Advanced Flow Viewer
-          </a>
-          <a href="/v1/emulator/tree" target="_blank" class="tool-link">
-            <svg class="tool-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="7" height="7"/>
-              <rect x="14" y="3" width="7" height="7"/>
-              <rect x="14" y="14" width="7" height="7"/>
-              <rect x="3" y="14" width="7" height="7"/>
-            </svg>
-            Emulator Deployment Tree
+            Source Code
           </a>
         </div>
       </section>
@@ -137,7 +127,6 @@
         <div class="card-header">
           <div class="tester-title">
             <h2>Proxy API Tester</h2>
-            <span class="tag">Postman Style</span>
           </div>
           <div class="preset-selector-group">
             <label for="test-preset-select">Tests:</label>
@@ -155,6 +144,15 @@
         </div>
 
         <div class="card-body">
+          <!-- Active Test Info Banner -->
+          <div id="active-test-banner" class="active-test-banner hidden">
+            <div class="active-test-header">
+              <span class="active-test-badge">Test</span>
+              <span id="active-test-name" class="active-test-name"></span>
+            </div>
+            <div id="active-test-desc" class="active-test-desc"></div>
+          </div>
+
           <!-- Request Bar -->
           <div class="request-bar">
             <select id="req-method" class="method-select">
@@ -379,7 +377,7 @@
         <div class="card-header history-header">
           <div class="history-title">
             <h2>Test Run History</h2>
-            <span id="history-proxy-badge" class="tag">REST-AI-Completions</span>
+            <span id="history-proxy-badge" class="tag">TestProxy</span>
           </div>
           <div class="history-actions">
             <button id="btn-refresh-history" class="btn btn-sm btn-outline" title="Refresh history for this proxy">

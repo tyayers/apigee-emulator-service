@@ -9,7 +9,6 @@
 # Examples:
 #   ./emulator/trace_start.sh              # Auto-detects active deployed proxy
 #   ./emulator/trace_start.sh TestProxy
-#   ./emulator/trace_start.sh REST-AI-Completions
 # ==============================================================================
 
 # Guard against sourcing in an interactive terminal
@@ -49,7 +48,6 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   echo -e "${BOLD}Examples:${NC}"
   echo "  ./emulator/trace_start.sh"
   echo "  ./emulator/trace_start.sh TestProxy"
-  echo "  ./emulator/trace_start.sh REST-AI-Completions"
   exit 0
 fi
 

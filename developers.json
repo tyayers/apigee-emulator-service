@@ -1,14 +1,9 @@
 [
   {
-    "email": "developer@example.com",
+    "email": "test@example.com",
+    "userName": "test@example.com",
     "firstName": "Test",
-    "lastName": "Developer",
-    "userName": "testdeveloper",
-    "attributes": [
-      {
-        "name": "costCenter",
-        "value": "CC-1234"
-      }
-    ]
+    "lastName": "User",
+    "attributes": []
   }
 ]

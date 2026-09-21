@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,236 +108,606 @@ func (thm *TestHistoryManager) Clear(proxy string) {
 // EvaluateAssertions evaluates a slice of assertion expressions against a test response.
 func EvaluateAssertions(assertions []string, resp *TestResponse) []AssertionResult {
 	var results []AssertionResult
-	for _, assertion := range assertions {
-		a := strings.TrimSpace(assertion)
-		if a == "" {
-			continue
+	for _, rawAssertion := range assertions {
+		lines := strings.Split(rawAssertion, "\n")
+		for _, line := range lines {
+			parts := splitAssertions(line)
+			for _, part := range parts {
+				a := cleanAssertionString(part)
+				if a == "" {
+					continue
+				}
+				res := EvaluateAssertion(a, resp)
+				results = append(results, res)
+			}
 		}
-		res := EvaluateAssertion(a, resp)
-		results = append(results, res)
 	}
 	return results
 }
 
 // EvaluateAssertion evaluates a single assertion expression against a test response.
 func EvaluateAssertion(assertion string, resp *TestResponse) AssertionResult {
+	cleaned := cleanAssertionString(assertion)
 	res := AssertionResult{
-		Assertion: assertion,
+		Assertion: cleaned,
 		Passed:    false,
 	}
 
 	if resp == nil {
 		res.Actual = "No response"
-		res.Expected = assertion
+		res.Expected = cleaned
 		res.Error = "response was nil"
 		return res
 	}
 
-	// Supported operators in order of evaluation (check "not contains" before "contains")
-	ops := []string{"not contains", "contains", "!=", "==", ">=", "<=", ">", "<"}
+	lower := strings.ToLower(cleaned)
 	var op, left, right string
 
-	for _, candidate := range ops {
-		idx := strings.Index(strings.ToLower(assertion), candidate)
-		if idx != -1 {
-			op = candidate
-			left = strings.TrimSpace(assertion[:idx])
-			right = strings.TrimSpace(assertion[idx+len(candidate):])
-			break
+	// 1. Unary / Suffix operators (exists, not exists)
+	if strings.HasSuffix(lower, " not exists") || strings.HasSuffix(lower, " not exist") {
+		op = "not exists"
+		sufLen := len(" not exists")
+		if strings.HasSuffix(lower, " not exist") {
+			sufLen = len(" not exist")
+		}
+		left = strings.TrimSpace(cleaned[:len(cleaned)-sufLen])
+		right = ""
+	} else if strings.HasSuffix(lower, " exists") || strings.HasSuffix(lower, " exist") {
+		op = "exists"
+		sufLen := len(" exists")
+		if strings.HasSuffix(lower, " exist") {
+			sufLen = len(" exist")
+		}
+		left = strings.TrimSpace(cleaned[:len(cleaned)-sufLen])
+		right = ""
+	}
+
+	// 2. Binary word operators
+	if op == "" {
+		wordOps := []string{
+			"not contains",
+			"contains",
+			"startswith",
+			"endswith",
+			"matches",
+		}
+		for _, wOp := range wordOps {
+			pattern := " " + wOp + " "
+			idx := strings.Index(lower, pattern)
+			if idx != -1 {
+				op = wOp
+				left = strings.TrimSpace(cleaned[:idx])
+				right = strings.TrimSpace(cleaned[idx+len(pattern):])
+				break
+			}
 		}
 	}
 
-	// If no operator found, check if it's just a status code like "200" or "status.code"
+	// 3. Binary symbol operators
 	if op == "" {
-		trimmed := strings.TrimSpace(assertion)
-		if _, err := strconv.Atoi(trimmed); err == nil {
+		symbolOps := []string{"!=", "==", ">=", "<=", ">", "<"}
+		for _, sOp := range symbolOps {
+			idx := strings.Index(lower, sOp)
+			if idx != -1 {
+				op = sOp
+				left = strings.TrimSpace(cleaned[:idx])
+				right = strings.TrimSpace(cleaned[idx+len(sOp):])
+				break
+			}
+		}
+	}
+
+	// 4. Fallback default
+	if op == "" {
+		if _, err := strconv.Atoi(cleaned); err == nil {
 			op = "=="
 			left = "status.code"
-			right = trimmed
+			right = cleaned
 		} else {
 			op = "=="
-			left = trimmed
+			left = cleaned
 			right = "true"
 		}
 	}
 
-	// Strip optional quotes around right side
-	cleanRight := strings.Trim(right, `"'`)
-	res.Expected = cleanRight
-
-	leftLower := strings.ToLower(left)
-
-	// 1. Status Code assertions: status.code, status, response.status.code
-	if strings.Contains(leftLower, "status") {
-		actualCode := resp.StatusCode
-		res.Actual = strconv.Itoa(actualCode)
-
-		expectedCode, err := strconv.Atoi(cleanRight)
-		if err != nil {
-			res.Error = fmt.Sprintf("invalid status code expected value: %s", cleanRight)
-			return res
-		}
-
-		switch op {
-		case "==":
-			res.Passed = (actualCode == expectedCode)
-		case "!=":
-			res.Passed = (actualCode != expectedCode)
-		case ">=":
-			res.Passed = (actualCode >= expectedCode)
-		case "<=":
-			res.Passed = (actualCode <= expectedCode)
-		case ">":
-			res.Passed = (actualCode > expectedCode)
-		case "<":
-			res.Passed = (actualCode < expectedCode)
-		default:
-			res.Error = fmt.Sprintf("unsupported operator %q for status code", op)
-		}
-		return res
-	}
-
-	// 2. Duration assertions: duration, durationMs, response.time
-	if strings.Contains(leftLower, "duration") || strings.Contains(leftLower, "latency") || strings.Contains(leftLower, "time") {
-		res.Actual = fmt.Sprintf("%dms", resp.DurationMs)
-		expectedDur, err := strconv.ParseInt(cleanRight, 10, 64)
-		if err != nil {
-			res.Error = fmt.Sprintf("invalid duration expected value: %s", cleanRight)
-			return res
-		}
-
-		switch op {
-		case "==":
-			res.Passed = (resp.DurationMs == expectedDur)
-		case "!=":
-			res.Passed = (resp.DurationMs != expectedDur)
-		case ">=":
-			res.Passed = (resp.DurationMs >= expectedDur)
-		case "<=":
-			res.Passed = (resp.DurationMs <= expectedDur)
-		case ">":
-			res.Passed = (resp.DurationMs > expectedDur)
-		case "<":
-			res.Passed = (resp.DurationMs < expectedDur)
-		default:
-			res.Error = fmt.Sprintf("unsupported operator %q for duration", op)
-		}
-		return res
-	}
-
-	// 3. Trace assertions: trace.error, trace.hasErrors, trace.steps, trace.transactions
-	if strings.HasPrefix(leftLower, "trace") {
-		if strings.Contains(leftLower, "error") {
-			hasErr := traceHasErrors(resp.TraceData)
-			res.Actual = strconv.FormatBool(hasErr)
-			expectedBool, _ := strconv.ParseBool(cleanRight)
-			if op == "==" {
-				res.Passed = (hasErr == expectedBool)
-			} else if op == "!=" {
-				res.Passed = (hasErr != expectedBool)
-			}
-			return res
-		}
-
-		if strings.Contains(leftLower, "step") || strings.Contains(leftLower, "policy") {
-			steps := extractTraceSteps(resp.TraceData)
-			res.Actual = strings.Join(steps, ", ")
-			contains := sliceContainsCaseInsensitive(steps, cleanRight)
-			if op == "contains" {
-				res.Passed = contains
-			} else if op == "not contains" {
-				res.Passed = !contains
-			} else if op == "==" {
-				res.Passed = strings.EqualFold(res.Actual, cleanRight)
-			}
-			return res
-		}
-
-		// Generic trace inspection (e.g. flow variable or raw string)
-		traceStr := ""
-		if resp.TraceData != nil {
-			b, _ := json.Marshal(resp.TraceData)
-			traceStr = string(b)
-		}
-		res.Actual = fmt.Sprintf("%d bytes trace data", len(traceStr))
-		contains := strings.Contains(strings.ToLower(traceStr), strings.ToLower(cleanRight))
-		if op == "contains" {
-			res.Passed = contains
-		} else if op == "not contains" {
-			res.Passed = !contains
+	// Clean right operand
+	cleanRight := strings.TrimSpace(right)
+	if op == "matches" {
+		if strings.HasPrefix(cleanRight, "/") && strings.HasSuffix(cleanRight, "/") && len(cleanRight) >= 2 {
+			cleanRight = cleanRight[1 : len(cleanRight)-1]
 		} else {
-			res.Passed = contains
+			cleanRight = strings.Trim(cleanRight, `"'`)
 		}
-		return res
+	} else {
+		cleanRight = strings.Trim(cleanRight, `"'`)
 	}
 
-	// 4. Header assertions: header.content-type, headers['content-type'], headers.x-api-key
-	if strings.HasPrefix(leftLower, "header") {
-		headerName := extractHeaderName(left)
-		actualVal := getHeaderCaseInsensitive(resp.Headers, headerName)
-		res.Actual = actualVal
-
-		switch op {
-		case "==":
-			res.Passed = strings.EqualFold(actualVal, cleanRight)
-		case "!=":
-			res.Passed = !strings.EqualFold(actualVal, cleanRight)
-		case "contains":
-			res.Passed = strings.Contains(strings.ToLower(actualVal), strings.ToLower(cleanRight))
-		case "not contains":
-			res.Passed = !strings.Contains(strings.ToLower(actualVal), strings.ToLower(cleanRight))
-		default:
-			res.Error = fmt.Sprintf("unsupported operator %q for headers", op)
-		}
-		return res
+	if op == "exists" {
+		res.Expected = "exists"
+	} else if op == "not exists" {
+		res.Expected = "not exists"
+	} else {
+		res.Expected = cleanRight
 	}
 
-	// 5. Body assertions: body, response.body, body.<json_field>
-	if strings.HasPrefix(leftLower, "body") || strings.HasPrefix(leftLower, "response.body") {
-		// Check for nested json field: e.g. body.model or response.body.status
-		field := extractBodyField(left)
-		if field != "" {
-			actualFieldVal := extractJSONField(resp.Body, field)
-			res.Actual = actualFieldVal
-			if op == "==" {
-				res.Passed = strings.EqualFold(actualFieldVal, cleanRight)
-			} else if op == "!=" {
-				res.Passed = !strings.EqualFold(actualFieldVal, cleanRight)
-			} else if op == "contains" {
-				res.Passed = strings.Contains(strings.ToLower(actualFieldVal), strings.ToLower(cleanRight))
-			} else if op == "not contains" {
-				res.Passed = !strings.Contains(strings.ToLower(actualFieldVal), strings.ToLower(cleanRight))
-			}
+	// Resolve target actual value
+	actual, targetFound := resolveAssertionTarget(left, resp)
+	res.Actual = truncateStr(actual, 120)
+
+	// Evaluate operator
+	switch op {
+	case "exists":
+		res.Passed = targetFound && strings.TrimSpace(actual) != ""
+		if !res.Passed {
+			res.Actual = "not found / empty"
+		}
+
+	case "not exists":
+		res.Passed = !targetFound || strings.TrimSpace(actual) == ""
+		if res.Passed {
+			res.Actual = "not exists"
+		}
+
+	case "startswith":
+		res.Passed = strings.HasPrefix(actual, cleanRight) || strings.HasPrefix(strings.ToLower(actual), strings.ToLower(cleanRight))
+
+	case "endswith":
+		res.Passed = strings.HasSuffix(actual, cleanRight) || strings.HasSuffix(strings.ToLower(actual), strings.ToLower(cleanRight))
+
+	case "matches":
+		re, err := regexp.Compile(cleanRight)
+		if err != nil {
+			res.Error = fmt.Sprintf("invalid regex pattern: %s (%v)", cleanRight, err)
+			return res
+		}
+		res.Passed = re.MatchString(actual)
+
+	case "contains":
+		if strings.HasPrefix(strings.ToLower(left), "trace.step") {
+			steps := extractTraceSteps(resp.TraceData)
+			res.Passed = sliceContainsCaseInsensitive(steps, cleanRight)
+		} else {
+			res.Passed = strings.Contains(strings.ToLower(actual), strings.ToLower(cleanRight))
+		}
+
+	case "not contains":
+		if strings.HasPrefix(strings.ToLower(left), "trace.step") {
+			steps := extractTraceSteps(resp.TraceData)
+			res.Passed = !sliceContainsCaseInsensitive(steps, cleanRight)
+		} else {
+			res.Passed = !strings.Contains(strings.ToLower(actual), strings.ToLower(cleanRight))
+		}
+
+	case "==":
+		n1, err1 := strconv.ParseFloat(actual, 64)
+		n2, err2 := strconv.ParseFloat(cleanRight, 64)
+		if err1 == nil && err2 == nil {
+			res.Passed = (n1 == n2)
 			return res
 		}
 
-		res.Actual = truncateStr(resp.Body, 120)
-		contains := strings.Contains(strings.ToLower(resp.Body), strings.ToLower(cleanRight))
-		switch op {
-		case "contains":
-			res.Passed = contains
-		case "not contains":
-			res.Passed = !contains
-		case "==":
-			res.Passed = (strings.TrimSpace(resp.Body) == cleanRight)
-		case "!=":
-			res.Passed = (strings.TrimSpace(resp.Body) != cleanRight)
-		default:
-			res.Error = fmt.Sprintf("unsupported operator %q for body", op)
+		b1, errB1 := strconv.ParseBool(actual)
+		b2, errB2 := strconv.ParseBool(cleanRight)
+		if errB1 == nil && errB2 == nil {
+			res.Passed = (b1 == b2)
+			return res
 		}
-		return res
-	}
 
-	// Default fallback: check if response body or trace contains expected string
-	bodyContains := strings.Contains(strings.ToLower(resp.Body), strings.ToLower(cleanRight))
-	res.Actual = truncateStr(resp.Body, 80)
-	if op == "not contains" {
-		res.Passed = !bodyContains
-	} else {
-		res.Passed = bodyContains
+		res.Passed = strings.EqualFold(actual, cleanRight) || (strings.TrimSpace(actual) == cleanRight)
+
+	case "!=":
+		n1, err1 := strconv.ParseFloat(actual, 64)
+		n2, err2 := strconv.ParseFloat(cleanRight, 64)
+		if err1 == nil && err2 == nil {
+			res.Passed = (n1 != n2)
+			return res
+		}
+
+		b1, errB1 := strconv.ParseBool(actual)
+		b2, errB2 := strconv.ParseBool(cleanRight)
+		if errB1 == nil && errB2 == nil {
+			res.Passed = (b1 != b2)
+			return res
+		}
+
+		res.Passed = !strings.EqualFold(actual, cleanRight) && (strings.TrimSpace(actual) != cleanRight)
+
+	case ">=", "<=", ">", "<":
+		n1, err1 := strconv.ParseFloat(actual, 64)
+		n2, err2 := strconv.ParseFloat(cleanRight, 64)
+		if err1 != nil || err2 != nil {
+			res.Error = fmt.Sprintf("cannot compare non-numeric values %q and %q with %s", actual, cleanRight, op)
+			return res
+		}
+		switch op {
+		case ">=":
+			res.Passed = (n1 >= n2)
+		case "<=":
+			res.Passed = (n1 <= n2)
+		case ">":
+			res.Passed = (n1 > n2)
+		case "<":
+			res.Passed = (n1 < n2)
+		}
+
+	default:
+		res.Error = fmt.Sprintf("unsupported operator %q", op)
 	}
 
 	return res
+}
+
+func cleanAssertionString(assertion string) string {
+	trimmed := strings.TrimSpace(assertion)
+	inQuote := false
+	var quoteChar rune
+	for i, r := range trimmed {
+		if !inQuote && (r == '"' || r == '\'') {
+			inQuote = true
+			quoteChar = r
+		} else if inQuote && r == quoteChar {
+			inQuote = false
+		} else if !inQuote {
+			if r == '#' {
+				return strings.TrimSpace(trimmed[:i])
+			}
+			if r == '/' && i+1 < len(trimmed) && trimmed[i+1] == '/' {
+				return strings.TrimSpace(trimmed[:i])
+			}
+		}
+	}
+	return trimmed
+}
+
+func splitAssertions(s string) []string {
+	var parts []string
+	var current strings.Builder
+	inQuote := false
+	var quoteChar rune
+	for _, r := range s {
+		if !inQuote && (r == '"' || r == '\'') {
+			inQuote = true
+			quoteChar = r
+			current.WriteRune(r)
+		} else if inQuote && r == quoteChar {
+			inQuote = false
+			current.WriteRune(r)
+		} else if !inQuote && r == ',' {
+			p := strings.TrimSpace(current.String())
+			if p != "" {
+				parts = append(parts, p)
+			}
+			current.Reset()
+		} else {
+			current.WriteRune(r)
+		}
+	}
+	if p := strings.TrimSpace(current.String()); p != "" {
+		parts = append(parts, p)
+	}
+	return parts
+}
+
+func resolveAssertionTarget(left string, resp *TestResponse) (string, bool) {
+	if resp == nil {
+		return "", false
+	}
+
+	leftTrimmed := strings.TrimSpace(left)
+	leftLower := strings.ToLower(leftTrimmed)
+
+	// 1. Status assertions
+	if leftLower == "status" || leftLower == "response.status" || leftLower == "status.code" || leftLower == "response.status.code" {
+		return strconv.Itoa(resp.StatusCode), true
+	}
+
+	// 2. Duration assertions
+	if leftLower == "duration" || leftLower == "durationms" || leftLower == "response.time" || leftLower == "response.duration" {
+		return strconv.FormatInt(resp.DurationMs, 10), true
+	}
+
+	// 3. Flow/Trace Variables (var.ext1, variable.ext1, variables.ext1, flow.ext1)
+	if strings.HasPrefix(leftLower, "var.") || strings.HasPrefix(leftLower, "variable.") || strings.HasPrefix(leftLower, "variables.") || strings.HasPrefix(leftLower, "flow.") {
+		traceVars := extractVariablesFromTrace(resp.TraceData)
+		if val, ok := lookupVariable(leftTrimmed, traceVars); ok {
+			return val, true
+		}
+		varName := leftTrimmed[strings.Index(leftTrimmed, ".")+1:]
+		if resp.Request != nil {
+			if h := getHeaderCaseInsensitive(resp.Request.Headers, varName); h != "" {
+				return h, true
+			}
+			if p := extractPathParamOrQuery(resp.Request.Path, varName); p != "" {
+				return p, true
+			}
+		}
+		if h := getHeaderCaseInsensitive(resp.Headers, varName); h != "" {
+			return h, true
+		}
+		return "", false
+	}
+
+	// 4. Request Path (request.path, request.path.id, path.id)
+	if strings.HasPrefix(leftLower, "request.path") || strings.HasPrefix(leftLower, "path") {
+		pathStr := ""
+		if resp.Request != nil {
+			pathStr = resp.Request.Path
+		} else if resp.TraceData != nil {
+			tVars := extractVariablesFromTrace(resp.TraceData)
+			pathStr = tVars["request.path"]
+			if pathStr == "" {
+				pathStr = tVars["proxy.pathsuffix"]
+			}
+		}
+		if leftLower == "request.path" || leftLower == "path" {
+			return pathStr, pathStr != ""
+		}
+		field := leftTrimmed[strings.LastIndex(leftTrimmed, ".")+1:]
+		val := extractPathParamOrQuery(pathStr, field)
+		return val, val != ""
+	}
+
+	// 5. Request Headers (request.headers.Authorization, request.header.x-api-key)
+	if strings.HasPrefix(leftLower, "request.headers") || strings.HasPrefix(leftLower, "request.header") {
+		headerName := extractHeaderName(leftTrimmed)
+		if resp.Request != nil {
+			val := getHeaderCaseInsensitive(resp.Request.Headers, headerName)
+			return val, val != ""
+		} else if resp.TraceData != nil {
+			tVars := extractVariablesFromTrace(resp.TraceData)
+			val := tVars["request.header."+strings.ToLower(headerName)]
+			return val, val != ""
+		}
+		return "", false
+	}
+
+	// 6. Response Headers (response.headers.Content-Type, header.content-type, headers.x-api-key)
+	if strings.HasPrefix(leftLower, "response.headers") || strings.HasPrefix(leftLower, "response.header") ||
+		strings.HasPrefix(leftLower, "headers") || strings.HasPrefix(leftLower, "header") {
+		headerName := extractHeaderName(leftTrimmed)
+		val := getHeaderCaseInsensitive(resp.Headers, headerName)
+		if val != "" {
+			return val, true
+		}
+		if resp.TraceData != nil {
+			tVars := extractVariablesFromTrace(resp.TraceData)
+			val := tVars["response.header."+strings.ToLower(headerName)]
+			return val, val != ""
+		}
+		return "", false
+	}
+
+	// 7. Request Body (request.body.user.name, request.body.id, request.body)
+	if strings.HasPrefix(leftLower, "request.body") {
+		bodyStr := ""
+		if resp.Request != nil {
+			bodyStr = resp.Request.Body
+		} else if resp.TraceData != nil {
+			tVars := extractVariablesFromTrace(resp.TraceData)
+			bodyStr = tVars["request.content"]
+		}
+		if leftLower == "request.body" {
+			return bodyStr, bodyStr != ""
+		}
+		field := extractBodyField(leftTrimmed)
+		val := extractJSONField(bodyStr, field)
+		return val, val != ""
+	}
+
+	// 8. Response Body (response.body.user.name, response.body.id, response.body, body.user.name, body)
+	if strings.HasPrefix(leftLower, "response.body") || strings.HasPrefix(leftLower, "body") {
+		if leftLower == "response.body" || leftLower == "body" {
+			return resp.Body, resp.Body != ""
+		}
+		field := extractBodyField(leftTrimmed)
+		val := extractJSONField(resp.Body, field)
+		return val, val != ""
+	}
+
+	// 9. Trace Assertions (trace.error, trace.steps, etc.)
+	if strings.HasPrefix(leftLower, "trace.") {
+		if strings.Contains(leftLower, "error") {
+			hasErr := traceHasErrors(resp.TraceData)
+			return strconv.FormatBool(hasErr), true
+		}
+		if strings.Contains(leftLower, "step") || strings.Contains(leftLower, "policy") {
+			steps := extractTraceSteps(resp.TraceData)
+			return strings.Join(steps, ", "), len(steps) > 0
+		}
+		b, _ := json.Marshal(resp.TraceData)
+		return string(b), len(b) > 0
+	}
+
+	// 10. Fallback: check trace variables, body field, or raw body
+	traceVars := extractVariablesFromTrace(resp.TraceData)
+	if val, ok := lookupVariable(leftTrimmed, traceVars); ok {
+		return val, true
+	}
+	if val := extractJSONField(resp.Body, leftTrimmed); val != "" {
+		return val, true
+	}
+	return resp.Body, resp.Body != ""
+}
+
+func extractVariablesFromTrace(traceData map[string]interface{}) map[string]string {
+	vars := make(map[string]string)
+	if traceData == nil {
+		return vars
+	}
+
+	// Direct variables map if provided
+	if vMap, ok := traceData["variables"].(map[string]interface{}); ok {
+		for k, v := range vMap {
+			vars[k] = fmt.Sprintf("%v", v)
+		}
+	} else if vMap, ok := traceData["variables"].(map[string]string); ok {
+		for k, v := range vMap {
+			vars[k] = v
+		}
+	}
+
+	var walk func(obj interface{})
+	walk = func(obj interface{}) {
+		if obj == nil {
+			return
+		}
+		switch val := obj.(type) {
+		case []interface{}:
+			for _, item := range val {
+				walk(item)
+			}
+		case map[string]interface{}:
+			// 1. variableAccessList / VariableAccessMap / variables list
+			for _, listKey := range []string{"variableAccessList", "VariableAccessMap", "variables"} {
+				if list, ok := val[listKey].([]interface{}); ok {
+					for _, v := range list {
+						if vm, ok := v.(map[string]interface{}); ok {
+							name := fmt.Sprintf("%v", vm["name"])
+							if vVal, exists := vm["value"]; exists && name != "" && name != "<nil>" {
+								vars[name] = fmt.Sprintf("%v", vVal)
+							}
+						}
+					}
+				}
+			}
+
+			// 2. accessList (Get / Set / access)
+			if list, ok := val["accessList"].([]interface{}); ok {
+				for _, item := range list {
+					if im, ok := item.(map[string]interface{}); ok {
+						for _, action := range []string{"Get", "Set", "access"} {
+							if am, ok := im[action].(map[string]interface{}); ok {
+								name := fmt.Sprintf("%v", am["name"])
+								if vVal, exists := am["value"]; exists && name != "" && name != "<nil>" {
+									vars[name] = fmt.Sprintf("%v", vVal)
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// 3. property / properties.property
+			if props, ok := val["property"].([]interface{}); ok {
+				for _, p := range props {
+					if pm, ok := p.(map[string]interface{}); ok {
+						name := fmt.Sprintf("%v", pm["name"])
+						if vVal, exists := pm["value"]; exists && name != "" && name != "<nil>" {
+							vars[name] = fmt.Sprintf("%v", vVal)
+						}
+					}
+				}
+			}
+			if pObj, ok := val["properties"].(map[string]interface{}); ok {
+				if props, ok := pObj["property"].([]interface{}); ok {
+					for _, p := range props {
+						if pm, ok := p.(map[string]interface{}); ok {
+							name := fmt.Sprintf("%v", pm["name"])
+							if vVal, exists := pm["value"]; exists && name != "" && name != "<nil>" {
+								vars[name] = fmt.Sprintf("%v", vVal)
+							}
+						}
+					}
+				}
+			}
+
+			// Direct primitive properties
+			for k, v := range val {
+				switch vt := v.(type) {
+				case string:
+					vars[k] = vt
+				case float64:
+					if vt == float64(int64(vt)) {
+						vars[k] = strconv.FormatInt(int64(vt), 10)
+					} else {
+						vars[k] = fmt.Sprintf("%v", vt)
+					}
+				case int:
+					vars[k] = strconv.Itoa(vt)
+				case int64:
+					vars[k] = strconv.FormatInt(vt, 10)
+				case bool:
+					vars[k] = strconv.FormatBool(vt)
+				case map[string]interface{}, []interface{}:
+					walk(vt)
+				}
+			}
+		}
+	}
+
+	walk(traceData)
+	return vars
+}
+
+func lookupVariable(name string, vars map[string]string) (string, bool) {
+	if val, ok := vars[name]; ok {
+		return val, true
+	}
+	cleanName := strings.TrimPrefix(name, "var.")
+	cleanName = strings.TrimPrefix(cleanName, "variable.")
+	cleanName = strings.TrimPrefix(cleanName, "variables.")
+	cleanName = strings.TrimPrefix(cleanName, "flow.")
+
+	if val, ok := vars[cleanName]; ok {
+		return val, true
+	}
+	if val, ok := vars["var."+cleanName]; ok {
+		return val, true
+	}
+	if val, ok := vars["flow."+cleanName]; ok {
+		return val, true
+	}
+
+	for k, v := range vars {
+		kClean := strings.TrimPrefix(k, "var.")
+		kClean = strings.TrimPrefix(kClean, "flow.")
+		if strings.EqualFold(k, name) || strings.EqualFold(kClean, cleanName) {
+			return v, true
+		}
+	}
+
+	return "", false
+}
+
+func extractPathParamOrQuery(pathStr string, field string) string {
+	if pathStr == "" || field == "" {
+		return ""
+	}
+
+	// 1. Check query parameter
+	if u, err := url.Parse(pathStr); err == nil {
+		if qVal := u.Query().Get(field); qVal != "" {
+			return qVal
+		}
+	}
+	if qIdx := strings.Index(pathStr, "?"); qIdx != -1 {
+		qs := pathStr[qIdx+1:]
+		for _, part := range strings.Split(qs, "&") {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) == 2 && strings.EqualFold(kv[0], field) {
+				return kv[1]
+			}
+		}
+		pathStr = pathStr[:qIdx]
+	}
+
+	// 2. Check path segments: e.g. /users/123 or /id/123
+	segments := strings.Split(strings.Trim(pathStr, "/"), "/")
+	for i, seg := range segments {
+		if strings.EqualFold(seg, field) && i+1 < len(segments) {
+			return segments[i+1]
+		}
+	}
+
+	// 3. If field is "id" and last segment is numeric, return it
+	if strings.EqualFold(field, "id") && len(segments) > 0 {
+		last := segments[len(segments)-1]
+		if _, err := strconv.Atoi(last); err == nil {
+			return last
+		}
+	}
+
+	return ""
 }
 
 func traceHasErrors(traceData map[string]interface{}) bool {
@@ -400,7 +772,10 @@ func extractTraceSteps(traceData map[string]interface{}) []string {
 }
 
 func extractHeaderName(expr string) string {
-	// Handles: header.content-type, header['content-type'], headers["x-api-key"]
+	expr = strings.TrimPrefix(expr, "request.")
+	expr = strings.TrimPrefix(expr, "response.")
+	expr = strings.TrimPrefix(expr, "headers.")
+	expr = strings.TrimPrefix(expr, "header.")
 	expr = strings.TrimPrefix(expr, "headers")
 	expr = strings.TrimPrefix(expr, "header")
 	expr = strings.Trim(expr, "[]'\" .")
@@ -418,15 +793,18 @@ func getHeaderCaseInsensitive(headers map[string]string, name string) string {
 
 func extractBodyField(expr string) string {
 	expr = strings.TrimPrefix(expr, "response.")
+	expr = strings.TrimPrefix(expr, "request.")
 	expr = strings.TrimPrefix(expr, "body.")
-	if expr != "body" && expr != "" {
-		return expr
-	}
-	return ""
+	expr = strings.TrimPrefix(expr, "body")
+	expr = strings.Trim(expr, "[]'\" .")
+	return expr
 }
 
 func extractJSONField(body string, field string) string {
-	var parsed map[string]interface{}
+	if strings.TrimSpace(body) == "" || strings.TrimSpace(field) == "" {
+		return ""
+	}
+	var parsed interface{}
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		return ""
 	}
@@ -434,6 +812,40 @@ func extractJSONField(body string, field string) string {
 	parts := strings.Split(field, ".")
 	var current interface{} = parsed
 	for _, part := range parts {
+		if current == nil {
+			return ""
+		}
+		// Array bracket notation: choices[0]
+		if idxStart := strings.Index(part, "["); idxStart != -1 && strings.HasSuffix(part, "]") {
+			key := part[:idxStart]
+			indexStr := part[idxStart+1 : len(part)-1]
+			if key != "" {
+				if m, ok := current.(map[string]interface{}); ok {
+					current = m[key]
+				} else {
+					return ""
+				}
+			}
+			if idx, err := strconv.Atoi(indexStr); err == nil {
+				if arr, ok := current.([]interface{}); ok && idx >= 0 && idx < len(arr) {
+					current = arr[idx]
+				} else {
+					return ""
+				}
+			} else {
+				return ""
+			}
+			continue
+		}
+
+		// Numeric array part: choices.0
+		if idx, err := strconv.Atoi(part); err == nil {
+			if arr, ok := current.([]interface{}); ok && idx >= 0 && idx < len(arr) {
+				current = arr[idx]
+				continue
+			}
+		}
+
 		if m, ok := current.(map[string]interface{}); ok {
 			current = m[part]
 		} else {
@@ -444,7 +856,24 @@ func extractJSONField(body string, field string) string {
 	if current == nil {
 		return ""
 	}
-	return fmt.Sprintf("%v", current)
+
+	switch v := current.(type) {
+	case string:
+		return v
+	case float64:
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10)
+		}
+		return fmt.Sprintf("%v", v)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case bool:
+		return strconv.FormatBool(v)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func sliceContainsCaseInsensitive(slice []string, val string) bool {

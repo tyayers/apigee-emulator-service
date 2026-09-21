@@ -1,19 +1,17 @@
 #!/bin/bash
 # ==============================================================================
 # Apigee Emulator Deploy Script
-# Builds and deploys YAML templates, proxies, or features to a local Apigee Emulator.
+# Builds and deploys YAML deployments to a local Apigee Emulator.
 #
 # HOW TO USE:
-#   1. Interactive mode (defaults to proxies/TestProxy.yaml on Enter):
-#        ./emulator/deploy.sh
+#   1. Interactive mode (defaults to data/deployments/deployment-1.yaml on Enter):
+#        ./deploy.sh
 #
-#   2. Deploy a specific proxy, template, or feature:
-#        ./emulator/deploy.sh proxies/TestProxy.yaml
-#        ./emulator/deploy.sh templates/REST-AI-Completions.yaml
-#        ./emulator/deploy.sh features/ai-endpoint-completions.yaml
+#   2. Deploy a specific deployment:
+#        ./deploy.sh data/deployments/deployment-1.yaml
 #
-#   3. Deploy all templates at once:
-#        ./emulator/deploy.sh --all
+#   3. Deploy all deployments at once:
+#        ./deploy.sh --all
 #
 #   4. List available files or view help:
 #        ./emulator/deploy.sh --list
@@ -42,7 +40,7 @@ fi
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -d "$SCRIPT_DIR/proxies" ] || [ -f "$SCRIPT_DIR/products.json" ]; then
+if [ -d "$SCRIPT_DIR/data" ] || [ -f "$SCRIPT_DIR/products.json" ]; then
   ROOT_DIR="$SCRIPT_DIR"
 else
   ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -74,18 +72,6 @@ CONTAINER_NAME="${EMULATOR_CONTAINER_NAME:-apigee}"
 # ------------------------------------------------------------------------------
 # Discovery Functions
 # ------------------------------------------------------------------------------
-get_available_proxies() {
-  find proxies -maxdepth 1 -name "*.yaml" -type f 2>/dev/null | sort
-}
-
-get_available_templates() {
-  find templates -maxdepth 1 -name "*.yaml" -type f 2>/dev/null | sort
-}
-
-get_available_features() {
-  find features -maxdepth 1 -name "*.yaml" -type f 2>/dev/null | sort
-}
-
 get_available_deployments() {
   find data/deployments -maxdepth 1 \( -name "*.yaml" -o -name "*.yml" \) -type f 2>/dev/null | sort
 }
@@ -101,36 +87,27 @@ ${BOLD}Description:${NC}
   Builds Apigee proxy bundles using 'aft' and deploys them to the local
   Apigee Emulator container, along with pre-configured mock test data
   (API products, developer apps, KVMs, and data collectors).
-  Supports deploying standalone proxies, complete templates, individual features,
-  or full deployment definitions from data/deployments/.
+  Supports deploying deployment definitions from data/deployments/.
 
 ${BOLD}Options:${NC}
   -h, --help            Show this help message and exit
-  -a, --all             Deploy all templates in the 'templates/' directory
-  -l, --list            List all available proxies, templates, features, and deployments
-  -p, --proxies         Choose from proxies in 'proxies/'
-  -t, --templates       Choose from templates in 'templates/'
-  -f, --features        Choose from features in 'features/'
+  -a, --all             Deploy all deployments in 'data/deployments/'
+  -l, --list            List all available deployments in 'data/deployments/'
   -d, --deployments     Choose from deployments in 'data/deployments/'
   -c, --convert         Convert deployment definitions in 'data/deployments/' into
                         local assets (bundles, products, apps) with aft and exit
 
 ${BOLD}Examples:${NC}
-  # Interactive mode (defaults to proxies/TestProxy.yaml on Enter)
+  # Interactive mode (defaults to data/deployments/deployment-1.yaml on Enter)
   ./deploy.sh
 
-  # Deploy specific proxy, template, or feature
-  ./deploy.sh proxies/TestProxy.yaml
-  ./deploy.sh templates/REST-AI-Completions.yaml
-  ./deploy.sh features/ai-endpoint-completions.yaml
-
   # Deploy deployment definition (proxies + products + apps + test assertions)
-  ./deploy.sh data/deployments/ai-deployment-1.yaml
+  ./deploy.sh data/deployments/deployment-1.yaml
 
   # Convert deployments in data/deployments/ into local assets with aft
   ./deploy.sh --convert
 
-  # Deploy all available templates
+  # Deploy all available deployments
   ./deploy.sh --all
 
 ${BOLD}Environment Variables:${NC}
@@ -152,42 +129,6 @@ list_all() {
     fi
   done < <(get_available_deployments)
   if [ "$d_count" -eq 0 ]; then
-    echo "  (none)"
-  fi
-
-  echo -e "\n${BOLD}Available Proxies in proxies/:${NC}"
-  local p_count=0
-  while IFS= read -r p; do
-    if [ -n "$p" ]; then
-      echo "  • $p"
-      p_count=$((p_count + 1))
-    fi
-  done < <(get_available_proxies)
-  if [ "$p_count" -eq 0 ]; then
-    echo "  (none)"
-  fi
-
-  echo -e "\n${BOLD}Available Templates in templates/:${NC}"
-  local t_count=0
-  while IFS= read -r t; do
-    if [ -n "$t" ]; then
-      echo "  • $t"
-      t_count=$((t_count + 1))
-    fi
-  done < <(get_available_templates)
-  if [ "$t_count" -eq 0 ]; then
-    echo "  (none)"
-  fi
-
-  echo -e "\n${BOLD}Available Features in features/:${NC}"
-  local f_count=0
-  while IFS= read -r f; do
-    if [ -n "$f" ]; then
-      echo "  • $f"
-      f_count=$((f_count + 1))
-    fi
-  done < <(get_available_features)
-  if [ "$f_count" -eq 0 ]; then
     echo "  (none)"
   fi
 }
@@ -337,6 +278,9 @@ convert_deployments_to_assets() {
   echo -e "\n${BOLD}================================================================${NC}"
   echo -e "${BOLD}     CONVERTING DEPLOYMENTS INTO LOCAL ASSETS (aft)             ${NC}"
   echo -e "${BOLD}================================================================${NC}"
+  echo -e "${BLUE}Clearing emulator dist bundle and staged bundles...${NC}"
+  rm -rf "$DIST_DIR"
+  rm -rf "$ROOT_DIR/data/bundles"
   mkdir -p "$ROOT_DIR/data/bundles"
   mkdir -p "$PROXIES_DIR"
   mkdir -p "$DIST_DIR"
@@ -490,23 +434,11 @@ while [[ $# -gt 0 ]]; do
     -a|--all)
       while IFS= read -r file; do
         SELECTED_TEMPLATES+=("$file")
-      done < <(get_available_templates)
-      shift
-      ;;
-    -p|--proxies)
-      browse_and_select "proxies" get_available_proxies "proxies/TestProxy.yaml"
-      shift
-      ;;
-    -t|--templates)
-      browse_and_select "templates" get_available_templates "templates/REST-AI-Completions.yaml"
-      shift
-      ;;
-    -f|--features)
-      browse_and_select "features" get_available_features ""
+      done < <(get_available_deployments)
       shift
       ;;
     -d|--deployments)
-      browse_and_select "data/deployments" get_available_deployments ""
+      browse_and_select "data/deployments" get_available_deployments "data/deployments/deployment-1.yaml"
       shift
       ;;
     -c|--convert|--convert-deployments)
@@ -529,33 +461,21 @@ if [ "${CONVERT_ONLY:-0}" -ne 1 ] && [ ${#SELECTED_TEMPLATES[@]} -eq 0 ]; then
   # Interactive mode if a terminal is attached
   if [ -t 0 ]; then
     echo -e "\n${BOLD}Select what you would like to deploy to Apigee Emulator:${NC}"
-    echo -e "  ${BOLD}1)${NC} ${CYAN}proxies/TestProxy.yaml${NC} ${GREEN}(default)${NC}"
-    echo -e "  ${BOLD}2)${NC} Proxies     (browse proxies/*.yaml)"
-    echo -e "  ${BOLD}3)${NC} Templates   (browse templates/*.yaml)"
-    echo -e "  ${BOLD}4)${NC} Features    (browse features/*.yaml)"
-    echo -e "  ${BOLD}5)${NC} Deployments (browse data/deployments/*.yaml)"
+    echo -e "  ${BOLD}1)${NC} ${CYAN}data/deployments/deployment-1.yaml${NC} ${GREEN}(default)${NC}"
+    echo -e "  ${BOLD}2)${NC} Deployments (browse data/deployments/*.yaml)"
     echo -e "  ${BOLD}C)${NC} Convert data/deployments/ into local assets with aft"
-    echo -e "  ${BOLD}A)${NC} Deploy ALL templates"
+    echo -e "  ${BOLD}A)${NC} Deploy ALL deployments"
 
     echo ""
-    read -r -p "Enter selection [1-5, C, A] (default 1): " choice
+    read -r -p "Enter selection [1-2, C, A] (default 1): " choice
     choice="${choice:-1}"
 
     case "$choice" in
       1)
-        SELECTED_TEMPLATES=("proxies/TestProxy.yaml")
+        SELECTED_TEMPLATES=("data/deployments/deployment-1.yaml")
         ;;
       2)
-        browse_and_select "proxies" get_available_proxies "proxies/TestProxy.yaml"
-        ;;
-      3)
-        browse_and_select "templates" get_available_templates "templates/REST-AI-Completions.yaml"
-        ;;
-      4)
-        browse_and_select "features" get_available_features ""
-        ;;
-      5)
-        browse_and_select "data/deployments" get_available_deployments ""
+        browse_and_select "data/deployments" get_available_deployments "data/deployments/deployment-1.yaml"
         ;;
       [Cc])
         CONVERT_ONLY=1
@@ -563,7 +483,7 @@ if [ "${CONVERT_ONLY:-0}" -ne 1 ] && [ ${#SELECTED_TEMPLATES[@]} -eq 0 ]; then
       [Aa])
         while IFS= read -r f; do
           SELECTED_TEMPLATES+=("$f")
-        done < <(get_available_templates)
+        done < <(get_available_deployments)
         ;;
       *)
         echo -e "${RED}Invalid selection '$choice'. Aborting.${NC}" >&2
@@ -571,14 +491,12 @@ if [ "${CONVERT_ONLY:-0}" -ne 1 ] && [ ${#SELECTED_TEMPLATES[@]} -eq 0 ]; then
         ;;
     esac
   else
-    # Non-interactive fallback default: proxies/TestProxy.yaml
-    if [ -f "proxies/TestProxy.yaml" ]; then
-      SELECTED_TEMPLATES=("proxies/TestProxy.yaml")
-    elif [ -f "templates/REST-AI-Completions.yaml" ]; then
-      SELECTED_TEMPLATES=("templates/REST-AI-Completions.yaml")
+    # Non-interactive fallback default
+    if [ -f "data/deployments/deployment-1.yaml" ]; then
+      SELECTED_TEMPLATES=("data/deployments/deployment-1.yaml")
     else
-      read -r first_tpl < <(get_available_templates)
-      SELECTED_TEMPLATES=("$first_tpl")
+      read -r first_d < <(get_available_deployments)
+      SELECTED_TEMPLATES=("$first_d")
     fi
   fi
 fi

@@ -1,97 +1,42 @@
 [
   {
-    "name": "StarterAiProduct",
-    "displayName": "StarterAiProduct",
+    "name": "test-product",
+    "displayName": "Test Product",
+    "description": "Test Product",
     "approvalType": "auto",
+    "environments": [
+      "test",
+      "default-dev"
+    ],
+    "quota": "50000",
+    "quotaInterval": "1",
+    "quotaTimeUnit": "month",
     "attributes": [
       {
         "name": "access",
         "value": "public"
       }
     ],
-    "environments": ["test"],
     "operationGroup": {
+      "operationConfigType": "proxy",
       "operationConfigs": [
         {
-          "apiSource": "REST-AI-Completions",
+          "apiSource": "TestProxy",
           "operations": [
             {
-              "resource": "/**"
-            }
-          ],
-          "quota": {}
-        },
-        {
-          "apiSource": "ai-generate-content",
-          "operations": [
-            {
-              "resource": "/*"
-            }
-          ],
-          "quota": {}
-        }
-      ],
-      "operationConfigType": "proxy"
-    },
-    "llmOperationGroup": {
-      "operationConfigs": [
-        {
-          "apiSource": "REST-AI-Completions",
-          "llmOperations": [
+              "resource": "/json",
+              "methods": []
+            },
             {
               "resource": "/",
-              "model": "gemini-3.6-flash"
+              "methods": []
             }
           ],
-          "llmTokenQuota": {
-            "limit": "1000",
+          "quota": {
+            "limit": "5",
             "interval": "1",
             "timeUnit": "minute"
           }
-        },
-        {
-          "apiSource": "REST-AI-Completions",
-          "llmOperations": [
-            {
-              "resource": "/",
-              "model": "claude-sonnet-5"
-            }
-          ],
-          "llmTokenQuota": {
-            "limit": "1000",
-            "interval": "1",
-            "timeUnit": "minute"
-          }
-        },
-        {
-          "apiSource": "completions-v1",
-          "llmOperations": [
-            {
-              "resource": "/",
-              "model": "gemini-3.6-flash-lite"
-            }
-          ],
-          "llmTokenQuota": {}
-        },
-        {
-          "apiSource": "ai-generate-content",
-          "llmOperations": [
-            {
-              "resource": "/*",
-              "model": "gemini-2.0-flash"
-            }
-          ],
-          "llmTokenQuota": {}
-        },
-        {
-          "apiSource": "ai-generate-content",
-          "llmOperations": [
-            {
-              "resource": "/*",
-              "model": "gemini-1.5-flash"
-            }
-          ],
-          "llmTokenQuota": {}
         }
       ]
     }

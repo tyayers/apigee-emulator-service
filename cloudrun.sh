@@ -10,15 +10,14 @@
 #   1. Deploy containers to Cloud Run:
 #        ./cloudrun.sh deploy-service --project --region
 #
-#   2. Deploy a YAML proxy, template, or feature to Cloud Run:
-#        ./cloudrun.sh proxies/TestProxy.yaml
-#        ./cloudrun.sh templates/REST-AI-Completions.yaml
-#        ./cloudrun.sh features/ai-endpoint-completions.yaml
+#   2. Deploy a YAML deployment definition or proxy to Cloud Run:
+#        ./cloudrun.sh data/deployments/deployment-1.yaml
+#        ./cloudrun.sh data/proxies/TestProxy.yaml
 #
 #   3. Deploy a ZIP bundle to Cloud Run:
-#        ./cloudrun.sh dist/TestProxy.zip
+#        ./cloudrun.sh data/bundles/TestProxy.zip
 #
-#   4. Deploy all templates at once:
+#   4. Deploy all deployments at once:
 #        ./cloudrun.sh --all
 #
 #   5. Check status, inspect active proxies, or test traffic:
@@ -152,20 +151,12 @@ check_service_prereqs() {
 # ------------------------------------------------------------------------------
 # Discovery Helpers
 # ------------------------------------------------------------------------------
-get_available_proxies() {
-  find proxies -maxdepth 1 -name "*.yaml" -type f 2>/dev/null | sort
-}
-
-get_available_templates() {
-  find templates -maxdepth 1 -name "*.yaml" -type f 2>/dev/null | sort
-}
-
-get_available_features() {
-  find features -maxdepth 1 -name "*.yaml" -type f 2>/dev/null | sort
+get_available_deployments() {
+  find data/deployments -maxdepth 1 \( -name "*.yaml" -o -name "*.yml" \) -type f 2>/dev/null | sort
 }
 
 get_available_zips() {
-  find dist -maxdepth 1 -name "*.zip" -type f 2>/dev/null | grep -v "bundle.zip" | grep -v "testdata.zip" | sort
+  find data/bundles dist -maxdepth 1 -name "*.zip" -type f 2>/dev/null | grep -v "bundle.zip" | grep -v "testdata.zip" | sort -u
 }
 
 # ------------------------------------------------------------------------------
@@ -185,14 +176,14 @@ show_help() {
   echo "  delete                 Delete the Cloud Run service"
   echo ""
   echo -e "${BOLD}Proxy & Traffic Commands:${NC}"
-  echo "  deploy [FILE...]       Deploy YAML proxy/template/feature or ZIP bundle(s)"
+  echo "  deploy [FILE...]       Deploy YAML deployment or ZIP bundle(s) from data/"
   echo "  test [PATH]            Send a test request to deployed proxy (e.g. /testproxy)"
   echo "  trace-start [PROXY]    Start trace recording session on Cloud Run"
   echo "  trace-stop             Stop trace session and download trace.json"
   echo ""
   echo -e "${BOLD}Options:${NC}"
-  echo "  -a, --all              Deploy all templates from 'templates/' to Cloud Run"
-  echo "  -l, --list             List available proxies, templates, and features"
+  echo "  -a, --all              Deploy all deployments from 'data/deployments/' to Cloud Run"
+  echo "  -l, --list             List available deployments and bundles in 'data/'"
   echo "  --project PROJECT_ID   Override GCP Project ID"
   echo "  --region REGION        Override Cloud Run region (default: europe-west1)"
   echo "  --service SERVICE_NAME Override Cloud Run service name (default: apigee-emulator)"
@@ -204,14 +195,13 @@ show_help() {
   echo "  # 1. Deploy the containers to Cloud Run:"
   echo "  ./cloudrun.sh deploy-service"
   echo ""
-  echo "  # 2. Deploy a YAML proxy or template to Cloud Run:"
-  echo "  ./cloudrun.sh proxies/TestProxy.yaml"
-  echo "  ./cloudrun.sh templates/REST-AI-Completions.yaml"
+  echo "  # 2. Deploy a YAML deployment to Cloud Run:"
+  echo "  ./cloudrun.sh data/deployments/deployment-1.yaml"
   echo ""
   echo "  # 3. Deploy a ZIP bundle to Cloud Run:"
-  echo "  ./cloudrun.sh dist/TestProxy.zip"
+  echo "  ./cloudrun.sh data/bundles/TestProxy.zip"
   echo ""
-  echo "  # 4. Deploy all templates at once:"
+  echo "  # 4. Deploy all resources at once:"
   echo "  ./cloudrun.sh --all"
   echo ""
   echo "  # 5. Test proxy traffic on Cloud Run:"
@@ -293,10 +283,16 @@ deploy_cloudrun_service() {
   echo -e "  ${BOLD}Service:${NC} $SERVICE_NAME"
   echo -e "  ${BOLD}Config:${NC}  $SERVICE_YAML\n"
 
-  # 1. Compile deployment bundles from data/deployments/ using aft if available
+  # Clear emulator dist bundle and staging bundles to ensure ONLY resources in data/ are deployed
+  echo -e "${BLUE}Clearing emulator dist bundle and staged bundles...${NC}"
+  rm -rf "$ROOT_DIR/dist"
+  mkdir -p "$ROOT_DIR/dist"
+  rm -rf "$ROOT_DIR/data/bundles"
+  mkdir -p "$ROOT_DIR/data/bundles"
+
+  # 1. Compile deployment bundles from data/deployments/ and data/proxies/ using aft if available
   if command -v aft &>/dev/null; then
     echo -e "${BLUE}Compiling proxy bundles from data/deployments/ with aft...${NC}"
-    mkdir -p "$ROOT_DIR/data/bundles"
     for dep_yaml in "$ROOT_DIR"/data/deployments/*.yaml "$ROOT_DIR"/data/deployments/*.yml; do
       if [ -f "$dep_yaml" ]; then
         local dep_base
@@ -315,10 +311,6 @@ deploy_cloudrun_service() {
         rm -rf "$tmp_dep_dir"
       fi
     done
-    if [ -f "$ROOT_DIR/proxies/TestProxy.yaml" ]; then
-      echo -e "  Compiling TestProxy -> data/bundles/TestProxy.zip"
-      aft -i "$ROOT_DIR/proxies/TestProxy.yaml" -o "$ROOT_DIR/data/bundles/TestProxy.zip" --no-animation 2>/dev/null || true
-    fi
   fi
 
   # 2. Build & push Manager container image (using timestamp tag to guarantee Cloud Run creates a new revision)
@@ -397,8 +389,8 @@ deploy_cloudrun_service() {
   echo -e "${BOLD}Apigee Emulator Tester UI:${NC} ${GREEN}$cr_url/tester/${NC}"
   echo -e "${BOLD}Next Steps:${NC}"
   echo -e "  1. Open ${GREEN}$cr_url/tester/${NC} in your browser to inspect proxies, deploy bundles, and run interactive tests with traces."
-  echo -e "  2. Or deploy additional proxies via CLI:"
-  echo -e "     \033[1;32m./cloudrun.sh proxies/TestProxy.yaml\033[0m"
+  echo -e "  2. Or deploy additional deployments via CLI:"
+  echo -e "     \033[1;32m./cloudrun.sh data/deployments/deployment-1.yaml\033[0m"
   echo -e "${BOLD}================================================================${NC}\n"
 }
 
@@ -538,8 +530,10 @@ deploy_proxies_to_cloudrun() {
     fi
   done
 
+  # Always clear emulator dist bundle completely before deployment
+  echo -e "\n${BLUE}Clearing emulator dist bundle...${NC}"
+  rm -rf "$dist_dir"
   mkdir -p "$dist_dir"
-  rm -rf "$bundle_dir"
   mkdir -p "$proxies_dir"
   mkdir -p "$env_dir"
 
@@ -1045,21 +1039,19 @@ interactive_menu() {
   fi
 
   echo -e "  ${BOLD}1)${NC} ${GREEN}Deploy Containers to Cloud Run${NC} (Envoy + Apigee Emulator)"
-  echo -e "  ${BOLD}2)${NC} Deploy default proxy (${CYAN}proxies/TestProxy.yaml${NC})"
-  echo -e "  ${BOLD}3)${NC} Browse & deploy proxies (proxies/*.yaml)"
-  echo -e "  ${BOLD}4)${NC} Browse & deploy templates (templates/*.yaml)"
-  echo -e "  ${BOLD}5)${NC} Browse & deploy features (features/*.yaml)"
-  echo -e "  ${BOLD}6)${NC} Browse & deploy ZIP bundles (dist/*.zip)"
-  echo -e "  ${BOLD}7)${NC} Deploy ALL templates"
-  echo -e "  ${BOLD}8)${NC} Check Cloud Run service status & active endpoints"
-  echo -e "  ${BOLD}9)${NC} Test proxy traffic (/testproxy)"
-  echo -e " ${BOLD}10)${NC} Start trace recording"
-  echo -e " ${BOLD}11)${NC} Stop trace recording & save trace.json"
-  echo -e " ${BOLD}12)${NC} ${CYAN}Open Apigee Emulator Tester Web UI${NC} (/tester/)"
+  echo -e "  ${BOLD}2)${NC} Deploy default deployment (${CYAN}data/deployments/deployment-1.yaml${NC})"
+  echo -e "  ${BOLD}3)${NC} Browse & deploy deployments (data/deployments/*.yaml)"
+  echo -e "  ${BOLD}4)${NC} Browse & deploy ZIP bundles (data/bundles/*.zip)"
+  echo -e "  ${BOLD}5)${NC} Deploy ALL deployments"
+  echo -e "  ${BOLD}6)${NC} Check Cloud Run service status & active endpoints"
+  echo -e "  ${BOLD}7)${NC} Test proxy traffic (/testproxy)"
+  echo -e "  ${BOLD}8)${NC} Start trace recording"
+  echo -e "  ${BOLD}9)${NC} Stop trace recording & save trace.json"
+  echo -e " ${BOLD}10)${NC} ${CYAN}Open Apigee Emulator Tester Web UI${NC} (/tester/)"
   echo -e "  ${BOLD}Q)${NC} Quit"
   echo ""
 
-  read -r -p "Enter selection [1-12, Q] (default 1): " choice
+  read -r -p "Enter selection [1-10, Q] (default 1): " choice
   choice="${choice:-1}"
 
   case "$choice" in
@@ -1067,38 +1059,32 @@ interactive_menu() {
       deploy_cloudrun_service
       ;;
     2)
-      deploy_proxies_to_cloudrun "proxies/TestProxy.yaml"
+      deploy_proxies_to_cloudrun "data/deployments/deployment-1.yaml"
       ;;
     3)
-      browse_and_deploy "proxies" get_available_proxies "proxies/TestProxy.yaml"
+      browse_and_deploy "deployments" get_available_deployments "data/deployments/deployment-1.yaml"
       ;;
     4)
-      browse_and_deploy "templates" get_available_templates "templates/REST-AI-Completions.yaml"
-      ;;
-    5)
-      browse_and_deploy "features" get_available_features ""
-      ;;
-    6)
       browse_and_deploy "ZIP bundles" get_available_zips ""
       ;;
-    7)
-      local all_tpl=()
-      while IFS= read -r f; do [ -n "$f" ] && all_tpl+=("$f"); done < <(get_available_templates)
-      deploy_proxies_to_cloudrun "${all_tpl[@]}"
+    5)
+      local all_res=()
+      while IFS= read -r f; do [ -n "$f" ] && all_res+=("$f"); done < <(get_available_deployments)
+      deploy_proxies_to_cloudrun "${all_res[@]}"
       ;;
-    8)
+    6)
       check_status
       ;;
-    9)
+    7)
       test_traffic "/testproxy"
       ;;
-    10)
+    8)
       trace_start ""
       ;;
-    11)
+    9)
       trace_stop
       ;;
-    12)
+    10)
       local cr_url
       cr_url=$(get_service_url)
       echo -e "${BOLD}Apigee Emulator Tester UI:${NC} ${GREEN}$cr_url/tester/${NC}"
@@ -1222,12 +1208,10 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -l|--list)
-      echo -e "${BOLD}Available Proxies:${NC}"
-      get_available_proxies
-      echo -e "\n${BOLD}Available Templates:${NC}"
-      get_available_templates
-      echo -e "\n${BOLD}Available Features:${NC}"
-      get_available_features
+      echo -e "${BOLD}Available Deployments in data/deployments/:${NC}"
+      get_available_deployments
+      echo -e "\n${BOLD}Available Bundles in data/bundles/:${NC}"
+      get_available_zips
       exit 0
       ;;
     --project)
@@ -1306,9 +1290,9 @@ if [ -n "$COMMAND" ]; then
       trace_stop
       ;;
     deploy-all)
-      all_tpl=()
-      while IFS= read -r f; do [ -n "$f" ] && all_tpl+=("$f"); done < <(get_available_templates)
-      deploy_proxies_to_cloudrun "${all_tpl[@]}"
+      all_res=()
+      while IFS= read -r f; do [ -n "$f" ] && all_res+=("$f"); done < <(get_available_deployments)
+      deploy_proxies_to_cloudrun "${all_res[@]}"
       ;;
     deploy)
       if [ ${#FILES_TO_DEPLOY[@]} -eq 0 ]; then

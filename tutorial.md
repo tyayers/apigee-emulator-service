@@ -45,15 +45,9 @@ The **Apigee Emulator** provides a complete, local Apigee runtime (Message Proce
 
 The repository [tyayers/apigee-emulator-service](https://github.com/tyayers/apigee-emulator-service) uses **Apigee Templater (AFT)** syntax.
 
-### The Sample Proxy: `TestProxy`
-
-[`proxies/TestProxy.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/proxies/TestProxy.yaml) defines an endpoint listening on basepath `/testproxy` that routes to `https://mocktarget.apigee.net` and executes two policies:
-1. `AM-SetHeader`: Injects a custom header `x-testheader: Hello world!`.
-2. `JS-AddHelloWorld`: A JavaScript step that appends a message parameter or property to the response.
-
 ### The Deployment Manifest: `deployment-1.yaml`
 
-A deployment manifest packages proxies, API products, test applications, and automated test suites together in a single file:
+The deployment manifest [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) packages proxies (`TestProxy`), API products, developer test applications, and automated test suites together in a single file:
 
 ```yaml
 # data/deployments/deployment-1.yaml (Excerpt)

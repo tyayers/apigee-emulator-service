@@ -83,6 +83,7 @@ func (pt *ProxyTester) Execute(req TestRequest) (*TestResponse, error) {
 			Body:           fmt.Sprintf("Connection Error: %v", err),
 			TraceSessionID: traceSessionID,
 			Error:          err.Error(),
+			Request:        &req,
 		}, nil
 	}
 	defer resp.Body.Close()
@@ -101,6 +102,7 @@ func (pt *ProxyTester) Execute(req TestRequest) (*TestResponse, error) {
 		Headers:        respHeaders,
 		Body:           string(respBodyBytes),
 		TraceSessionID: traceSessionID,
+		Request:        &req,
 	}
 
 	// 5. Fetch trace data if trace was enabled

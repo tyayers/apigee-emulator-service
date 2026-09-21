@@ -1,32 +1,31 @@
 [
   {
-    "name": "starter-ai-app",
-    "displayName": "Starter AI App",
-    "developerEmail": "developer@example.com",
-    "status": "approved",
+    "name": "Test App",
+    "displayName": "Test App",
+    "developerEmail": "test@example.com",
     "callbackUrl": "",
     "expiryType": "never",
     "apiProducts": [
-      "StarterAiProduct"
+      "test-product"
     ],
     "credentials": [
       {
-        "consumerKey": "test-api-key-12345",
-        "consumerSecret": "test-secret-12345",
+        "consumerKey": "test-app-key-123",
+        "consumerSecret": "test-app-secret-123",
         "apiProducts": [
           {
-            "apiproduct": "StarterAiProduct",
+            "apiproduct": "test-product",
             "status": "approved"
           }
         ],
         "status": "approved"
       },
       {
-        "consumerKey": "starter-app-key-123",
-        "consumerSecret": "starter-app-secret-123",
+        "consumerKey": "test-api-key-12345",
+        "consumerSecret": "test-secret-12345",
         "apiProducts": [
           {
-            "apiproduct": "StarterAiProduct",
+            "apiproduct": "test-product",
             "status": "approved"
           }
         ],

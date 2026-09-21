@@ -43,6 +43,9 @@
     btnDeploySelected: document.getElementById('btn-deploy-selected'),
     presetSelect: document.getElementById('test-preset-select'),
     btnTestAll: document.getElementById('btn-test-all'),
+    activeTestBanner: document.getElementById('active-test-banner'),
+    activeTestName: document.getElementById('active-test-name'),
+    activeTestDesc: document.getElementById('active-test-desc'),
     reqMethod: document.getElementById('req-method'),
     reqPath: document.getElementById('req-path'),
     reqProxyName: document.getElementById('req-proxy-name'),
@@ -571,14 +574,36 @@
       const resp = await fetch(`${API_BASE}/tests`);
       if (!resp.ok) return;
       const data = await resp.json();
-      state.tests = data || [];
+      
+      // Deduplicate by name and by endpoint (proxy + verb + path)
+      const seenNames = new Set();
+      const seenEndpoints = new Set();
+      const unique = [];
+      (data || []).forEach(t => {
+        const nameKey = (t.name || '').toLowerCase().trim();
+        const endKey = `${(t.proxy || '').toLowerCase()}::${(t.verb || t.method || '').toUpperCase()}::${(t.path || '').toLowerCase()}`;
+        if (!seenNames.has(nameKey) && !seenEndpoints.has(endKey)) {
+          if (nameKey) seenNames.add(nameKey);
+          if (t.proxy) seenEndpoints.add(endKey);
+          unique.push(t);
+        }
+      });
+      state.tests = unique;
+
+      if (!state.selectedTest && state.selectedProxyName) {
+        const matchingTestIdx = state.tests.findIndex(t => t.proxy && t.proxy.toLowerCase() === state.selectedProxyName.toLowerCase());
+        if (matchingTestIdx !== -1) {
+          applyTestDefinition(state.tests[matchingTestIdx]);
+          return;
+        }
+      }
       populateTestsDropdown();
     } catch (err) {
       console.warn('Failed to load tests:', err);
     }
   }
 
-  function populateTestsDropdown() {
+  function populateTestsDropdown(selectedIdx = null) {
     if (!el.presetSelect) return;
     el.presetSelect.innerHTML = '<option value="">-- Load a Test --</option>';
 
@@ -599,7 +624,8 @@
       group.label = `Tests for ${activeProxy}`;
       matchingTests.forEach(({ test, idx }) => {
         const opt = document.createElement('option');
-        opt.value = idx;
+        opt.value = String(idx);
+        if (test.description) opt.title = test.description;
         const assertCount = (test.assertions && test.assertions.length) ? ` [${test.assertions.length} asserts]` : '';
         opt.textContent = `${test.name} (${test.verb || 'GET'})${assertCount}`;
         group.appendChild(opt);
@@ -612,22 +638,54 @@
       group.label = matchingTests.length > 0 ? 'Other Proxy Tests' : 'Available Tests';
       otherTests.forEach(({ test, idx }) => {
         const opt = document.createElement('option');
-        opt.value = idx;
+        opt.value = String(idx);
+        if (test.description) opt.title = test.description;
         const assertCount = (test.assertions && test.assertions.length) ? ` [${test.assertions.length} asserts]` : '';
         opt.textContent = `${test.proxy} > ${test.name} (${test.verb || 'GET'})${assertCount}`;
         group.appendChild(opt);
       });
       el.presetSelect.appendChild(group);
     }
+
+    // Determine target index to select in the dropdown
+    let targetIdx = selectedIdx;
+    if (targetIdx === null || targetIdx === undefined || targetIdx === '') {
+      if (state.selectedTest) {
+        const idx = state.tests.indexOf(state.selectedTest);
+        if (idx !== -1) {
+          targetIdx = idx;
+        } else {
+          const foundIdx = state.tests.findIndex(t =>
+            t.name === state.selectedTest.name &&
+            (!t.proxy || !state.selectedTest.proxy || t.proxy.toLowerCase() === state.selectedTest.proxy.toLowerCase())
+          );
+          if (foundIdx !== -1) targetIdx = foundIdx;
+        }
+      }
+    }
+
+    if (targetIdx !== null && targetIdx !== undefined && targetIdx !== '' && targetIdx !== -1) {
+      el.presetSelect.value = String(targetIdx);
+    } else {
+      el.presetSelect.value = '';
+    }
   }
 
   function handlePresetChange() {
     const idx = el.presetSelect.value;
-    if (idx === '') return;
+    if (idx === '') {
+      state.selectedTest = null;
+      state.selectedPreset = null;
+      if (el.activeTestBanner) el.activeTestBanner.classList.add('hidden');
+      return;
+    }
     const test = state.tests[idx];
     if (!test) return;
 
     applyTestDefinition(test);
+    if (el.presetSelect) {
+      el.presetSelect.value = String(idx);
+    }
     showToast(`Loaded test: ${test.name}`);
   }
 
@@ -680,6 +738,31 @@
     // Populate Assertions
     state.assertions = Array.isArray(test.assertions) ? [...test.assertions] : [];
     renderAssertionsList();
+
+    // Ensure selected test is selected in the dropdown
+    const testIdx = state.tests.indexOf(test);
+    if (testIdx !== -1 && el.presetSelect) {
+      el.presetSelect.value = String(testIdx);
+    }
+
+    // Update Active Test Info Banner
+    if (el.activeTestBanner) {
+      if (test && test.name) {
+        if (el.activeTestName) el.activeTestName.textContent = test.name;
+        if (el.activeTestDesc) {
+          if (test.description) {
+            el.activeTestDesc.textContent = test.description;
+            el.activeTestDesc.classList.remove('hidden');
+          } else {
+            el.activeTestDesc.textContent = '';
+            el.activeTestDesc.classList.add('hidden');
+          }
+        }
+        el.activeTestBanner.classList.remove('hidden');
+      } else {
+        el.activeTestBanner.classList.add('hidden');
+      }
+    }
   }
 
   function renderAssertionsList() {
@@ -729,12 +812,13 @@
   }
 
   function addAssertionPrompt() {
-    const defaultVal = 'status.code == 200';
-    const val = prompt('Enter assertion to validate (e.g. status.code == 200, trace.error == false, body contains google):', defaultVal);
+    const defaultVal = 'response.status == 200';
+    const val = prompt('Enter assertion to validate (e.g. response.status == 200, var.ext1 == "one", response.body.id == 123, request.headers.Authorization exists, var.ext1 matches /one.*/):', defaultVal);
     if (val && val.trim()) {
-      state.assertions.push(val.trim());
+      const parts = val.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+      parts.forEach(p => state.assertions.push(p));
       renderAssertionsList();
-      showToast('Assertion added');
+      showToast(parts.length > 1 ? `${parts.length} assertions added` : 'Assertion added');
     }
   }
 
@@ -757,9 +841,6 @@
     // Refresh history card proxy badge and history records
     fetchTestHistory(proxyName);
 
-    // Refresh tests dropdown grouping for active proxy
-    populateTestsDropdown();
-
     // If autoPopulateTest is enabled, find proxy info or matching test
     if (autoPopulateTest) {
       // Find proxy basePath
@@ -774,15 +855,25 @@
         el.reqPath.value = bp.replace(/^\//, '');
       }
 
-      // Check if there is a test for this proxy
+      // Check if there is a test for this proxy (pre-select the first matching test)
       const matchingTestIdx = state.tests.findIndex(t => t.proxy && t.proxy.toLowerCase() === proxyName.toLowerCase());
       if (matchingTestIdx !== -1) {
-        el.presetSelect.value = matchingTestIdx;
         const test = state.tests[matchingTestIdx];
         if (test) {
           applyTestDefinition(test);
         }
+      } else {
+        // No tests for this proxy: reset test selection and populate empty dropdown
+        state.selectedTest = null;
+        state.selectedPreset = null;
+        if (el.activeTestBanner) el.activeTestBanner.classList.add('hidden');
+        populateTestsDropdown('');
+        state.assertions = [];
+        renderAssertionsList();
       }
+    } else {
+      // Refresh tests dropdown grouping for active proxy
+      populateTestsDropdown();
     }
 
     if (updateUrl) {
@@ -1364,6 +1455,18 @@
         el.reqBody.value = run.request.body || '';
         state.assertions = run.request.assertions || [];
         renderAssertionsList();
+
+        const histTestName = run.testName || (run.test && run.test.name);
+        if (histTestName) {
+          const testIdx = state.tests.findIndex(t => t.name === histTestName);
+          if (testIdx !== -1) {
+            state.selectedTest = state.tests[testIdx];
+            state.selectedPreset = state.tests[testIdx];
+            if (el.presetSelect) {
+              el.presetSelect.value = String(testIdx);
+            }
+          }
+        }
       }
 
       // Apply response

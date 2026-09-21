@@ -49,14 +49,15 @@ type DeploymentConfig struct {
 
 // TestCase represents a pre-configured API test.
 type TestCase struct {
-	Name       string            `json:"name"`
-	Proxy      string            `json:"proxy"`
-	Verb       string            `json:"verb"`
-	Path       string            `json:"path"`
-	Headers    map[string]string `json:"headers"`
-	Payload    string            `json:"payload"`
-	Assertions []string          `json:"assertions,omitempty"`
-	Deployment string            `json:"deployment,omitempty"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Proxy       string            `json:"proxy"`
+	Verb        string            `json:"verb"`
+	Path        string            `json:"path"`
+	Headers     map[string]string `json:"headers"`
+	Payload     string            `json:"payload"`
+	Assertions  []string          `json:"assertions,omitempty"`
+	Deployment  string            `json:"deployment,omitempty"`
 }
 
 // DeployRequest represents payload sent to /tester/api/deploy.
@@ -147,6 +148,7 @@ type TestResponse struct {
 	Passed         bool                   `json:"passed"`
 	TestRunID      string                 `json:"testRunId,omitempty"`
 	Error          string                 `json:"error,omitempty"`
+	Request        *TestRequest           `json:"request,omitempty"`
 }
 
 // AnalyticsSaveResponse represents the response from saving analytics.

@@ -1,19 +1,7 @@
 [
   {
-    "name": "completions-test1",
-    "proxy": "REST-AI-Completions",
-    "verb": "POST",
-    "headers": {
-      "x-api-key": "starter-app-key-123"
-    },
-    "payload": "{\n  \"model\": \"google/gemini-3.8-flash\",\n  \"stream\": true,\n  \"max_tokens\": 100,\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": \"Why is the sky blue?\"\n  }]\n}\n",
-    "assertions": [
-      "status.code == 200"
-    ],
-    "deployment": "ai-deployment-1.yaml"
-  },
-  {
-    "name": "testproxy-hello-world",
+    "name": "testproxy-test1",
+    "description": "This tests if the /testproxy path actually returns a 200.",
     "proxy": "TestProxy",
     "verb": "GET",
     "path": "/testproxy",
@@ -21,6 +9,10 @@
       "x-api-key": "test-api-key-12345"
     },
     "payload": "",
-    "deployment": "default"
+    "deployment": "deployment-1.yaml",
+    "assertions": [
+      "response.status == 200",
+      "request.headers.x-api-key exists"
+    ]
   }
 ]
