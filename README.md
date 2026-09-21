@@ -1,59 +1,57 @@
- t# Apigee Emulator Service Guide
+# Apigee Emulator Service Guide
 
-This repository contains setup scripts, deployment manifests, test data configurations, and tracing tools for developing, testing, and deploying Apigee proxies locally or to **Google Cloud Run** using the **Apigee Local Emulator**.
+This repository provides tools, scripts, and a lightweight web service for building, testing, tracing, and deploying Apigee proxies locally or to **Google Cloud Run** using the **Apigee Local Emulator**.
 
 ---
 
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
-- [1. Creating and Starting the Apigee Emulator Container (Local)](#1-creating-and-starting-the-apigee-emulator-container)
-- [2. Deploying Proxies, Templates, and Deployment Manifests Locally (`deploy.sh`)](#2-deploying-proxies-templates-and-deployment-manifests-locally-deploysh)
-  - [Converting Deployments to Local Assets (`aft -f zip`)](#converting-deployments-to-local-assets-aft--f-zip)
+- [1. Creating and Starting the Apigee Emulator Container](#1-creating-and-starting-the-apigee-emulator-container)
+- [2. Deploying with `deploy.sh` (TestProxy & Deployment Manifests)](#2-deploying-with-deploysh-testproxy--deployment-manifests)
+  - [Deploying TestProxy Directly](#deploying-testproxy-directly)
+  - [Converting Deployment Manifests (`--convert`)](#converting-deployment-manifests---convert)
   - [Deploying Deployment Manifests Directly](#deploying-deployment-manifests-directly)
-  - [CLI & Interactive Options](#cli--interactive-options)
-- [3. Tracing Proxy Executions and Using `trace.html`](#3-tracing-proxy-executions-and-using-tracehtml)
-- [4. Test Commands: OpenAI `/v1/chat/completions` API](#4-local-test-commands-openai-v1chatcompletions-api)
-- [5. Deploying to Google Cloud Run (`cloudrun.sh` & `cloudrun-service.yaml`)](#5-deploying-to-google-cloud-run-cloudrunsh--cloudrun-serviceyaml)
-  - [Architecture & Port Routing](#architecture--port-routing)
-  - [Cloud Run Prerequisites](#cloud-run-prerequisites)
-  - [Step 1: Deploy Service to Cloud Run](#step-1-deploy-service-to-cloud-run)
-  - [Step 2: Deploy Proxies & Bundles to Cloud Run](#step-2-deploy-proxies--bundles-to-cloud-run)
-  - [Step 3: Test Proxy Traffic on Cloud Run](#step-3-test-proxy-traffic-on-cloud-run)
-  - [Step 4: Tracing Proxy Executions on Cloud Run](#step-4-tracing-proxy-executions-on-cloud-run)
-  - [Step 5: Cloud Run Service Management](#step-5-cloud-run-service-management)
-  - [Interactive Menu Reference](#interactive-menu-reference)
-- [6. Apigee Emulator Tester (`apigee-emulator-service` & Web UI)](#6-apigee-emulator-tester-apigee-emulator-service--web-ui)
-  - [Architecture](#architecture-1)
-  - [Running the Tester Locally](#running-the-tester-locally)
-  - [Using the Web Tester UI (`/tester/`)](#using-the-web-tester-ui-tester)
-  - [Backend REST API Reference](#backend-rest-api-reference)
-  - [Containerization & Cloud Run Sidecar Deployment](#containerization--cloud-run-sidecar-deployment)
+- [3. Tracing Proxy Executions with `trace.html`](#3-tracing-proxy-executions-with-tracehtml)
+- [4. Testing TestProxy Endpoints](#4-testing-testproxy-endpoints)
+- [5. Deploying to Google Cloud Run (`cloudrun.sh`)](#5-deploying-to-google-cloud-run-cloudrunsh)
+  - [Architecture Overview](#architecture-overview)
+  - [Deploying the Cloud Run Service](#deploying-the-cloud-run-service)
+  - [Deploying TestProxy to Cloud Run](#deploying-testproxy-to-cloud-run)
+  - [Testing & Tracing on Cloud Run](#testing--tracing-on-cloud-run)
+  - [Cloud Run Management Commands](#cloud-run-management-commands)
+- [6. Apigee Emulator Tester (`/tester/` Web UI & Go Service)](#6-apigee-emulator-tester-tester-web-ui--go-service)
+  - [Running the Tester Service](#running-the-tester-service)
+  - [Web UI Features](#web-ui-features)
+  - [Test Suites & Assertions (from `deployment-1.yaml`)](#test-suites--assertions-from-deployment-1yaml)
+  - [REST API Reference](#rest-api-reference)
 
 ---
 
 ## Prerequisites
 
-- **Docker** installed and running (for local emulator)
+- **Docker** installed and running (for local emulator container)
 - **Google Cloud SDK (`gcloud`)** installed and authenticated (for Cloud Run)
 - **AFT (Apigee Templater)** CLI tool installed
 - **cURL** & **jq**
 - **Python 3** with `pyyaml` (`pip install pyyaml`)
+- **Go 1.21+** (for building the local tester service)
 
 ---
 
 ## 1. Creating and Starting the Apigee Emulator Container
 
-The Apigee Emulator runs as a local Docker container exposing management endpoints and proxy routes.
+The Apigee Emulator runs as a local Docker container exposing management endpoints and runtime proxy traffic.
 
 ### Create the Container
-To create the Docker container instance, run:
+
+Run [`create.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/create.sh):
 
 ```bash
 ./create.sh
 ```
 
-Or run the Docker command directly:
+Or execute the Docker command directly:
 
 ```bash
 docker create --name apigee \
@@ -74,460 +72,167 @@ docker stop apigee
 
 ### Port Mapping
 - **Port `8080`**: Apigee Management API (`/v1/emulator/*`).
-- **Port `8998`**: Apigee Message Processor Runtime (all proxy basepath traffic).
+- **Port `8998`**: Apigee Message Processor Runtime (proxy traffic).
 
 ---
 
-## 2. Deploying Proxies, Templates, and Deployment Manifests Locally (`deploy.sh`)
+## 2. Deploying with `deploy.sh` (TestProxy & Deployment Manifests)
 
-The [`deploy.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/deploy.sh) script compiles AFT YAML files into proxy bundles, generates environment configs, packages local test data, and deploys everything into the local emulator. It supports deploying individual proxies, complete templates, reusable features, or full multi-proxy deployment manifests from `data/deployments/`.
+The [`deploy.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/deploy.sh) script compiles AFT YAML files into proxy bundles, generates environment configs, packages test data, and deploys everything to the emulator.
 
-### Converting Deployments to Local Assets (`aft -f zip`)
+### Deploying TestProxy Directly
 
-You can convert any deployment manifest in `data/deployments/` (e.g. [`ai-deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/ai-deployment-1.yaml) or [`deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml)) into deployable local assets:
+To compile and deploy [`proxies/TestProxy.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/proxies/TestProxy.yaml):
 
 ```bash
-# Convert all deployments in data/deployments/ into local assets
-./deploy.sh --convert
+./deploy.sh proxies/TestProxy.yaml
+```
 
-# Or convert a specific deployment manifest
-./deploy.sh --convert data/deployments/ai-deployment-1.yaml
+This compiles `TestProxy`, packages test data (`products.json`, `developerapps.json`, etc.), resets the emulator, and deploys `TestProxy` to the `test` environment.
+
+---
+
+### Converting Deployment Manifests (`--convert`)
+
+You can convert any deployment manifest (such as [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml)) into deployable local assets:
+
+```bash
+# Convert a specific deployment manifest
+./deploy.sh --convert data/deployments/deployment-1.yaml
+
+# Or convert all deployment manifests in data/deployments/
+./deploy.sh --convert
 ```
 
 #### How Conversion Works:
-1. **Invokes AFT**: Runs `aft -i data/deployments/<file>.yaml -f zip -o <target_dir> --no-animation`.
-2. **Extracts Proxy Bundles**:
-   - Copies generated `*.zip` bundles into [`data/bundles/`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/bundles/) for automated startup deployment by the Go manager service and Cloud Run.
-   - Extracts bundles into `dist/bundle/src/main/apigee/apiproxies/<proxy>/` for packaging into `bundle.zip`.
-   - **Target Endpoint Sanitization**: Adjusts any dangling `<TargetEndpoint>` elements in proxy `<RouteRule>` configurations so the Apigee emulator doesn't reject routes referencing missing target endpoints.
-3. **Synchronizes Test Data**:
-   - Merges generated `products.json`, `developers.json`, and `developerapps.json` (containing API keys like `starter-app-key-123` or `test-api-key-12345`) into `dist/`.
-   - Packages them into `dist/testdata.zip` for immediate deployment to `/v1/emulator/setup/tests`.
+1. Runs `aft -i data/deployments/<file>.yaml -f zip -o <target_dir> --no-animation`.
+2. Copies generated proxy bundles into [`data/bundles/`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/bundles/) for automated startup deployment by the Go service.
+3. Unpacks bundles into `dist/bundle/` and sanitizes target routes.
+4. Merges generated API products, developers, and apps into `dist/` and sanitizes product schemas.
 
 ---
 
 ### Deploying Deployment Manifests Directly
 
-You can also deploy a deployment manifest directly to the local emulator in a single step:
+Deploy [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) in a single step:
 
 ```bash
-# Deploy an entire AI deployment (proxies + products + apps + credentials)
-./deploy.sh data/deployments/ai-deployment-1.yaml
-
-# Deploy basic test deployment
 ./deploy.sh data/deployments/deployment-1.yaml
 ```
 
-When given a deployment YAML, `deploy.sh`:
-1. Compiles each included template or proxy into separate bundles with `aft`.
-2. Registers each proxy into `dist/bundle.zip`.
-3. Merges and updates the API product authorizations so all proxies are immediately authorized.
-4. Resets the local emulator, loads all test data, and deploys all proxies at once.
+When given a deployment manifest, `deploy.sh`:
+1. Compiles the included proxies (`TestProxy`) with `aft`.
+2. Merges products, developers, apps, and credentials (`test-app-key-123`).
+3. Resets the local emulator, loads all test data, and deploys the proxy bundle.
 
 ---
 
-### CLI & Interactive Options
+## 3. Tracing Proxy Executions with `trace.html`
 
-```bash
-# Deploy default TestProxy
-./deploy.sh proxies/TestProxy.yaml
-
-# Deploy a specific AI template
-./deploy.sh templates/REST-AI-Completions.yaml
-
-# Deploy a specific feature
-./deploy.sh features/ai-endpoint-completions.yaml
-
-# Deploy all templates
-./deploy.sh --all
-
-# List all available proxies, templates, features, and deployments
-./deploy.sh --list
-
-# Interactive menu
-./deploy.sh
-```
-
-#### Interactive Menu Options:
-```text
-Select what you would like to deploy to Apigee Emulator:
-  1) proxies/TestProxy.yaml (default)
-  2) Proxies     (browse proxies/*.yaml)
-  3) Templates   (browse templates/*.yaml)
-  4) Features    (browse features/*.yaml)
-  5) Deployments (browse data/deployments/*.yaml)
-  C) Convert data/deployments/ into local assets with aft
-  A) Deploy ALL templates
-```
-
----
-
-### What `deploy.sh` Does Under the Hood
-1. **Compiles Assets**: Uses `aft` to build proxy bundles and unpacks them into `dist/bundle/`.
-2. **Generates Environment Configuration**: Creates minimal `env.json` and `deployments.json` for environment `test`.
-3. **Prepares Dynamic Authorization**: Inspects all compiled proxies and ensures they are mapped in `products.json` operations and LLM operations.
-4. **Deploys Test Data**: Packages local test data files ([`datacollectors.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/datacollectors.json), [`developerapps.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/developerapps.json), [`developers.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/developers.json), [`maps.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/maps.json), [`products.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/products.json)) and posts them to `http://localhost:8080/v1/emulator/setup/tests`.
-5. **Deploys Proxy Bundle**: Packages `bundle.zip` and posts it to `http://localhost:8080/v1/emulator/deploy?environment=test`.
-
----
-
-## 3. Tracing Proxy Executions and Using `trace.html`
-
-The Apigee Emulator includes a built-in tracing facility. You can record execution traces and view them interactively in [`trace.html`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/trace.html).
+The emulator includes built-in debug tracing. You can record execution traces and view them interactively in [`trace.html`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/trace.html).
 
 ### Step 1: Start a Trace Session
-Start a trace session for the active proxy (e.g. `TestProxy` or `REST-AI-Completions`):
 
 ```bash
-./trace_start.sh TestProxy
+./emulator/trace_start.sh TestProxy
 ```
 
-### Step 2: Send Request(s)
-Send API requests to your proxy endpoint (e.g., `http://localhost:8998/testproxy` or `http://localhost:8998/v1/chat/completions`).
-
-### Step 3: Fetch Trace Transactions
-Stop tracing and save recorded transactions to `trace.json`:
+### Step 2: Send Request to Proxy
 
 ```bash
-./trace_stop.sh
+curl -i http://localhost:8998/testproxy
 ```
 
-### Step 4: Inspect in Visualizer (`trace.html`)
-Open [`trace.html`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/trace.html) in any web browser:
-
-- Click **"Open trace.json"** and select `trace.json` (or drag and drop the file).
-- Inspect request details, execution step timelines, policy execution states, OAS validation, KVM lookups, JavaScript variables, and DataCapture metrics.
-
-### Useful Management & Inspection Commands
+### Step 3: Stop Tracing & Fetch Transactions
 
 ```bash
-# Get deployment tree (installed proxies and status)
-curl -s "http://localhost:8080/v1/emulator/tree" | jq .
+./emulator/trace_stop.sh
+```
 
-# Get loaded KVM maps in test environment
-curl -s "http://localhost:8080/v1/emulator/test/maps" | jq .
+This downloads recorded trace transactions and writes them to `emulator/trace.json`.
 
-# Reset emulator (clears deployed proxies & test data)
-curl -s -X POST "http://localhost:8080/v1/emulator/reset"
+### Step 4: Inspect in `trace.html`
+
+Open [`trace.html`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/trace.html) in your browser:
+- Click **"Open trace.json"** and select `emulator/trace.json`.
+- Inspect policy execution steps (`AM-SetHeader`, `JS-AddHelloWorld`), headers, and flow variables.
+
+---
+
+## 4. Testing TestProxy Endpoints
+
+Once `TestProxy` is deployed, it listens on port **8998** with basepath `/testproxy`.
+
+### 1. Basic Request
+
+```bash
+curl -i http://localhost:8998/testproxy
+```
+
+**Expected Response**:
+```http
+HTTP/1.1 200 OK
+x-testheader: Hello world!
+Content-Type: text/plain; charset=utf-8
+
+Hello, Guest! Hello world!
 ```
 
 ---
 
-## 4. Local Test Commands: OpenAI `/v1/chat/completions` API
+### 2. Custom Message Query Parameter
 
-The default test deployment uses the OpenAI Chat Completions proxy (`/v1/chat/completions`).
-
-- **Endpoint**: `http://localhost:8080/v1/chat/completions`
-- **Authentication**: `x-api-key: test-api-key-12345` (configured in `developerapps.json`)
-- **Configured Models** (from `products.json`):
-  - `gemini-3.6-flash`
-  - `claude-sonnet-5`
-  - `gemini-3.6-flash-lite`
-
-Below are `curl` test commands covering operations supported by the OpenAI Chat Completions API specification:
-
-### 1. Basic Chat Completion (Non-Streaming)
+`TestProxy` includes a JavaScript policy (`JS-AddHelloWorld`) that reads the `message` query parameter:
 
 ```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "messages": [
-      {
-        "role": "user",
-        "content": "Explain quantum computing in one concise sentence."
-      }
-    ]
-  }'
+curl -i "http://localhost:8998/testproxy?message=from-Apigee"
+```
+
+**Expected Response**:
+```http
+HTTP/1.1 200 OK
+x-testheader: Hello world!
+
+Hello, Guest! from-Apigee
 ```
 
 ---
 
-### 2. Streaming Chat Completion (`stream: true`)
+### 3. Target JSON Endpoint
 
 ```bash
-curl -i -N -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "stream": true,
-    "messages": [
-      {
-        "role": "user",
-        "content": "Write a short 4-line poem about space exploration."
-      }
-    ]
-  }'
+curl -i http://localhost:8998/testproxy/json
+```
+
+**Expected Response**:
+```json
+{
+  "headers": {
+    "host": "mocktarget.apigee.net",
+    "user-agent": "curl/..."
+  },
+  "message": "Hello world!"
+}
 ```
 
 ---
 
-### 3. System Prompt & Hyperparameter Sampling (`temperature`, `top_p`, `seed`)
+### 4. Authenticated Request (API Key)
+
+Using the test API credential generated from [`deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) or [`developerapps.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/developerapps.json):
 
 ```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "temperature": 0.7,
-    "top_p": 0.95,
-    "seed": 42,
-    "messages": [
-      {
-        "role": "system",
-        "content": "You are a helpful software engineering assistant who answers strictly in bullet points."
-      },
-      {
-        "role": "user",
-        "content": "What are 3 benefits of using microservices?"
-      }
-    ]
-  }'
+curl -i "http://localhost:8998/testproxy" \
+  -H "x-api-key: test-app-key-123"
 ```
 
 ---
 
-### 4. Multi-Turn Conversation History
+## 5. Deploying to Google Cloud Run (`cloudrun.sh`)
 
-```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "messages": [
-      {
-        "role": "system",
-        "content": "You are a helpful assistant."
-      },
-      {
-        "role": "user",
-        "content": "My favorite fruit is mangos."
-      },
-      {
-        "role": "assistant",
-        "content": "Mangos are delicious and full of vitamins! How can I help you today?"
-      },
-      {
-        "role": "user",
-        "content": "What is my favorite fruit?"
-      }
-    ]
-  }'
-```
+You can run the Apigee Emulator on **Google Cloud Run** using a multi-container sidecar architecture.
 
----
-
-### 5. Alternative Model Test: Claude Sonnet 5
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "claude-sonnet-5",
-    "messages": [
-      {
-        "role": "user",
-        "content": "Summarize the theory of relativity in 20 words or less."
-      }
-    ]
-  }'
-```
-
----
-
-### 6. Alternative Model Test: Gemini 3.6 Flash Lite
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash-lite",
-    "messages": [
-      {
-        "role": "user",
-        "content": "Give me a synonym for fast."
-      }
-    ]
-  }'
-```
-
----
-
-### 7. Structured Output / JSON Mode (`response_format`)
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "response_format": { "type": "json_object" },
-    "messages": [
-      {
-        "role": "system",
-        "content": "You are a helpful assistant designed to output JSON."
-      },
-      {
-        "role": "user",
-        "content": "List 3 capitals of European countries in JSON format with keys country and capital."
-      }
-    ]
-  }'
-```
-
----
-
-### 8. Tool / Function Calling (`tools` and `tool_choice`)
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "tools": [
-      {
-        "type": "function",
-        "function": {
-          "name": "get_current_weather",
-          "description": "Get the current weather for a given location",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "location": {
-                "type": "string",
-                "description": "The city and state, e.g. San Francisco, CA"
-              },
-              "unit": {
-                "type": "string",
-                "enum": ["celsius", "fahrenheit"]
-              }
-            },
-            "required": ["location"]
-          }
-        }
-      }
-    ],
-    "tool_choice": "auto",
-    "messages": [
-      {
-        "role": "user",
-        "content": "What is the weather like in Tokyo right now?"
-      }
-    ]
-  }'
-```
-
----
-
-### 9. Submitting Tool Call Output (Function Response)
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "messages": [
-      {
-        "role": "user",
-        "content": "What is the weather like in Tokyo?"
-      },
-      {
-        "role": "assistant",
-        "tool_calls": [
-          {
-            "id": "call_12345",
-            "type": "function",
-            "function": {
-              "name": "get_current_weather",
-              "arguments": "{\"location\": \"Tokyo\"}"
-            }
-          }
-        ]
-      },
-      {
-        "role": "tool",
-        "tool_call_id": "call_12345",
-        "content": "{\"temperature\": \"18C\", \"condition\": \"Sunny\"}"
-      }
-    ]
-  }'
-```
-
----
-
-### 10. Multimodal Input (Text + Image URL)
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "messages": [
-      {
-        "role": "user",
-        "content": [
-          {
-            "type": "text",
-            "text": "What is depicted in this image?"
-          },
-          {
-            "type": "image_url",
-            "image_url": {
-              "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg"
-            }
-          }
-        ]
-      }
-    ]
-  }'
-```
-
----
-
-### 11. Generation Limits & Penalties (`max_tokens`, `stop`, `presence_penalty`, `frequency_penalty`)
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "max_tokens": 50,
-    "presence_penalty": 0.5,
-    "frequency_penalty": 0.5,
-    "stop": ["END", "\n\n"],
-    "messages": [
-      {
-        "role": "user",
-        "content": "Count from 1 to 20 slowly."
-      }
-    ]
-  }'
-```
-
----
-
-## 5. Deploying to Google Cloud Run (`cloudrun.sh` & `cloudrun-service.yaml`)
-
-You can run the Apigee Emulator on **Google Cloud Run** using a multi-container deployment (sidecar architecture). This allows hosting a persistent Apigee Emulator in the cloud to test proxies, automate CI/CD pipeline validations, or share an emulator instance with your team.
-
----
-
-### Architecture & Port Routing
-
-Cloud Run terminates external HTTPS requests on port **443** and forwards traffic to a single designated ingress container port. 
-
-Because the Apigee Emulator listens on two separate internal ports—**8080** for the Management API and **8998** for runtime proxy traffic—we deploy an **Envoy reverse proxy** as the ingress container. Both containers run in the same Cloud Run instance pod and communicate over `localhost`:
+### Architecture Overview
 
 ```
                           Google Cloud Run Service
@@ -535,349 +240,165 @@ Because the Apigee Emulator listens on two separate internal ports—**8080** fo
                       │                                                         │
 Client HTTPS (443) ──>│ [Envoy Container] (Ingress Port: 8000)                  │
                       │   │                                                     │
-                      │   ├── /v1/emulator/* ──────> [Apigee] 127.0.0.1:8080    │
-                      │   │   (Management API)       (Deploy, Reset, Tree, etc.)│
+                      │   ├── /tester/* ─────────────> [Tester] 127.0.0.1:8082   │
+                      │   │   (Web UI & API)                                    │
                       │   │                                                     │
-                      │   ├── x-apigee-target: mgmt ─> [Apigee] 127.0.0.1:8080   │
+                      │   ├── /v1/emulator/* ────────> [Apigee] 127.0.0.1:8080    │
+                      │   │   (Management API)       (Deploy, Reset, Tree)      │
                       │   │                                                     │
-                      │   └── /* (All other paths) ─> [Apigee] 127.0.0.1:8998    │
+                      │   └── /* (All other paths) ──> [Apigee] 127.0.0.1:8998    │
                       │       (Proxy Traffic)        (Message Processor)        │
                       │                                                         │
                       └─────────────────────────────────────────────────────────┘
 ```
 
-#### Key Architecture Specifications ([`cloudrun-service.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/cloudrun-service.yaml))
-
-- **Ingress Container (`envoy`)**:
-  - Image: `docker.io/envoyproxy/envoy:v1.31-latest`
-  - Ingress Port: `8000` (Cloud Run maps external HTTPS port 443 here).
-  - Routes `/v1/emulator/*` and `/emulator/*` to Management (`127.0.0.1:8080`).
-  - Routes all proxy runtime paths (`/*`) to Apigee Message Processor (`127.0.0.1:8998`).
-  - `stream_idle_timeout: 0s` and upstream `timeout: 0s` to support long-running LLM streaming responses (Server-Sent Events).
-  - `per_connection_buffer_limit_bytes: 104857600` (100MB) to allow large proxy bundles and test data uploads without `413 Payload Too Large`.
-  - Native health check endpoint `/healthz` returning direct `200 OK`.
-- **Sidecar Container (`apigee`)**:
-  - Image: `gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1`
-  - Resources: `2000m` CPU limits, `4Gi` RAM.
-  - Startup Probe: TCP check on port `8080` to allow the internal Cassandra datastore 15–25s to initialize before Envoy opens traffic.
-- **Service Annotations**:
-  - `run.googleapis.com/execution-environment: gen2` (Required for multi-container).
-  - `run.googleapis.com/container-dependencies: '{"envoy":["apigee"]}'` (Guarantees Envoy waits for Apigee to be fully healthy).
-  - `autoscaling.knative.dev/minScale: "1"` & `maxScale: "1"` with `run.googleapis.com/cpu-throttling: "false"` (Ensures the container instance remains warm so deployed proxies and Cassandra state are preserved).
-
 ---
 
-### Cloud Run Prerequisites
+### Deploying the Cloud Run Service
 
-Before deploying to Cloud Run, ensure you have:
-
-1. **Google Cloud SDK (`gcloud`)** installed and authenticated:
-   ```bash
-   gcloud auth login
-   gcloud config set project <YOUR_PROJECT_ID>
-   ```
-2. **Cloud Run API** enabled in your GCP project:
-   ```bash
-   gcloud services enable run.googleapis.com
-   ```
-3. Required local tools installed: `aft`, `python3` (with `pyyaml`), `curl`, `zip`, `unzip`, `jq`.
-
----
-
-### Step 1: Deploy Service to Cloud Run
-
-Use [`cloudrun.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/cloudrun.sh) to deploy the Envoy + Apigee multi-container service to Cloud Run:
+Deploy the multi-container configuration to Cloud Run:
 
 ```bash
 ./cloudrun.sh deploy-service
 ```
 
-#### Custom Project, Region, or Service Name
-You can pass custom parameters or set environment variables:
-
+Optional flags:
 ```bash
-# Via CLI flags:
 ./cloudrun.sh deploy-service \
-  --project my-gcp-project \
+  --project <GCP_PROJECT_ID> \
   --region europe-west1 \
   --service apigee-emulator
-
-# Or via environment variables:
-export GCP_PROJECT="my-gcp-project"
-export GCP_REGION="europe-west1"
-export SERVICE_NAME="apigee-emulator"
-./cloudrun.sh deploy-service
 ```
-
-#### What the Command Does:
-1. Deploys the multi-container configuration from [`cloudrun-service.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/cloudrun-service.yaml) via `gcloud run services replace`.
-2. Binds `roles/run.invoker` to `allUsers` to permit direct HTTP access (or informs you if your organization policy enforces authenticated calls).
-3. Polls the Cloud Run HTTPS service URL (`/v1/emulator/tree`) until Apigee passes startup checks.
-4. Caches the resulting Cloud Run service URL in `.cloudrun_url` so future proxy deployments target it automatically.
 
 ---
 
-### Step 2: Deploy Proxies & Bundles to Cloud Run
+### Deploying TestProxy to Cloud Run
 
-The [`cloudrun.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/cloudrun.sh) script automatically handles compilation, packaging, test data injection, and uploading to your Cloud Run emulator. It supports both **AFT YAML files** and **pre-built ZIP bundles**.
-
-#### Deploying AFT YAML Files (Proxies, Templates, Features)
+Deploy [`proxies/TestProxy.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/proxies/TestProxy.yaml) or [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) directly to Cloud Run:
 
 ```bash
-# 1. Deploy the basic test proxy
+# Deploy TestProxy
 ./cloudrun.sh proxies/TestProxy.yaml
 
-# 2. Deploy the OpenAI AI Chat Completions template
-./cloudrun.sh templates/REST-AI-Completions.yaml
-
-# 3. Deploy a specific feature proxy
-./cloudrun.sh features/ai-endpoint-completions.yaml
-
-# 4. Deploy multiple YAML proxies together
-./cloudrun.sh proxies/TestProxy.yaml templates/REST-AI-Completions.yaml
-
-# 5. Deploy ALL templates in the templates/ folder at once
-./cloudrun.sh --all
+# Or deploy deployment-1.yaml
+./cloudrun.sh data/deployments/deployment-1.yaml
 ```
-
-#### Deploying Pre-Built ZIP Bundles
-
-If you already have exported Apigee bundles:
-
-```bash
-# Deploy an Apigee proxy bundle ZIP (containing apiproxy/...)
-./cloudrun.sh dist/TestProxy.zip
-
-# Deploy an Apigee environment bundle ZIP (containing src/main/apigee/...)
-./cloudrun.sh path/to/environment-bundle.zip
-```
-
-#### What Happens During Proxy Deployment:
-1. **Compilation**: YAML files are compiled to Apigee bundles via `aft` (TargetEndpoints are automatically sanitized to prevent routing conflicts).
-2. **Bundle Generation**: Assembles `env.json` and `deployments.json` for environment `test`.
-3. **Dynamic API Product Authorization**: Inspects all deployed proxies and injects them into [`products.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/products.json) with appropriate model configurations so that the test API key is authorized immediately.
-4. **Emulator Reset & Setup**: Calls `POST <CLOUDRUN_URL>/v1/emulator/reset` and uploads [`testdata.zip`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/dist/testdata.zip) to `<CLOUDRUN_URL>/v1/emulator/setup/tests`.
-5. **Deployment**: Uploads `bundle.zip` to `<CLOUDRUN_URL>/v1/emulator/deploy?environment=test`.
-6. **Summary**: Queries `<CLOUDRUN_URL>/v1/emulator/tree` and prints all active endpoints on Cloud Run.
 
 ---
 
-### Step 3: Test Proxy Traffic on Cloud Run
+### Testing & Tracing on Cloud Run
 
-Once deployed, traffic is routed through Envoy directly to the Apigee Message Processor on Cloud Run.
-
-#### Using the Built-In Test Helper:
+#### 1. Test Proxy Traffic
 
 ```bash
+# Test using the built-in helper
 ./cloudrun.sh test /testproxy
-```
 
-#### Using `curl` Directly with Cloud Run HTTPS URL:
-
-```bash
-# Retrieve the service URL
+# Or test directly with curl
 CLOUDRUN_URL=$(./cloudrun.sh url)
-
-# 1. Test basic proxy
-curl -i "$CLOUDRUN_URL/testproxy" \
-  -H "x-api-key: test-api-key-12345"
-
-# 2. Test OpenAI Chat Completions (REST-AI-Completions proxy)
-curl -i -X POST "$CLOUDRUN_URL/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "messages": [
-      {
-        "role": "user",
-        "content": "Hello from Cloud Run!"
-      }
-    ]
-  }'
-
-# 3. Test Streaming SSE Chat Completion (timeout: 0s supported by Envoy)
-curl -N -i -X POST "$CLOUDRUN_URL/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: test-api-key-12345" \
-  -d '{
-    "model": "gemini-3.6-flash",
-    "stream": true,
-    "messages": [
-      {
-        "role": "user",
-        "content": "Tell me a short poem about the cloud."
-      }
-    ]
-  }'
+curl -i "$CLOUDRUN_URL/testproxy" -H "x-api-key: test-app-key-123"
 ```
 
-#### Authenticated Cloud Run Services (`--auth`)
-If your organization requires IAM authentication (blocks `allUsers`), add `--auth` to automatically attach a GCP identity token:
+#### 2. Trace on Cloud Run
 
 ```bash
-./cloudrun.sh test /testproxy --auth
-```
-Or with manual `curl`:
-```bash
-curl -i "$CLOUDRUN_URL/testproxy" \
-  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-  -H "x-api-key: test-api-key-12345"
-```
-
----
-
-### Step 4: Tracing Proxy Executions on Cloud Run
-
-You can record execution traces on Cloud Run and visualize them locally in [`trace.html`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/trace.html).
-
-#### 1. Start Trace Session on Cloud Run
-```bash
+# Start trace session
 ./cloudrun.sh trace-start TestProxy
-# (Or omit proxy name to auto-detect the active proxy)
-```
 
-#### 2. Send Test Traffic
-```bash
+# Send test traffic
 ./cloudrun.sh test /testproxy
-# Or send your curl request to $CLOUDRUN_URL
-```
 
-#### 3. Stop Trace & Download `trace.json`
-```bash
+# Stop trace session and download trace.json
 ./cloudrun.sh trace-stop
 ```
-This fetches all trace transactions from Cloud Run and writes them to [`trace.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/trace.json).
-
-#### 4. Visualize Transactions
-Open [`trace.html`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/trace.html) in your browser:
-```bash
-# On Linux:
-xdg-open trace.html
-
-# On macOS:
-open trace.html
-```
-Click **"Open trace.json"** and select `trace.json` to inspect step-by-step policy execution timelines, latency, and variables.
 
 ---
 
-### Step 5: Cloud Run Service Management
+### Cloud Run Management Commands
 
 | Command | Description |
 |---|---|
-| `./cloudrun.sh status` | Check service health (`/healthz`) and list deployed proxies (`/v1/emulator/tree`). |
-| `./cloudrun.sh url` | Print the active Cloud Run service HTTPS URL. |
-| `./cloudrun.sh logs` | Tail live logs from both Envoy and Apigee containers in Cloud Run. |
-| `./cloudrun.sh reset` | Clear all deployed proxies and test data from the Cloud Run emulator. |
-| `./cloudrun.sh delete` | Teardown and delete the Cloud Run service from your GCP project. |
-| `./cloudrun.sh --list` | List all available local proxies, templates, and features. |
+| `./cloudrun.sh status` | Check service health and list deployed proxies |
+| `./cloudrun.sh url` | Print the active Cloud Run HTTPS URL |
+| `./cloudrun.sh logs` | View live container logs |
+| `./cloudrun.sh reset` | Clear deployed proxies and test data |
+| `./cloudrun.sh delete` | Teardown Cloud Run service |
 
 ---
 
-### Interactive Menu Reference
+## 6. Apigee Emulator Tester (`/tester/` Web UI & Go Service)
 
-Running [`./cloudrun.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/cloudrun.sh) with no arguments launches an interactive terminal interface:
+[`apigee-emulator-service`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/main.go) is a lightweight Go service that provides automated bundle deployment, a test runner, and a developer Web UI (**"Apigee Emulator Tester"**).
 
-```text
-================================================================
-             Apigee Emulator on Cloud Run Menu                 
-================================================================
-Current Service URL: https://apigee-emulator-xxxxxx-ew.a.run.app
-
-  1) Deploy Containers to Cloud Run (Envoy + Apigee Emulator)
-  2) Deploy default proxy (proxies/TestProxy.yaml)
-  3) Browse & deploy proxies (proxies/*.yaml)
-  4) Browse & deploy templates (templates/*.yaml)
-  5) Browse & deploy features (features/*.yaml)
-  6) Browse & deploy ZIP bundles (dist/*.zip)
-  7) Deploy ALL templates
-  8) Check Cloud Run service status & active endpoints
-  9) Test proxy traffic (/testproxy)
- 10) Start trace recording
- 11) Stop trace recording & save trace.json
- 12) Open Apigee Emulator Tester Web UI (/tester/)
-  Q) Quit
-
-Enter selection [1-12, Q] (default 1):
-```
-
----
-
-### 6. Apigee Emulator Tester (`apigee-emulator-service` & Web UI)
-
-[`apigee-emulator-service`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/main.go) is a lightweight Go service (zero heavy external dependencies) that provides programmatic management, deployment orchestration, and an interactive developer Web UI (**"Apigee Emulator Tester"**) for the Apigee Local Emulator.
-
-### Features Overview
-
-- **Interactive Web UI (`/tester/`)**: Clean, responsive developer interface inspired by Postman.
-- **Deep Linking & Shareable URLs**: Pass `?proxy=ProxyName` in the URL to automatically select and configure a proxy. Clicking any proxy immediately updates the URL for seamless sharing and refreshing.
-- **Automatic Startup Deployment**:
-  - Automatically verifies emulator and Cassandra readiness on service start and deploys all pre-packaged bundles (`data/bundles/*.zip`) without manual user interaction.
-  - Displays a clean deployment wait overlay in the frontend while startup deployment is in progress.
-  - Automatically sanitizes proxy bundles (ensuring compatible `<RouteRule>` endpoints and removing invalid local configs).
-  - Synchronizes dynamic test environment configs, API products, and developer app credentials (`starter-app-key-123`, `test-api-key-12345`).
-- **Test Suites, Assertions & Test Runner**:
-  - Automatically loads test suites defined in deployment manifests ([`data/deployments/*.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/)).
-  - Replaces generic presets with named test cases in the UI.
-  - Displays expected test assertions (HTTP status code, JSON response body path matches, error codes, latency limits).
-  - **"Test All" Runner**: One-click execution of all tests across all proxies, executing each call, recording trace transactions, and evaluating all assertions.
-  - **Test Run History**: In-memory history tracking per proxy, showing pass/fail status, assertion breakdowns, execution latency, and downloadable test run reports and traces.
-- **Built-in Rich Vertical Trace Visualizer**:
-  - Automatically activates an Apigee debug trace session when sending test traffic.
-  - Parses transaction events into a vertical execution pipeline (Request PreFlow &rarr; Target Request &rarr; Target Response &rarr; Client Response).
-  - Shows total policy execution time, status, and target flow.
-  - Click any policy step (e.g. `OAS-Validation`, `KVM-LoadConfig`, `VA-VerifyKey`, `JS-TransformPayload`) to toggle an expanded inspector showing all extracted variables, properties, and runtime conditions.
-  - Includes a Raw JSON viewer and one-click download for `trace.json`.
-
----
-
-### Running the Service Locally
-
-#### 1. Compile and Run with Go
+### Running the Tester Service
 
 ```bash
 # Build the binary
 go build -o apigee-emulator-service .
 
-# Start the service (runs on port 8085 by default or configured via PORT)
+# Run the service (default port 8085)
 PORT=8085 ./apigee-emulator-service
 ```
-
-#### 2. Access the Web UI
 
 Open your browser to:
 ```text
 http://localhost:8085/tester/
 ```
-*(Note: `/manage/` automatically redirects to `/tester/` for backward compatibility).*
-
-Quick links available from the UI sidebar:
-- Built-in visualizer: [`http://localhost:8085/tester/trace.html`](http://localhost:8085/tester/trace.html)
-- JSON trace tree: [`http://localhost:8085/tester/viewer.html`](http://localhost:8085/tester/viewer.html)
-- Apigee Emulator Tree: [`http://localhost:8080/v1/emulator/tree`](http://localhost:8080/v1/emulator/tree)
 
 ---
 
-### Backend REST API Reference
+### Web UI Features
 
-The service exposes the following endpoints under `/tester/api` (with `/manage/api` maintained for backward compatibility):
+- **Automatic Startup Deployment**: Automatically deploys all bundles in `data/bundles/*.zip` on startup and displays a waiting overlay while deployment completes.
+- **Deep Linking**: Share and bookmark URLs like `http://localhost:8085/tester/?proxy=TestProxy`.
+- **Vertical Trace Visualizer**: Step-by-step transaction inspector (Request &rarr; Target Request &rarr; Target Response &rarr; Response). Click any policy step to inspect flow variables and execution timing.
+- **Test Runner & History**: Run tests, evaluate assertions, and review historical test runs with downloadable results and traces.
+
+---
+
+### Test Suites & Assertions (from `deployment-1.yaml`)
+
+Deployment manifests define test collections at the end of the file:
+
+```yaml
+tests:
+  - name: testproxy-test1
+    proxy: TestProxy
+    path: /testproxy
+    method: GET
+    headers:
+      x-api-key: test-api-key-12345
+    assertions:
+      - status.code == 200
+```
+
+In the Web UI:
+- Selecting **TestProxy** displays available tests from the dropdown.
+- Expected assertions are shown (e.g. `status.code == 200`).
+- Clicking **"Send Request"** executes the test and captures live trace data.
+- Clicking **"Test All"** runs the complete test suite across all proxies and records the run in the test history.
+
+---
+
+### REST API Reference
+
+All endpoints are available under `/tester/api/`:
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/healthz` | Health check endpoint returning `{"status": "ok"}`. |
-| `GET` | `/tester/api/status` | Current status of emulator, Cassandra readiness, deployed proxies, available bundles, and startup auto-deploy state. |
-| `GET` | `/tester/api/bundles` | List all packaged ZIP bundles in `data/bundles/`. |
-| `GET` | `/tester/api/tests` | List test suites and assertions extracted from `data/deployments/*.yaml`. |
-| `POST` | `/tester/api/tests/run` | Execute all test cases or proxy-specific tests, evaluate trace assertions, and record run history. |
-| `GET` | `/tester/api/tests/history` | List test run history records (optional `?proxy=ProxyName` filter). |
-| `GET` | `/tester/api/tests/history/:id` | Get detailed test run results, assertion checks, and full trace data. |
-| `DELETE` | `/tester/api/tests/history` | Clear test run history. |
-| `POST` | `/tester/api/deploy` | Deploys selected or all bundles and synchronizes test data (accepts `{"bundles": ["..."], "reset": true}`). |
-| `POST` | `/tester/api/reset` | Resets Apigee emulator state to a clean slate. |
-| `POST` | `/tester/api/test` | Executes an HTTP request against the Apigee runtime port with optional automated trace capture. |
-| `POST` | `/tester/api/trace/start` | Initiates an Apigee debug trace session for a specific proxy. |
-| `GET` | `/tester/api/trace/transactions` | Retrieves recorded transaction trace entries for a session ID. |
+| `GET` | `/healthz` | Service health check |
+| `GET` | `/tester/api/status` | Emulator & Cassandra readiness, deployed proxies, bundles |
+| `GET` | `/tester/api/bundles` | List packaged ZIP bundles in `data/bundles/` |
+| `GET` | `/tester/api/tests` | List test suites and assertions from deployment manifests |
+| `POST` | `/tester/api/tests/run` | Execute tests, evaluate assertions, and record run history |
+| `GET` | `/tester/api/tests/history` | List test run history (optional `?proxy=TestProxy`) |
+| `GET` | `/tester/api/tests/history/:id` | Get detailed test run results, assertions, and full trace |
+| `DELETE` | `/tester/api/tests/history` | Clear test history |
+| `POST` | `/tester/api/deploy` | Deploy selected or all bundles (`{"bundles": ["..."], "reset": true}`) |
+| `POST` | `/tester/api/reset` | Reset emulator state |
+| `POST` | `/tester/api/test` | Execute an HTTP request against the proxy runtime with trace capture |
+| `POST` | `/tester/api/trace/start` | Start debug trace session for a proxy |
+| `GET` | `/tester/api/trace/transactions` | Retrieve recorded trace transactions |
 
 #### Example: Deploy All Bundles via API
 
@@ -887,52 +408,10 @@ curl -X POST http://localhost:8085/tester/api/deploy \
   -d '{"reset": true}'
 ```
 
-#### Example: Execute Test Request with Trace Capture
+#### Example: Run Proxy Tests via API
 
 ```bash
-curl -X POST http://localhost:8085/tester/api/test \
+curl -X POST http://localhost:8085/tester/api/tests/run \
   -H "Content-Type: application/json" \
-  -d '{
-    "proxy": "TestProxy",
-    "method": "GET",
-    "path": "/testproxy",
-    "headers": {
-      "x-api-key": "test-api-key-12345"
-    },
-    "recordTrace": true
-  }'
-```
-
----
-
-### Containerization & Cloud Run Sidecar Deployment
-
-The service is packaged as a lightweight Docker container based on `alpine:3.19` using multi-stage Go compilation:
-
-- **Image Dockerfile**: [`Dockerfile`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/Dockerfile)
-- **Packaged Assets**: Pre-compiled bundles in `/app/data/bundles/`, test presets in `/app/data/deployments/`, static UI in `/app/public/`, and test environment definitions.
-
-In Cloud Run, it runs as a sidecar container alongside `apigee` and `envoy`:
-
-```text
-                  Cloud Run Service (Port 443 / 8000)
-                                   │
-                                   ▼
-                    ┌───────────────────────────────┐
-                    │    Envoy Ingress Container    │
-                    └───────┬───────────────┬───────┘
-                            │               │
-         ┌──────────────────┴──┐         ┌──┴──────────────────┐
-         │ /tester, /manage    │         │ /v1/emulator/* (8080)
-         │                     │         │ /* (Runtime 8998)   │
-         ▼                     ▼         ▼                     ▼
-┌───────────────────────────────┐     ┌───────────────────────────────┐
-│     Tester Sidecar (8082)     │     │    Apigee Emulator Sidecar    │
-│  (UI, Test Runner, Bundles)   │     │ (Management & Message Proc)   │
-└───────────────────────────────┘     └───────────────────────────────┘
-```
-
-When deployed to Cloud Run, access the tester directly at:
-```text
-https://<cloud-run-service-url>/tester/
+  -d '{"proxy": "TestProxy"}'
 ```
