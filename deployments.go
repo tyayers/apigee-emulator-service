@@ -96,6 +96,23 @@ func (dm *DeploymentManager) ListDeployments() ([]DeploymentConfig, error) {
 							tc.Headers[k] = fmt.Sprintf("%v", v)
 						}
 					}
+					if aList, ok := tMap["assertions"].([]interface{}); ok {
+						for _, a := range aList {
+							if s, ok := a.(string); ok && strings.TrimSpace(s) != "" {
+								tc.Assertions = append(tc.Assertions, strings.TrimSpace(s))
+							}
+						}
+					}
+					if tc.Path == "" {
+						tc.Path = defaultPathForProxy(tc.Proxy)
+					}
+					if tc.Verb == "" {
+						if tc.Payload != "" {
+							tc.Verb = "POST"
+						} else {
+							tc.Verb = "GET"
+						}
+					}
 					tests = append(tests, tc)
 				}
 			}
@@ -151,12 +168,13 @@ func (dm *DeploymentManager) LoadAllTests() ([]TestCase, error) {
 	if len(allTests) == 0 {
 		allTests = []TestCase{
 			{
-				Name:    "testproxy-get",
-				Proxy:   "TestProxy",
-				Verb:    "GET",
-				Path:    "/testproxy",
-				Headers: map[string]string{"x-api-key": "test-api-key-12345"},
-				Payload: "",
+				Name:       "testproxy-get",
+				Proxy:      "TestProxy",
+				Verb:       "GET",
+				Path:       "/testproxy",
+				Headers:    map[string]string{"x-api-key": "test-api-key-12345"},
+				Payload:    "",
+				Assertions: []string{"status.code == 200"},
 			},
 			{
 				Name:  "chat-completions-gemini-3.8-flash",
@@ -167,7 +185,8 @@ func (dm *DeploymentManager) LoadAllTests() ([]TestCase, error) {
 					"x-api-key":    "starter-app-key-123",
 					"Content-Type": "application/json",
 				},
-				Payload: `{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"Hello from Apigee Emulator Manager!"}]}`,
+				Payload:    `{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"Hello from Apigee Emulator Manager!"}]}`,
+				Assertions: []string{"status.code == 200"},
 			},
 			{
 				Name:  "chat-completions-streaming",
@@ -178,10 +197,35 @@ func (dm *DeploymentManager) LoadAllTests() ([]TestCase, error) {
 					"x-api-key":    "starter-app-key-123",
 					"Content-Type": "application/json",
 				},
-				Payload: `{"model":"gemini-3.8-flash","stream":true,"messages":[{"role":"user","content":"Count from 1 to 5."}]}`,
+				Payload:    `{"model":"gemini-3.8-flash","stream":true,"messages":[{"role":"user","content":"Count from 1 to 5."}]}`,
+				Assertions: []string{"status.code == 200"},
 			},
 		}
 	}
 
 	return allTests, nil
+}
+
+func defaultPathForProxy(proxy string) string {
+	switch strings.TrimSpace(proxy) {
+	case "REST-AI-Completions":
+		return "/v1/chat/completions"
+	case "REST-AI-Messages":
+		return "/v1/messages"
+	case "REST-AI-GenerateContent":
+		return "/v1beta/models"
+	case "REST-AI-Interactions":
+		return "/v1/interactions"
+	case "REST-AI-Embeddings":
+		return "/v1/embeddings"
+	case "REST-AI-Images":
+		return "/v1/images/generations"
+	case "TestProxy":
+		return "/testproxy"
+	default:
+		if proxy != "" {
+			return "/" + strings.ToLower(proxy)
+		}
+		return "/"
+	}
 }

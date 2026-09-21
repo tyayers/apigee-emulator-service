@@ -297,24 +297,22 @@ deploy_cloudrun_service() {
   if command -v aft &>/dev/null; then
     echo -e "${BLUE}Compiling proxy bundles from data/deployments/ with aft...${NC}"
     mkdir -p "$ROOT_DIR/data/bundles"
-    for dep_yaml in "$ROOT_DIR"/data/deployments/*.yaml; do
+    for dep_yaml in "$ROOT_DIR"/data/deployments/*.yaml "$ROOT_DIR"/data/deployments/*.yml; do
       if [ -f "$dep_yaml" ]; then
-        python3 -c "
-import yaml, os, subprocess
-try:
-    with open('$dep_yaml') as f:
-        d = yaml.safe_load(f)
-    templates = d.get('templates', []) if d else []
-    for tpl in templates:
-        tpl_path = os.path.join('$ROOT_DIR', 'templates', tpl)
-        if os.path.exists(tpl_path):
-            name = os.path.splitext(tpl)[0]
-            out_zip = os.path.join('$ROOT_DIR', 'data', 'bundles', f'{name}.zip')
-            print(f'  Compiling {name} -> {out_zip}')
-            subprocess.run(['aft', '-i', tpl_path, '-o', out_zip, '--no-animation'], check=False)
-except Exception as e:
-    print(f'Warning parsing {dep_yaml}: {e}')
-"
+        local dep_base
+        dep_base="$(basename "$dep_yaml")"
+        echo -e "  Compiling deployment: $dep_base"
+        local tmp_dep_dir
+        tmp_dep_dir=$(mktemp -d /tmp/aft-cr-dep-XXXXXX)
+        if aft -i "$dep_yaml" -f zip -o "$tmp_dep_dir" --no-animation; then
+          for pzip in "$tmp_dep_dir"/*.zip; do
+            if [ -f "$pzip" ]; then
+              cp "$pzip" "$ROOT_DIR/data/bundles/"
+              echo -e "  • Bundle created: $(basename "$pzip")"
+            fi
+          done
+        fi
+        rm -rf "$tmp_dep_dir"
       fi
     done
     if [ -f "$ROOT_DIR/proxies/TestProxy.yaml" ]; then
@@ -468,6 +466,39 @@ except Exception as e:
 # ------------------------------------------------------------------------------
 # 3. Proxy & Bundle Deployment to Cloud Run
 # ------------------------------------------------------------------------------
+sanitize_target_endpoints() {
+  local target_dir="$1"
+  python3 -c "
+import glob, os, xml.etree.ElementTree as ET
+
+td = '$target_dir/apiproxy'
+target_xmls = glob.glob(f'{td}/targets/*.xml')
+targets = [os.path.splitext(os.path.basename(f))[0] for f in target_xmls]
+
+for proxy_file in glob.glob(f'{td}/proxies/*.xml'):
+    try:
+        tree = ET.parse(proxy_file)
+        root = tree.getroot()
+        changed = False
+        for rr in root.findall('RouteRule'):
+            te = rr.find('TargetEndpoint')
+            if te is not None and te.text and te.text not in targets:
+                if 'googlecloud' in targets:
+                    te.text = 'googlecloud'
+                    changed = True
+                elif len(targets) > 0:
+                    te.text = targets[0]
+                    changed = True
+                else:
+                    rr.remove(te)
+                    changed = True
+        if changed:
+            tree.write(proxy_file, encoding='utf-8', xml_declaration=True)
+    except Exception as e:
+        print(f'Warning during sanitization of {proxy_file}: {e}')
+"
+}
+
 deploy_proxies_to_cloudrun() {
   local targets=("$@")
   check_proxy_prereqs
@@ -586,58 +617,103 @@ with zipfile.ZipFile(zip_path, 'r') as z:
     # Case B: YAML Template / Proxy / Feature Deployment (aft)
     # --------------------------------------------------------------------------
     elif [[ "$target" == *.yaml || "$target" == *.yml ]]; then
-      local proxy_name
-      proxy_name=$(python3 -c "
+      local is_deployment
+      is_deployment=$(python3 -c "
+import yaml
+try:
+    with open('$target') as f:
+        d = yaml.safe_load(f)
+    if isinstance(d, dict) and (d.get('type') == 'deployment' or 'templates' in d or 'deployments' in '$target'):
+        print('true')
+    else:
+        print('false')
+except:
+    print('false')
+")
+      if [ "$is_deployment" = "true" ]; then
+        echo -e "\n${BLUE}Compiling deployment from '$target' with aft...${NC}"
+        local tmp_dep_dir
+        tmp_dep_dir=$(mktemp -d /tmp/aft-cr-dep-XXXXXX)
+        if aft -i "$target" -f zip -o "$tmp_dep_dir" --no-animation; then
+          for pzip in "$tmp_dep_dir"/*.zip; do
+            if [ -f "$pzip" ]; then
+              local pname
+              pname="$(basename "$pzip" .zip)"
+              local target_proxy_dir="$proxies_dir/$pname"
+              mkdir -p "$target_proxy_dir"
+              unzip -q -o "$pzip" -d "$target_proxy_dir"
+              sanitize_target_endpoints "$target_proxy_dir"
+              deployed_proxies+=("$pname")
+              echo -e "${GREEN}✓ Successfully compiled $pname from deployment${NC}"
+            fi
+          done
+          # Merge test data into dist_dir
+          python3 -c "
+import json, os
+for fname in ['products.json', 'developers.json', 'developerapps.json']:
+    src = os.path.join('$tmp_dep_dir', fname)
+    dst = os.path.join('$dist_dir', fname)
+    if os.path.exists(src):
+        try:
+            with open(src) as f: s_data = json.load(f)
+            d_data = []
+            if os.path.exists(dst):
+                with open(dst) as f: d_data = json.load(f)
+            elif os.path.exists(os.path.join('$ROOT_DIR', fname)):
+                with open(os.path.join('$ROOT_DIR', fname)) as f: d_data = json.load(f)
+            key = 'name' if fname != 'developers.json' else 'email'
+            merged = {item.get(key): item for item in d_data if isinstance(item, dict) and key in item}
+            for item in s_data:
+                if isinstance(item, dict) and key in item:
+                    merged[item[key]] = item
+
+            if fname == 'products.json':
+                for prod in merged.values():
+                    envs = prod.get('environments', [])
+                    if isinstance(envs, list):
+                        if 'test' not in envs: envs.append('test')
+                    else: envs = ['test']
+                    prod['environments'] = envs
+                    if 'operationGroup' in prod or 'llmOperationGroup' in prod:
+                        prod.pop('proxies', None)
+                        prod.pop('apiResources', None)
+
+            with open(dst, 'w') as f:
+                json.dump(list(merged.values()), f, indent=2)
+            print(f'  • Merged {fname} from deployment')
+        except Exception as e:
+            print(f'  • Warning merging {fname}: {e}')
+"
+        else
+          echo -e "${RED}Error: Failed to compile deployment $target with aft.${NC}" >&2
+          rm -rf "$tmp_dep_dir"
+          exit 1
+        fi
+        rm -rf "$tmp_dep_dir"
+      else
+        local proxy_name
+        proxy_name=$(python3 -c "
 import yaml
 with open('$target') as f:
     data = yaml.safe_load(f)
 print(data.get('name', '') if isinstance(data, dict) else '')
 ")
-      if [ -z "$proxy_name" ]; then
-        proxy_name="$(basename "$target" .yaml)"
-        proxy_name="$(basename "$proxy_name" .yml)"
+        if [ -z "$proxy_name" ]; then
+          proxy_name="$(basename "$target" .yaml)"
+          proxy_name="$(basename "$proxy_name" .yml)"
+        fi
+
+        echo -e "\n${BLUE}Compiling proxy '${BOLD}$proxy_name${NC}${BLUE}' from '$target'...${NC}"
+        local zip_path="$dist_dir/$proxy_name.zip"
+        aft -i "$target" -o "$zip_path" --no-animation
+
+        local target_proxy_dir="$proxies_dir/$proxy_name"
+        mkdir -p "$target_proxy_dir"
+        unzip -q -o "$zip_path" -d "$target_proxy_dir"
+        sanitize_target_endpoints "$target_proxy_dir"
+        deployed_proxies+=("$proxy_name")
+        echo -e "${GREEN}✓ Successfully compiled $proxy_name${NC}"
       fi
-
-      echo -e "\n${BLUE}Compiling proxy '${BOLD}$proxy_name${NC}${BLUE}' from '$target'...${NC}"
-      local zip_path="$dist_dir/$proxy_name.zip"
-      aft -i "$target" -o "$zip_path" --no-animation
-
-      local target_proxy_dir="$proxies_dir/$proxy_name"
-      mkdir -p "$target_proxy_dir"
-      unzip -q -o "$zip_path" -d "$target_proxy_dir"
-
-      # Sanitize dangling target endpoints
-      python3 -c "
-import glob, os, xml.etree.ElementTree as ET
-
-target_dir = '$target_proxy_dir/apiproxy'
-target_xmls = glob.glob(f'{target_dir}/targets/*.xml')
-targets = [os.path.splitext(os.path.basename(f))[0] for f in target_xmls]
-
-for proxy_file in glob.glob(f'{target_dir}/proxies/*.xml'):
-    try:
-        tree = ET.parse(proxy_file)
-        root = tree.getroot()
-        changed = False
-        for rr in root.findall('RouteRule'):
-            te = rr.find('TargetEndpoint')
-            if te is not None and te.text and te.text not in targets:
-                if 'googlecloud' in targets:
-                    te.text = 'googlecloud'
-                    changed = True
-                elif len(targets) > 0:
-                    te.text = targets[0]
-                    changed = True
-                else:
-                    rr.remove(te)
-                    changed = True
-        if changed:
-            tree.write(proxy_file, encoding='utf-8', xml_declaration=True)
-    except Exception as e:
-        print(f'Warning during sanitization of {proxy_file}: {e}')
-"
-      deployed_proxies+=("$proxy_name")
-      echo -e "${GREEN}✓ Successfully compiled $proxy_name${NC}"
     fi
   done
 
@@ -675,17 +751,35 @@ EOF
 
   # Prepare dynamic products.json ensuring all deployed proxies are authorized
   python3 -c "
-import json
+import json, os
 
-with open('$ROOT_DIR/products.json') as f:
+prod_path = '$dist_dir/products.json' if os.path.exists('$dist_dir/products.json') else '$ROOT_DIR/products.json'
+with open(prod_path) as f:
     products = json.load(f)
 
 proxies = json.loads('''$proxies_json''')
 
 for prod in products:
-    op_group = prod.get('operationGroup', {})
+    envs = prod.get('environments', [])
+    if isinstance(envs, list):
+        if 'test' not in envs: envs.append('test')
+    else: envs = ['test']
+    prod['environments'] = envs
+
+    # In Apigee, if operationGroup or llmOperationGroup is set,
+    # proxies and apiResources MUST NOT be set
+    prod.pop('proxies', None)
+    prod.pop('apiResources', None)
+
+    op_group = prod.get('operationGroup')
+    if not isinstance(op_group, dict):
+        op_group = {'operationConfigType': 'proxy', 'operationConfigs': []}
+        prod['operationGroup'] = op_group
     existing_ops = op_group.get('operationConfigs', [])
-    existing_sources = {c.get('apiSource') for c in existing_ops}
+    if not isinstance(existing_ops, list):
+        existing_ops = []
+        op_group['operationConfigs'] = existing_ops
+    existing_sources = {c.get('apiSource') for c in existing_ops if isinstance(c, dict)}
 
     for p in proxies:
         if p not in existing_sources:
@@ -696,9 +790,15 @@ for prod in products:
             })
             existing_sources.add(p)
 
-    llm_group = prod.get('llmOperationGroup', {})
+    llm_group = prod.get('llmOperationGroup')
+    if not isinstance(llm_group, dict):
+        llm_group = {'operationConfigType': 'proxy', 'operationConfigs': []}
+        prod['llmOperationGroup'] = llm_group
     existing_llm_ops = llm_group.get('operationConfigs', [])
-    existing_llm_sources = {c.get('apiSource') for c in existing_llm_ops}
+    if not isinstance(existing_llm_ops, list):
+        existing_llm_ops = []
+        llm_group['operationConfigs'] = existing_llm_ops
+    existing_llm_sources = {c.get('apiSource') for c in existing_llm_ops if isinstance(c, dict)}
 
     for p in proxies:
         if p not in existing_llm_sources:
@@ -710,6 +810,39 @@ for prod in products:
                 })
             existing_llm_sources.add(p)
 
+# Ensure all products referenced by developer apps exist in products
+app_path = '$dist_dir/developerapps.json' if os.path.exists('$dist_dir/developerapps.json') else '$ROOT_DIR/developerapps.json'
+if os.path.exists(app_path):
+    try:
+        with open(app_path) as af:
+            apps = json.load(af)
+        existing_pnames = {p.get('name') for p in products if isinstance(p, dict)}
+        for app in apps:
+            if isinstance(app, dict):
+                prods_in_app = list(app.get('apiProducts', []))
+                for cred in app.get('credentials', []):
+                    if isinstance(cred, dict):
+                        for cred_p in cred.get('apiProducts', []):
+                            if isinstance(cred_p, dict) and 'apiproduct' in cred_p:
+                                prods_in_app.append(cred_p['apiproduct'])
+                            elif isinstance(cred_p, str):
+                                prods_in_app.append(cred_p)
+                for req_p in prods_in_app:
+                    if req_p and req_p not in existing_pnames:
+                        products.append({
+                            'name': req_p,
+                            'displayName': req_p,
+                            'approvalType': 'auto',
+                            'environments': ['test'],
+                            'operationGroup': {
+                                'operationConfigType': 'proxy',
+                                'operationConfigs': [{'apiSource': p, 'operations': [{'resource': '/'}], 'quota': {}} for p in proxies]
+                            }
+                        })
+                        existing_pnames.add(req_p)
+    except Exception as e:
+        print(f'  • Warning verifying app products: {e}')
+
 with open('$dist_dir/products.json', 'w') as f:
     json.dump(products, f, indent=2)
 "
@@ -719,7 +852,11 @@ with open('$dist_dir/products.json', 'w') as f:
   (
     cd "$ROOT_DIR"
     zip -q "$testdata_zip" datacollectors.json developerapps.json developers.json maps.json
-    (cd "$dist_dir" && zip -q -u "$testdata_zip" products.json)
+    for f in products.json developerapps.json developers.json; do
+      if [ -f "$dist_dir/$f" ]; then
+        (cd "$dist_dir" && zip -q -u "$testdata_zip" "$f")
+      fi
+    done
   )
 
   echo -e "${BLUE}Uploading test data (Products, Developer Apps, KVMs) to Cloud Run...${NC}"

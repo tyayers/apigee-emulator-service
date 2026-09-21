@@ -140,10 +140,17 @@
             <span class="tag">Postman Style</span>
           </div>
           <div class="preset-selector-group">
-            <label for="test-preset-select">Preset:</label>
+            <label for="test-preset-select">Tests:</label>
             <select id="test-preset-select" class="form-select">
-              <option value="">-- Load a Sample Test --</option>
+              <option value="">-- Load a Test --</option>
             </select>
+            <button id="btn-test-all" class="btn btn-sm btn-outline-accent" title="Run all deployment tests with trace evaluation">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+                <polygon points="12 3 22 12 12 21 12 3"/>
+              </svg>
+              <span>Test All</span>
+            </button>
           </div>
         </div>
 
@@ -186,6 +193,7 @@
           <div class="tabs-header">
             <button class="tab-btn active" data-tab="tab-headers">Headers <span id="header-count-badge" class="badge-mini">2</span></button>
             <button class="tab-btn" data-tab="tab-body">Body</button>
+            <button class="tab-btn" data-tab="tab-assertions">Assertions <span id="assertions-count-badge" class="badge-mini">0</span></button>
           </div>
 
           <!-- Headers Tab -->
@@ -225,6 +233,20 @@
             </div>
             <textarea id="req-body" class="code-editor" placeholder="Enter JSON or text request payload..."></textarea>
           </div>
+
+          <!-- Assertions Tab -->
+          <div id="tab-assertions" class="tab-content">
+            <div class="assertions-header">
+              <span class="assertions-summary-text">Assertions that will be validated against response &amp; trace:</span>
+              <button id="btn-add-assertion" class="btn btn-sm btn-outline" title="Add custom assertion">
+                <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add Assert
+              </button>
+            </div>
+            <div id="assertions-list-container" class="assertions-list-container">
+              <div class="empty-state">No assertions configured. Select a test from the Tests dropdown above or add an assertion.</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -240,6 +262,7 @@
           <div class="response-tabs">
             <button class="tab-btn active" data-tab="tab-resp-body">Body</button>
             <button class="tab-btn" data-tab="tab-resp-headers">Headers</button>
+            <button class="tab-btn" data-tab="tab-resp-assertions">Test Results <span id="resp-assert-badge" class="badge-mini hidden">0/0</span></button>
             <button class="tab-btn" data-tab="tab-resp-trace">Execution Trace <span id="trace-indicator" class="dot-badge hidden"></span></button>
           </div>
         </div>
@@ -269,6 +292,25 @@
                 <tr><td colspan="2" class="empty-state">No headers to display.</td></tr>
               </tbody>
             </table>
+          </div>
+
+          <!-- Test Results / Assertions Tab -->
+          <div id="tab-resp-assertions" class="tab-content">
+            <div id="resp-assertions-summary" class="resp-assertions-summary hidden">
+              <div class="test-result-status-banner">
+                <span id="test-overall-status" class="test-status-pill pass">PASSED</span>
+                <span id="test-overall-msg">All assertions verified</span>
+              </div>
+              <div class="test-download-actions">
+                <button id="btn-download-test-result" class="btn btn-sm btn-outline" title="Download test result JSON">
+                  <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Download Result JSON
+                </button>
+              </div>
+            </div>
+            <div id="resp-assertions-container" class="resp-assertions-container">
+              <div class="empty-state">Execute a test or click "Send" to see assertion results.</div>
+            </div>
           </div>
 
           <!-- Execution Trace Tab -->
@@ -328,6 +370,47 @@
               </div>
               <div id="step-detail-body" class="step-detail-body"></div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Test Run History Card (Per Proxy) -->
+      <div class="card test-history-card">
+        <div class="card-header history-header">
+          <div class="history-title">
+            <h2>Test Run History</h2>
+            <span id="history-proxy-badge" class="tag">REST-AI-Completions</span>
+          </div>
+          <div class="history-actions">
+            <button id="btn-refresh-history" class="btn btn-sm btn-outline" title="Refresh history for this proxy">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              Refresh
+            </button>
+            <button id="btn-clear-history" class="btn btn-sm btn-outline-danger" title="Clear history for this proxy">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              Clear
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="history-table-wrapper">
+            <table class="key-value-table history-table">
+              <thead>
+                <tr>
+                  <th style="width: 105px;">Time</th>
+                  <th>Test Name</th>
+                  <th>Request</th>
+                  <th style="width: 85px;">Result</th>
+                  <th style="width: 75px;">Status</th>
+                  <th style="width: 75px;">Latency</th>
+                  <th style="width: 75px;">Asserts</th>
+                  <th style="width: 190px; text-align: right;">Downloads / Actions</th>
+                </tr>
+              </thead>
+              <tbody id="history-tbody">
+                <tr><td colspan="8" class="empty-state">No test runs recorded for this proxy yet. Run a test or click "Test All".</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -602,6 +685,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>

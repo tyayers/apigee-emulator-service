@@ -1,4 +1,4 @@
-# Apigee Emulator Service Guide
+ t# Apigee Emulator Service Guide
 
 This repository contains setup scripts, deployment manifests, test data configurations, and tracing tools for developing, testing, and deploying Apigee proxies locally or to **Google Cloud Run** using the **Apigee Local Emulator**.
 
@@ -8,7 +8,10 @@ This repository contains setup scripts, deployment manifests, test data configur
 
 - [Prerequisites](#prerequisites)
 - [1. Creating and Starting the Apigee Emulator Container (Local)](#1-creating-and-starting-the-apigee-emulator-container)
-- [2. Deploying Proxies and Test Data Locally (`deploy.sh`)](#2-deploying-proxies-and-test-data-deploysh)
+- [2. Deploying Proxies, Templates, and Deployment Manifests Locally (`deploy.sh`)](#2-deploying-proxies-templates-and-deployment-manifests-locally-deploysh)
+  - [Converting Deployments to Local Assets (`aft -f zip`)](#converting-deployments-to-local-assets-aft--f-zip)
+  - [Deploying Deployment Manifests Directly](#deploying-deployment-manifests-directly)
+  - [CLI & Interactive Options](#cli--interactive-options)
 - [3. Tracing Proxy Executions and Using `trace.html`](#3-tracing-proxy-executions-and-using-tracehtml)
 - [4. Test Commands: OpenAI `/v1/chat/completions` API](#4-local-test-commands-openai-v1chatcompletions-api)
 - [5. Deploying to Google Cloud Run (`cloudrun.sh` & `cloudrun-service.yaml`)](#5-deploying-to-google-cloud-run-cloudrunsh--cloudrun-serviceyaml)
@@ -75,31 +78,96 @@ docker stop apigee
 
 ---
 
-## 2. Deploying Proxies and Test Data Locally (`deploy.sh`)
+## 2. Deploying Proxies, Templates, and Deployment Manifests Locally (`deploy.sh`)
 
-The [`deploy.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/deploy.sh) script compiles AFT YAML files into proxy bundles, generates environment configs, packages local test data, and deploys everything into the local emulator.
+The [`deploy.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/deploy.sh) script compiles AFT YAML files into proxy bundles, generates environment configs, packages local test data, and deploys everything into the local emulator. It supports deploying individual proxies, complete templates, reusable features, or full multi-proxy deployment manifests from `data/deployments/`.
 
-### Run Deployment
+### Converting Deployments to Local Assets (`aft -f zip`)
+
+You can convert any deployment manifest in `data/deployments/` (e.g. [`ai-deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/ai-deployment-1.yaml) or [`deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml)) into deployable local assets:
+
+```bash
+# Convert all deployments in data/deployments/ into local assets
+./deploy.sh --convert
+
+# Or convert a specific deployment manifest
+./deploy.sh --convert data/deployments/ai-deployment-1.yaml
+```
+
+#### How Conversion Works:
+1. **Invokes AFT**: Runs `aft -i data/deployments/<file>.yaml -f zip -o <target_dir> --no-animation`.
+2. **Extracts Proxy Bundles**:
+   - Copies generated `*.zip` bundles into [`data/bundles/`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/bundles/) for automated startup deployment by the Go manager service and Cloud Run.
+   - Extracts bundles into `dist/bundle/src/main/apigee/apiproxies/<proxy>/` for packaging into `bundle.zip`.
+   - **Target Endpoint Sanitization**: Adjusts any dangling `<TargetEndpoint>` elements in proxy `<RouteRule>` configurations so the Apigee emulator doesn't reject routes referencing missing target endpoints.
+3. **Synchronizes Test Data**:
+   - Merges generated `products.json`, `developers.json`, and `developerapps.json` (containing API keys like `starter-app-key-123` or `test-api-key-12345`) into `dist/`.
+   - Packages them into `dist/testdata.zip` for immediate deployment to `/v1/emulator/setup/tests`.
+
+---
+
+### Deploying Deployment Manifests Directly
+
+You can also deploy a deployment manifest directly to the local emulator in a single step:
+
+```bash
+# Deploy an entire AI deployment (proxies + products + apps + credentials)
+./deploy.sh data/deployments/ai-deployment-1.yaml
+
+# Deploy basic test deployment
+./deploy.sh data/deployments/deployment-1.yaml
+```
+
+When given a deployment YAML, `deploy.sh`:
+1. Compiles each included template or proxy into separate bundles with `aft`.
+2. Registers each proxy into `dist/bundle.zip`.
+3. Merges and updates the API product authorizations so all proxies are immediately authorized.
+4. Resets the local emulator, loads all test data, and deploys all proxies at once.
+
+---
+
+### CLI & Interactive Options
 
 ```bash
 # Deploy default TestProxy
 ./deploy.sh proxies/TestProxy.yaml
 
-# Deploy an AI template
+# Deploy a specific AI template
 ./deploy.sh templates/REST-AI-Completions.yaml
+
+# Deploy a specific feature
+./deploy.sh features/ai-endpoint-completions.yaml
 
 # Deploy all templates
 ./deploy.sh --all
 
-# Or run interactively
+# List all available proxies, templates, features, and deployments
+./deploy.sh --list
+
+# Interactive menu
 ./deploy.sh
 ```
 
-### What `deploy.sh` Does
-1. **Compiles Proxies**: Uses `aft` to build proxy bundles and extracts them into `dist/bundle/`.
+#### Interactive Menu Options:
+```text
+Select what you would like to deploy to Apigee Emulator:
+  1) proxies/TestProxy.yaml (default)
+  2) Proxies     (browse proxies/*.yaml)
+  3) Templates   (browse templates/*.yaml)
+  4) Features    (browse features/*.yaml)
+  5) Deployments (browse data/deployments/*.yaml)
+  C) Convert data/deployments/ into local assets with aft
+  A) Deploy ALL templates
+```
+
+---
+
+### What `deploy.sh` Does Under the Hood
+1. **Compiles Assets**: Uses `aft` to build proxy bundles and unpacks them into `dist/bundle/`.
 2. **Generates Environment Configuration**: Creates minimal `env.json` and `deployments.json` for environment `test`.
-3. **Deploys Test Data**: Packages local test data files ([`datacollectors.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/datacollectors.json), [`developerapps.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/developerapps.json), [`developers.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/developers.json), [`maps.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/maps.json), [`products.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/products.json)) and posts them to `http://localhost:8080/v1/emulator/setup/tests`.
-4. **Deploys Proxy Bundle**: Packages `bundle.zip` and posts it to `http://localhost:8080/v1/emulator/deploy?environment=test`.
+3. **Prepares Dynamic Authorization**: Inspects all compiled proxies and ensures they are mapped in `products.json` operations and LLM operations.
+4. **Deploys Test Data**: Packages local test data files ([`datacollectors.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/datacollectors.json), [`developerapps.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/developerapps.json), [`developers.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/developers.json), [`maps.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/maps.json), [`products.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/products.json)) and posts them to `http://localhost:8080/v1/emulator/setup/tests`.
+5. **Deploys Proxy Bundle**: Packages `bundle.zip` and posts it to `http://localhost:8080/v1/emulator/deploy?environment=test`.
 
 ---
 
@@ -744,15 +812,17 @@ Enter selection [1-12, Q] (default 1):
 
 - **Interactive Web UI (`/tester/`)**: Clean, responsive developer interface inspired by Postman.
 - **Deep Linking & Shareable URLs**: Pass `?proxy=ProxyName` in the URL to automatically select and configure a proxy. Clicking any proxy immediately updates the URL for seamless sharing and refreshing.
-- **Proxy & Bundle Management**:
-  - Live status indicator showing Apigee Emulator and Cassandra database readiness.
-  - One-click deployment of pre-packaged bundles (`data/bundles/*.zip`) with automatic bundle sanitization (ensures compatible `<RouteRule>` endpoints and strips unsupported local auth configurations).
+- **Automatic Startup Deployment**:
+  - Automatically verifies emulator and Cassandra readiness on service start and deploys all pre-packaged bundles (`data/bundles/*.zip`) without manual user interaction.
+  - Displays a clean deployment wait overlay in the frontend while startup deployment is in progress.
+  - Automatically sanitizes proxy bundles (ensuring compatible `<RouteRule>` endpoints and removing invalid local configs).
   - Synchronizes dynamic test environment configs, API products, and developer app credentials (`starter-app-key-123`, `test-api-key-12345`).
-- **Postman-like Test Runner**:
-  - Select any deployed proxy and HTTP method (`GET`, `POST`, `PUT`, `DELETE`, etc.).
-  - Load pre-configured sample request presets defined in [`data/deployments/`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/).
-  - Custom header key-value table and JSON request body editor.
-  - Real-time response inspection: HTTP status code, response time (ms), response payload size, formatted JSON body, and response headers.
+- **Test Suites, Assertions & Test Runner**:
+  - Automatically loads test suites defined in deployment manifests ([`data/deployments/*.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/)).
+  - Replaces generic presets with named test cases in the UI.
+  - Displays expected test assertions (HTTP status code, JSON response body path matches, error codes, latency limits).
+  - **"Test All" Runner**: One-click execution of all tests across all proxies, executing each call, recording trace transactions, and evaluating all assertions.
+  - **Test Run History**: In-memory history tracking per proxy, showing pass/fail status, assertion breakdowns, execution latency, and downloadable test run reports and traces.
 - **Built-in Rich Vertical Trace Visualizer**:
   - Automatically activates an Apigee debug trace session when sending test traffic.
   - Parses transaction events into a vertical execution pipeline (Request PreFlow &rarr; Target Request &rarr; Target Response &rarr; Client Response).
@@ -796,9 +866,13 @@ The service exposes the following endpoints under `/tester/api` (with `/manage/a
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/healthz` | Health check endpoint returning `{"status": "ok"}`. |
-| `GET` | `/tester/api/status` | Current status of emulator, Cassandra readiness, deployed proxies, and available bundles. |
+| `GET` | `/tester/api/status` | Current status of emulator, Cassandra readiness, deployed proxies, available bundles, and startup auto-deploy state. |
 | `GET` | `/tester/api/bundles` | List all packaged ZIP bundles in `data/bundles/`. |
-| `GET` | `/tester/api/tests` | List test request presets extracted from `data/deployments/*.yaml`. |
+| `GET` | `/tester/api/tests` | List test suites and assertions extracted from `data/deployments/*.yaml`. |
+| `POST` | `/tester/api/tests/run` | Execute all test cases or proxy-specific tests, evaluate trace assertions, and record run history. |
+| `GET` | `/tester/api/tests/history` | List test run history records (optional `?proxy=ProxyName` filter). |
+| `GET` | `/tester/api/tests/history/:id` | Get detailed test run results, assertion checks, and full trace data. |
+| `DELETE` | `/tester/api/tests/history` | Clear test run history. |
 | `POST` | `/tester/api/deploy` | Deploys selected or all bundles and synchronizes test data (accepts `{"bundles": ["..."], "reset": true}`). |
 | `POST` | `/tester/api/reset` | Resets Apigee emulator state to a clean slate. |
 | `POST` | `/tester/api/test` | Executes an HTTP request against the Apigee runtime port with optional automated trace capture. |

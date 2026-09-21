@@ -78,6 +78,50 @@ type DeployResponse struct {
 	Error         string          `json:"error,omitempty"`
 }
 
+// AssertionResult represents the evaluation of a single assertion.
+type AssertionResult struct {
+	Assertion string `json:"assertion"`
+	Passed    bool   `json:"passed"`
+	Actual    string `json:"actual"`
+	Expected  string `json:"expected"`
+	Error     string `json:"error,omitempty"`
+}
+
+// TestRunResult records a test execution and assertion results in memory.
+type TestRunResult struct {
+	ID             string                 `json:"id"`
+	TestName       string                 `json:"testName"`
+	Proxy          string                 `json:"proxy"`
+	Deployment     string                 `json:"deployment,omitempty"`
+	Timestamp      time.Time              `json:"timestamp"`
+	Passed         bool                   `json:"passed"`
+	StatusCode     int                    `json:"statusCode"`
+	StatusText     string                 `json:"statusText"`
+	DurationMs     int64                  `json:"durationMs"`
+	Request        TestRequest            `json:"request"`
+	Response       *TestResponse          `json:"response"`
+	Assertions     []AssertionResult      `json:"assertions"`
+	TraceSessionID string                 `json:"traceSessionId,omitempty"`
+	TraceData      map[string]interface{} `json:"traceData,omitempty"`
+	Error          string                 `json:"error,omitempty"`
+}
+
+// TestsRunRequest specifies parameters for running a test suite.
+type TestsRunRequest struct {
+	Proxy       string `json:"proxy,omitempty"`
+	TestName    string `json:"testName,omitempty"`
+	RecordTrace bool   `json:"recordTrace"`
+}
+
+// TestsRunResponse summarizes the execution of multiple tests.
+type TestsRunResponse struct {
+	Total      int             `json:"total"`
+	Passed     int             `json:"passed"`
+	Failed     int             `json:"failed"`
+	DurationMs int64           `json:"durationMs"`
+	Results    []TestRunResult `json:"results"`
+}
+
 // TestRequest represents a test call executed from the Postman-style UI.
 type TestRequest struct {
 	Proxy       string            `json:"proxy"`
@@ -86,6 +130,8 @@ type TestRequest struct {
 	Headers     map[string]string `json:"headers"`
 	Body        string            `json:"body"`
 	RecordTrace bool              `json:"recordTrace"`
+	TestName    string            `json:"testName,omitempty"`
+	Assertions  []string          `json:"assertions,omitempty"`
 }
 
 // TestResponse represents the outcome of a test invocation including optional trace.
@@ -97,6 +143,9 @@ type TestResponse struct {
 	Body           string                 `json:"body"`
 	TraceSessionID string                 `json:"traceSessionId,omitempty"`
 	TraceData      map[string]interface{} `json:"traceData,omitempty"`
+	Assertions     []AssertionResult      `json:"assertions,omitempty"`
+	Passed         bool                   `json:"passed"`
+	TestRunID      string                 `json:"testRunId,omitempty"`
 	Error          string                 `json:"error,omitempty"`
 }
 

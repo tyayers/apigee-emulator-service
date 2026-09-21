@@ -11,6 +11,9 @@
     tests: [],
     selectedProxyName: null,
     selectedPreset: null,
+    selectedTest: null,
+    assertions: [],
+    testHistory: [],
     lastResponse: null,
     lastTraceData: null,
     activeTraceView: 'timeline', // 'timeline' or 'json'
@@ -21,6 +24,9 @@
     proxyNode: `<svg class="proxy-indicator-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg>`,
     check: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>`,
     alert: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+    play: `<svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
+    download: `<svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
+    delete: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
   };
 
   // DOM Elements
@@ -36,6 +42,7 @@
     bundlesCount: document.getElementById('bundles-count'),
     btnDeploySelected: document.getElementById('btn-deploy-selected'),
     presetSelect: document.getElementById('test-preset-select'),
+    btnTestAll: document.getElementById('btn-test-all'),
     reqMethod: document.getElementById('req-method'),
     reqPath: document.getElementById('req-path'),
     reqProxyName: document.getElementById('req-proxy-name'),
@@ -48,6 +55,20 @@
     reqBody: document.getElementById('req-body'),
     btnPrettifyBody: document.getElementById('btn-prettify-body'),
     btnClearBody: document.getElementById('btn-clear-body'),
+    assertionsCountBadge: document.getElementById('assertions-count-badge'),
+    btnAddAssertion: document.getElementById('btn-add-assertion'),
+    assertionsListContainer: document.getElementById('assertions-list-container'),
+    tabBtnRespAssertions: document.querySelector('[data-tab="tab-resp-assertions"]'),
+    respAssertBadge: document.getElementById('resp-assert-badge'),
+    respAssertionsSummary: document.getElementById('resp-assertions-summary'),
+    testOverallStatus: document.getElementById('test-overall-status'),
+    testOverallMsg: document.getElementById('test-overall-msg'),
+    btnDownloadTestResult: document.getElementById('btn-download-test-result'),
+    respAssertionsContainer: document.getElementById('resp-assertions-container'),
+    historyProxyBadge: document.getElementById('history-proxy-badge'),
+    btnRefreshHistory: document.getElementById('btn-refresh-history'),
+    btnClearHistory: document.getElementById('btn-clear-history'),
+    historyTbody: document.getElementById('history-tbody'),
     respStatusBadge: document.getElementById('resp-status-badge'),
     respTimeBadge: document.getElementById('resp-time-badge'),
     respSizeBadge: document.getElementById('resp-size-badge'),
@@ -284,6 +305,8 @@
       const first = state.activeProxies[0];
       const name = first.name || first.Name;
       if (name) selectProxy(name, false);
+    } else {
+      fetchTestHistory('');
     }
   }
 
@@ -422,6 +445,22 @@
     if (el.btnViewTraceAnalytics) {
       el.btnViewTraceAnalytics.addEventListener('click', () => switchView('analytics'));
     }
+
+    if (el.btnTestAll) {
+      el.btnTestAll.addEventListener('click', runAllTests);
+    }
+    if (el.btnAddAssertion) {
+      el.btnAddAssertion.addEventListener('click', addAssertionPrompt);
+    }
+    if (el.btnDownloadTestResult) {
+      el.btnDownloadTestResult.addEventListener('click', downloadCurrentTestResult);
+    }
+    if (el.btnRefreshHistory) {
+      el.btnRefreshHistory.addEventListener('click', () => fetchTestHistory(state.selectedProxyName));
+    }
+    if (el.btnClearHistory) {
+      el.btnClearHistory.addEventListener('click', clearTestHistory);
+    }
   }
 
   function initDefaultHeaders() {
@@ -533,20 +572,53 @@
       if (!resp.ok) return;
       const data = await resp.json();
       state.tests = data || [];
-      populatePresets();
+      populateTestsDropdown();
     } catch (err) {
       console.warn('Failed to load tests:', err);
     }
   }
 
-  function populatePresets() {
-    el.presetSelect.innerHTML = '<option value="">-- Load a Sample Test --</option>';
+  function populateTestsDropdown() {
+    if (!el.presetSelect) return;
+    el.presetSelect.innerHTML = '<option value="">-- Load a Test --</option>';
+
+    const activeProxy = state.selectedProxyName;
+    const matchingTests = [];
+    const otherTests = [];
+
     state.tests.forEach((t, idx) => {
-      const opt = document.createElement('option');
-      opt.value = idx;
-      opt.textContent = `${t.proxy} - ${t.name}`;
-      el.presetSelect.appendChild(opt);
+      if (activeProxy && t.proxy && t.proxy.toLowerCase() === activeProxy.toLowerCase()) {
+        matchingTests.push({ test: t, idx });
+      } else {
+        otherTests.push({ test: t, idx });
+      }
     });
+
+    if (matchingTests.length > 0) {
+      const group = document.createElement('optgroup');
+      group.label = `Tests for ${activeProxy}`;
+      matchingTests.forEach(({ test, idx }) => {
+        const opt = document.createElement('option');
+        opt.value = idx;
+        const assertCount = (test.assertions && test.assertions.length) ? ` [${test.assertions.length} asserts]` : '';
+        opt.textContent = `${test.name} (${test.verb || 'GET'})${assertCount}`;
+        group.appendChild(opt);
+      });
+      el.presetSelect.appendChild(group);
+    }
+
+    if (otherTests.length > 0) {
+      const group = document.createElement('optgroup');
+      group.label = matchingTests.length > 0 ? 'Other Proxy Tests' : 'Available Tests';
+      otherTests.forEach(({ test, idx }) => {
+        const opt = document.createElement('option');
+        opt.value = idx;
+        const assertCount = (test.assertions && test.assertions.length) ? ` [${test.assertions.length} asserts]` : '';
+        opt.textContent = `${test.proxy} > ${test.name} (${test.verb || 'GET'})${assertCount}`;
+        group.appendChild(opt);
+      });
+      el.presetSelect.appendChild(group);
+    }
   }
 
   function handlePresetChange() {
@@ -555,13 +627,32 @@
     const test = state.tests[idx];
     if (!test) return;
 
-    state.selectedPreset = test;
-    el.reqMethod.value = test.method || 'POST';
-    el.reqPath.value = (test.path || '').replace(/^\//, '');
-    el.reqProxyName.value = test.proxy || 'TestProxy';
+    applyTestDefinition(test);
+    showToast(`Loaded test: ${test.name}`);
+  }
 
-    // Update URL to match proxy
-    selectProxy(test.proxy, true, false);
+  function defaultPathForProxyName(proxyName) {
+    if (!proxyName) return 'testproxy';
+    const lower = proxyName.toLowerCase();
+    if (lower.includes('completions')) return '/v1/chat/completions';
+    if (lower.includes('messages')) return '/v1/messages';
+    if (lower.includes('interactions')) return '/v1/interactions';
+    return '/' + lower;
+  }
+
+  function applyTestDefinition(test) {
+    if (!test) return;
+    state.selectedPreset = test;
+    state.selectedTest = test;
+
+    el.reqMethod.value = test.verb || test.method || 'GET';
+    const path = test.path || defaultPathForProxyName(test.proxy);
+    el.reqPath.value = path.replace(/^\//, '');
+
+    if (test.proxy) {
+      el.reqProxyName.value = test.proxy;
+      selectProxy(test.proxy, true, false);
+    }
 
     // Populate Headers
     el.headersTbody.innerHTML = '';
@@ -574,18 +665,77 @@
     }
 
     // Populate Body
-    if (test.body) {
+    const bodyContent = test.payload || test.body || '';
+    if (bodyContent) {
       try {
-        const parsed = JSON.parse(test.body);
+        const parsed = JSON.parse(bodyContent);
         el.reqBody.value = JSON.stringify(parsed, null, 2);
       } catch {
-        el.reqBody.value = test.body;
+        el.reqBody.value = bodyContent;
       }
     } else {
       el.reqBody.value = '';
     }
 
-    showToast(`Loaded preset: ${test.name}`);
+    // Populate Assertions
+    state.assertions = Array.isArray(test.assertions) ? [...test.assertions] : [];
+    renderAssertionsList();
+  }
+
+  function renderAssertionsList() {
+    if (!el.assertionsListContainer) return;
+    const count = state.assertions ? state.assertions.length : 0;
+    if (el.assertionsCountBadge) {
+      el.assertionsCountBadge.textContent = count;
+      if (count > 0) {
+        el.assertionsCountBadge.classList.remove('hidden');
+      } else {
+        el.assertionsCountBadge.classList.add('hidden');
+      }
+    }
+
+    if (count === 0) {
+      el.assertionsListContainer.innerHTML = '<div class="empty-state">No assertions configured. Select a test from the Tests dropdown above or click "Add Assert".</div>';
+      return;
+    }
+
+    el.assertionsListContainer.innerHTML = '';
+    state.assertions.forEach((expr, idx) => {
+      const item = document.createElement('div');
+      item.className = 'assertion-item';
+      item.innerHTML = `
+        <div class="assertion-item-left">
+          <svg class="assertion-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="9 11 12 14 22 4"/>
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+          </svg>
+          <span class="assertion-expr">${escapeHtml(expr)}</span>
+        </div>
+        <div class="assertion-item-actions">
+          <button class="btn-icon-delete" data-assert-idx="${idx}" title="Remove assertion">
+            ${ICONS.delete}
+          </button>
+        </div>
+      `;
+
+      item.querySelector('.btn-icon-delete').addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.assertions.splice(idx, 1);
+        renderAssertionsList();
+      });
+
+      el.assertionsListContainer.appendChild(item);
+    });
+  }
+
+  function addAssertionPrompt() {
+    const defaultVal = 'status.code == 200';
+    const val = prompt('Enter assertion to validate (e.g. status.code == 200, trace.error == false, body contains google):', defaultVal);
+    if (val && val.trim()) {
+      state.assertions.push(val.trim());
+      renderAssertionsList();
+      showToast('Assertion added');
+    }
   }
 
   // Select Proxy & Deep Link
@@ -604,7 +754,13 @@
     // Highlight in list
     highlightProxyInList(proxyName);
 
-    // If autoPopulateTest is enabled, find proxy info or matching preset test
+    // Refresh history card proxy badge and history records
+    fetchTestHistory(proxyName);
+
+    // Refresh tests dropdown grouping for active proxy
+    populateTestsDropdown();
+
+    // If autoPopulateTest is enabled, find proxy info or matching test
     if (autoPopulateTest) {
       // Find proxy basePath
       const foundProxy = state.activeProxies.find(p => {
@@ -618,25 +774,13 @@
         el.reqPath.value = bp.replace(/^\//, '');
       }
 
-      // Check if there is a preset test for this proxy
+      // Check if there is a test for this proxy
       const matchingTestIdx = state.tests.findIndex(t => t.proxy && t.proxy.toLowerCase() === proxyName.toLowerCase());
       if (matchingTestIdx !== -1) {
         el.presetSelect.value = matchingTestIdx;
         const test = state.tests[matchingTestIdx];
         if (test) {
-          el.reqMethod.value = test.method || 'GET';
-          el.reqPath.value = (test.path || '').replace(/^\//, '');
-          if (test.headers) {
-            el.headersTbody.innerHTML = '';
-            Object.keys(test.headers).forEach(k => addHeaderRow(k, test.headers[k], true));
-          }
-          if (test.body) {
-            try {
-              el.reqBody.value = JSON.stringify(JSON.parse(test.body), null, 2);
-            } catch {
-              el.reqBody.value = test.body;
-            }
-          }
+          applyTestDefinition(test);
         }
       }
     }
@@ -882,6 +1026,8 @@
     const recordTrace = el.chkRecordTrace.checked;
     const headers = getHeadersFromTable();
     const body = el.reqBody.value;
+    const testName = state.selectedTest ? state.selectedTest.name : '';
+    const assertions = state.assertions || [];
 
     // Reset response view
     el.respStatusBadge.className = 'status-tag status-none';
@@ -903,6 +1049,8 @@
           headers,
           body,
           recordTrace,
+          testName,
+          assertions,
         }),
       });
 
@@ -919,6 +1067,15 @@
       // Render response headers
       renderResponseHeaders(data.headers);
 
+      // Render assertions
+      renderResponseAssertions(data.assertions, data.passed, data);
+
+      if (data.assertions && data.assertions.length > 0) {
+        if (!data.passed && el.tabBtnRespAssertions) {
+          el.tabBtnRespAssertions.click();
+        }
+      }
+
       // If trace data present, render vertical execution timeline
       if (data.traceData) {
         el.traceIndicator.classList.remove('hidden');
@@ -931,6 +1088,9 @@
         el.tracePipelineContainer.innerHTML = '<div class="empty-state">Trace session was not recorded. Enable "Record & Inspect Trace" to inspect policy execution.</div>';
         el.traceSummaryBar.classList.add('hidden');
       }
+
+      // Refresh test history for this proxy
+      fetchTestHistory(proxy);
 
     } catch (err) {
       el.respStatusBadge.className = 'status-tag status-5xx';
@@ -1002,6 +1162,282 @@
       `;
       el.respHeadersTbody.appendChild(tr);
     });
+  }
+
+  function renderResponseAssertions(assertions, passed, data) {
+    if (!el.respAssertionsContainer) return;
+
+    const list = assertions || [];
+    const total = list.length;
+    const passCount = list.filter(a => a.passed).length;
+    const allPassed = (passCount === total && total > 0) || (total === 0 && passed);
+
+    // Update tab badge
+    if (el.respAssertBadge) {
+      el.respAssertBadge.textContent = `${passCount}/${total}`;
+      el.respAssertBadge.className = 'badge-mini ' + (allPassed ? 'badge-success' : 'badge-danger');
+      el.respAssertBadge.classList.remove('hidden');
+    }
+
+    // Update summary banner
+    if (el.respAssertionsSummary) {
+      el.respAssertionsSummary.classList.remove('hidden');
+      if (el.testOverallStatus) {
+        el.testOverallStatus.textContent = allPassed ? 'ALL PASSED' : 'ASSERTION FAILED';
+        el.testOverallStatus.className = 'test-status-pill ' + (allPassed ? 'pass' : 'fail');
+      }
+      if (el.testOverallMsg) {
+        el.testOverallMsg.textContent = total > 0
+          ? `${passCount} of ${total} assertions verified successfully`
+          : (passed ? 'Request succeeded (no assertions)' : 'Request returned an error status');
+      }
+    }
+
+    // Render assertion detail cards
+    if (list.length === 0) {
+      el.respAssertionsContainer.innerHTML = '<div class="empty-state">No assertions were configured for this test run.</div>';
+      return;
+    }
+
+    el.respAssertionsContainer.innerHTML = '';
+    list.forEach(a => {
+      const card = document.createElement('div');
+      card.className = `assertion-result-card ${a.passed ? 'passed' : 'failed'}`;
+      card.innerHTML = `
+        <div class="assert-result-header">
+          <div style="display:flex; align-items:center; gap:0.5rem;">
+            <span class="assert-badge ${a.passed ? 'pass' : 'fail'}">${a.passed ? 'PASS' : 'FAIL'}</span>
+            <code style="font-weight:600; color:var(--text-primary); font-size:0.85rem;">${escapeHtml(a.assertion)}</code>
+          </div>
+          <span style="font-size:0.75rem; color:var(--text-muted);">${a.passed ? 'Verified' : 'Check failed'}</span>
+        </div>
+        <div class="assert-diff-row">
+          <span>Expected: <strong>${escapeHtml(a.expected || '-')}</strong></span>
+          <span>Actual: <strong>${escapeHtml(a.actual || '-')}</strong></span>
+          ${a.error ? `<span style="color:var(--accent-red);">Error: <strong>${escapeHtml(a.error)}</strong></span>` : ''}
+        </div>
+      `;
+      el.respAssertionsContainer.appendChild(card);
+    });
+  }
+
+  async function runAllTests() {
+    if (!el.btnTestAll) return;
+    const origHtml = el.btnTestAll.innerHTML;
+    el.btnTestAll.disabled = true;
+    el.btnTestAll.innerHTML = `
+      <div class="modal-spinner" style="width:12px; height:12px; border-width:2px; margin-right:4px;"></div>
+      <span>Testing...</span>
+    `;
+
+    try {
+      const proxy = state.selectedProxyName || '';
+      const resp = await fetch(`${API_BASE}/tests/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proxy }),
+      });
+
+      if (!resp.ok) {
+        throw new Error(`HTTP error ${resp.status}`);
+      }
+
+      const data = await resp.json();
+      const results = data.results || [];
+      showToast(`Test suite complete: ${data.passed}/${data.total} passed in ${data.durationMs}ms`);
+
+      // Refresh test history view
+      await fetchTestHistory(proxy);
+
+      // If we have results, display the last executed test result in the response card
+      if (results.length > 0) {
+        const lastRun = results[results.length - 1];
+        if (lastRun.response) {
+          state.lastResponse = lastRun.response;
+          state.lastTraceData = lastRun.response.traceData;
+
+          renderResponseMeta(lastRun.response);
+          renderResponseBody(lastRun.response.body);
+          renderResponseHeaders(lastRun.response.headers);
+
+          if (lastRun.response.traceData) {
+            el.traceIndicator.classList.remove('hidden');
+            renderTracePipeline(lastRun.response.traceSessionId, lastRun.response.traceData, lastRun.response);
+          }
+
+          renderResponseAssertions(lastRun.assertions, lastRun.passed, lastRun.response);
+
+          // Activate the Test Results response tab so user immediately sees results!
+          if (el.tabBtnRespAssertions) {
+            el.tabBtnRespAssertions.click();
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to run test suite:', err);
+      showToast(`Test execution failed: ${err.message}`, true);
+    } finally {
+      el.btnTestAll.disabled = false;
+      el.btnTestAll.innerHTML = origHtml;
+    }
+  }
+
+  async function fetchTestHistory(proxyName) {
+    if (!el.historyTbody) return;
+    const targetProxy = proxyName || state.selectedProxyName || '';
+    if (el.historyProxyBadge) {
+      el.historyProxyBadge.textContent = targetProxy || 'All Proxies';
+    }
+
+    try {
+      const url = targetProxy ? `${API_BASE}/tests/history?proxy=${encodeURIComponent(targetProxy)}` : `${API_BASE}/tests/history`;
+      const resp = await fetch(url);
+      if (!resp.ok) return;
+      const runs = await resp.json();
+      state.testHistory = runs || [];
+      renderTestHistoryTable(state.testHistory);
+    } catch (err) {
+      console.warn('Failed to fetch test history:', err);
+    }
+  }
+
+  function renderTestHistoryTable(runs) {
+    if (!el.historyTbody) return;
+    if (!runs || runs.length === 0) {
+      el.historyTbody.innerHTML = '<tr><td colspan="8" class="empty-state">No test runs recorded for this proxy yet. Run a test or click "Test All".</td></tr>';
+      return;
+    }
+
+    el.historyTbody.innerHTML = '';
+    runs.forEach(run => {
+      const tr = document.createElement('tr');
+      const timeStr = run.timestamp ? new Date(run.timestamp).toLocaleTimeString() : '-';
+      const req = run.request || {};
+      const method = req.method || 'GET';
+      const path = req.path || '';
+      const asserts = run.assertions || [];
+      const passAsserts = asserts.filter(a => a.passed).length;
+      const assertText = asserts.length > 0 ? `${passAsserts}/${asserts.length}` : '-';
+
+      tr.innerHTML = `
+        <td style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-muted);">${escapeHtml(timeStr)}</td>
+        <td><strong>${escapeHtml(run.testName || '-')}</strong></td>
+        <td>
+          <span class="status-tag status-none" style="font-size:0.7rem; padding:0.1rem 0.35rem;">${escapeHtml(method)}</span>
+          <code style="font-size:0.75rem;">/${escapeHtml(path.replace(/^\//, ''))}</code>
+        </td>
+        <td><span class="history-badge ${run.passed ? 'pass' : 'fail'}">${run.passed ? 'PASS' : 'FAIL'}</span></td>
+        <td><span style="font-family:var(--font-mono);">${run.statusCode || '-'}</span></td>
+        <td style="font-family:var(--font-mono);">${run.durationMs || 0}ms</td>
+        <td style="font-family:var(--font-mono);">${assertText}</td>
+        <td style="text-align: right;">
+          <div class="history-action-group">
+            ${run.hasTrace ? `<a href="${API_BASE}/tests/history/${run.id}/trace" class="btn-history-action" download="trace_${run.proxy}_${run.id}.json" title="Download execution trace JSON">${ICONS.download} Trace</a>` : ''}
+            <a href="${API_BASE}/tests/history/${run.id}/result" class="btn-history-action" download="test_result_${run.proxy}_${run.id}.json" title="Download full test result JSON">${ICONS.download} Result</a>
+            <button class="btn-history-action btn-load-run" data-run-id="${run.id}" title="Load test and response into UI">${ICONS.play} Load</button>
+          </div>
+        </td>
+      `;
+
+      tr.querySelector('.btn-load-run').addEventListener('click', () => loadHistoricalRun(run.id));
+      el.historyTbody.appendChild(tr);
+    });
+  }
+
+  async function loadHistoricalRun(runId) {
+    try {
+      const resp = await fetch(`${API_BASE}/tests/history/${runId}`);
+      if (!resp.ok) throw new Error('Run not found');
+      const run = await resp.json();
+
+      // Apply request
+      if (run.request) {
+        el.reqMethod.value = run.request.method || 'GET';
+        el.reqPath.value = (run.request.path || '').replace(/^\//, '');
+        if (run.request.proxy) {
+          el.reqProxyName.value = run.request.proxy;
+          selectProxy(run.request.proxy, true, false);
+        }
+        el.headersTbody.innerHTML = '';
+        const headers = run.request.headers || {};
+        Object.keys(headers).forEach(k => addHeaderRow(k, headers[k], true));
+        el.reqBody.value = run.request.body || '';
+        state.assertions = run.request.assertions || [];
+        renderAssertionsList();
+      }
+
+      // Apply response
+      if (run.response) {
+        state.lastResponse = run.response;
+        state.lastTraceData = run.response.traceData;
+        renderResponseMeta(run.response);
+        renderResponseBody(run.response.body);
+        renderResponseHeaders(run.response.headers);
+
+        if (run.response.traceData) {
+          el.traceIndicator.classList.remove('hidden');
+          renderTracePipeline(run.response.traceSessionId, run.response.traceData, run.response);
+        }
+
+        renderResponseAssertions(run.assertions, run.passed, run.response);
+        if (el.tabBtnRespAssertions) {
+          el.tabBtnRespAssertions.click();
+        }
+      }
+
+      showToast(`Loaded historical run: ${run.testName}`);
+    } catch (err) {
+      showToast(`Failed to load historical run: ${err.message}`, true);
+    }
+  }
+
+  async function clearTestHistory() {
+    const targetProxy = state.selectedProxyName || '';
+    const confirmMsg = targetProxy
+      ? `Clear test run history for proxy "${targetProxy}"?`
+      : 'Clear all recorded test run history?';
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      const url = targetProxy ? `${API_BASE}/tests/history?proxy=${encodeURIComponent(targetProxy)}` : `${API_BASE}/tests/history`;
+      const resp = await fetch(url, { method: 'DELETE' });
+      if (resp.ok) {
+        showToast('Test history cleared');
+        await fetchTestHistory(targetProxy);
+      }
+    } catch (err) {
+      showToast(`Failed to clear history: ${err.message}`, true);
+    }
+  }
+
+  function downloadCurrentTestResult() {
+    if (!state.lastResponse) {
+      showToast('No test result available to download', true);
+      return;
+    }
+    const resultObj = {
+      timestamp: new Date().toISOString(),
+      proxy: el.reqProxyName.value,
+      request: {
+        method: el.reqMethod.value,
+        path: el.reqPath.value,
+        headers: getHeadersFromTable(),
+        body: el.reqBody.value,
+        assertions: state.assertions,
+      },
+      response: state.lastResponse,
+    };
+    const jsonStr = JSON.stringify(resultObj, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `test_result_${el.reqProxyName.value || 'test'}_${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Downloaded test result');
   }
 
   // Helper to extract properties from Apigee emulator trace format

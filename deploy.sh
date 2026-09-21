@@ -49,6 +49,15 @@ else
 fi
 cd "$ROOT_DIR"
 
+if [ -d "$ROOT_DIR/emulator" ]; then
+  DIST_DIR="$ROOT_DIR/emulator/dist"
+else
+  DIST_DIR="$ROOT_DIR/dist"
+fi
+BUNDLE_DIR="$DIST_DIR/bundle"
+ENV_DIR="$BUNDLE_DIR/src/main/apigee/environments/test"
+PROXIES_DIR="$BUNDLE_DIR/src/main/apigee/apiproxies"
+
 # ANSI Colors
 RED="\033[0;31m"
 GREEN="\033[0;32m"
@@ -77,38 +86,52 @@ get_available_features() {
   find features -maxdepth 1 -name "*.yaml" -type f 2>/dev/null | sort
 }
 
+get_available_deployments() {
+  find data/deployments -maxdepth 1 \( -name "*.yaml" -o -name "*.yml" \) -type f 2>/dev/null | sort
+}
+
 # ------------------------------------------------------------------------------
 # Help / Usage Function
 # ------------------------------------------------------------------------------
 show_help() {
   echo -e "${BOLD}Usage:${NC}
-  ./emulator/deploy.sh [OPTIONS] [YAML_FILE...]
+  ./deploy.sh [OPTIONS] [YAML_FILE...]
 
 ${BOLD}Description:${NC}
   Builds Apigee proxy bundles using 'aft' and deploys them to the local
   Apigee Emulator container, along with pre-configured mock test data
   (API products, developer apps, KVMs, and data collectors).
-  Supports deploying standalone proxies, complete templates, or individual features.
+  Supports deploying standalone proxies, complete templates, individual features,
+  or full deployment definitions from data/deployments/.
 
 ${BOLD}Options:${NC}
-  -h, --help      Show this help message and exit
-  -a, --all       Deploy all templates in the 'templates/' directory
-  -l, --list      List all available proxies, templates, and features
-  -p, --proxies   Choose from proxies in 'proxies/'
-  -t, --templates Choose from templates in 'templates/'
-  -f, --features  Choose from features in 'features/'
+  -h, --help            Show this help message and exit
+  -a, --all             Deploy all templates in the 'templates/' directory
+  -l, --list            List all available proxies, templates, features, and deployments
+  -p, --proxies         Choose from proxies in 'proxies/'
+  -t, --templates       Choose from templates in 'templates/'
+  -f, --features        Choose from features in 'features/'
+  -d, --deployments     Choose from deployments in 'data/deployments/'
+  -c, --convert         Convert deployment definitions in 'data/deployments/' into
+                        local assets (bundles, products, apps) with aft and exit
 
 ${BOLD}Examples:${NC}
   # Interactive mode (defaults to proxies/TestProxy.yaml on Enter)
-  ./emulator/deploy.sh
+  ./deploy.sh
 
   # Deploy specific proxy, template, or feature
-  ./emulator/deploy.sh proxies/TestProxy.yaml
-  ./emulator/deploy.sh templates/REST-AI-Completions.yaml
-  ./emulator/deploy.sh features/ai-endpoint-completions.yaml
+  ./deploy.sh proxies/TestProxy.yaml
+  ./deploy.sh templates/REST-AI-Completions.yaml
+  ./deploy.sh features/ai-endpoint-completions.yaml
+
+  # Deploy deployment definition (proxies + products + apps + test assertions)
+  ./deploy.sh data/deployments/ai-deployment-1.yaml
+
+  # Convert deployments in data/deployments/ into local assets with aft
+  ./deploy.sh --convert
 
   # Deploy all available templates
-  ./emulator/deploy.sh --all
+  ./deploy.sh --all
 
 ${BOLD}Environment Variables:${NC}
   EMULATOR_MGMT_URL       Management URL (default: http://localhost:8080)
@@ -120,7 +143,19 @@ ${BOLD}Environment Variables:${NC}
 # List All Files Function
 # ------------------------------------------------------------------------------
 list_all() {
-  echo -e "${BOLD}Available Proxies in proxies/:${NC}"
+  echo -e "${BOLD}Available Deployments in data/deployments/:${NC}"
+  local d_count=0
+  while IFS= read -r d; do
+    if [ -n "$d" ]; then
+      echo "  • $d"
+      d_count=$((d_count + 1))
+    fi
+  done < <(get_available_deployments)
+  if [ "$d_count" -eq 0 ]; then
+    echo "  (none)"
+  fi
+
+  echo -e "\n${BOLD}Available Proxies in proxies/:${NC}"
   local p_count=0
   while IFS= read -r p; do
     if [ -n "$p" ]; then
@@ -236,6 +271,163 @@ ensure_emulator_running() {
 }
 
 # ------------------------------------------------------------------------------
+# Proxy Sanitization Helper
+# ------------------------------------------------------------------------------
+sanitize_proxy_targets() {
+  local target_dir="$1"
+  python3 -c "
+import glob, os, xml.etree.ElementTree as ET
+
+td = '$target_dir/apiproxy'
+target_xmls = glob.glob(f'{td}/targets/*.xml')
+targets = [os.path.splitext(os.path.basename(f))[0] for f in target_xmls]
+
+for proxy_file in glob.glob(f'{td}/proxies/*.xml'):
+    try:
+        tree = ET.parse(proxy_file)
+        root = tree.getroot()
+        changed = False
+        for rr in root.findall('RouteRule'):
+            te = rr.find('TargetEndpoint')
+            if te is not None and te.text and te.text not in targets:
+                if 'googlecloud' in targets:
+                    te.text = 'googlecloud'
+                    changed = True
+                elif len(targets) > 0:
+                    te.text = targets[0]
+                    changed = True
+                else:
+                    rr.remove(te)
+                    changed = True
+        if changed:
+            tree.write(proxy_file, encoding='utf-8', xml_declaration=True)
+    except Exception as e:
+        print(f'Warning during sanitization of {proxy_file}: {e}')
+"
+}
+
+# ------------------------------------------------------------------------------
+# Convert Deployments to Local Assets Helper (aft)
+# ------------------------------------------------------------------------------
+convert_deployments_to_assets() {
+  local dep_files=("$@")
+  if [ ${#dep_files[@]} -eq 0 ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] && dep_files+=("$f")
+    done < <(get_available_deployments)
+  fi
+
+  if [ ${#dep_files[@]} -eq 0 ]; then
+    echo -e "${YELLOW}No deployment YAML files found in data/deployments/.${NC}" >&2
+    return 1
+  fi
+
+  # Check required tools for conversion
+  for cmd in aft curl zip unzip python3; do
+    if ! command -v "$cmd" &>/dev/null; then
+      echo -e "${RED}Error: Missing required tool: $cmd${NC}" >&2
+      exit 1
+    fi
+  done
+  if ! python3 -c "import yaml" &>/dev/null; then
+    echo -e "${RED}Error: Python module 'pyyaml' is required.${NC}" >&2
+    exit 1
+  fi
+
+  echo -e "\n${BOLD}================================================================${NC}"
+  echo -e "${BOLD}     CONVERTING DEPLOYMENTS INTO LOCAL ASSETS (aft)             ${NC}"
+  echo -e "${BOLD}================================================================${NC}"
+  mkdir -p "$ROOT_DIR/data/bundles"
+  mkdir -p "$PROXIES_DIR"
+  mkdir -p "$DIST_DIR"
+
+  local total_proxies=0
+  for dep_file in "${dep_files[@]}"; do
+    if [ ! -f "$dep_file" ]; then
+      echo -e "${YELLOW}Warning: Deployment file not found: $dep_file${NC}" >&2
+      continue
+    fi
+
+    echo -e "\n${BLUE}Converting deployment: ${BOLD}$dep_file${NC}..."
+    local tmp_dep_dir
+    tmp_dep_dir=$(mktemp -d /tmp/aft-convert-XXXXXX)
+
+    if aft -i "$dep_file" -f zip -o "$tmp_dep_dir" --no-animation; then
+      echo -e "${GREEN}✓ Converted $dep_file with aft${NC}"
+
+      # 1. Process generated proxy bundles (*.zip)
+      for pzip in "$tmp_dep_dir"/*.zip; do
+        if [ -f "$pzip" ]; then
+          local pname
+          pname="$(basename "$pzip" .zip)"
+          echo -e "  • Proxy bundle: ${CYAN}$pname${NC}"
+
+          # Copy to data/bundles/ (for emulator service & Cloud Run)
+          cp "$pzip" "$ROOT_DIR/data/bundles/"
+          cp "$pzip" "$DIST_DIR/$pname.zip" 2>/dev/null || true
+
+          # Extract into dist/bundle/src/main/apigee/apiproxies/ (for emulator deployment)
+          local target_proxy_dir="$PROXIES_DIR/$pname"
+          mkdir -p "$target_proxy_dir"
+          unzip -q -o "$pzip" -d "$target_proxy_dir"
+
+          sanitize_proxy_targets "$target_proxy_dir"
+          total_proxies=$((total_proxies + 1))
+        fi
+      done
+
+      # 2. Process generated test data (products, developers, apps)
+      python3 -c "
+import json, os
+
+for fname in ['products.json', 'developers.json', 'developerapps.json']:
+    src = os.path.join('$tmp_dep_dir', fname)
+    if os.path.exists(src):
+        try:
+            with open(src) as f: s_data = json.load(f)
+            dst_dist = os.path.join('$DIST_DIR', fname)
+            d_data = []
+            if os.path.exists(dst_dist):
+                with open(dst_dist) as f: d_data = json.load(f)
+            elif os.path.exists(os.path.join('$SCRIPT_DIR', fname)):
+                with open(os.path.join('$SCRIPT_DIR', fname)) as f: d_data = json.load(f)
+
+            key = 'name' if fname != 'developers.json' else 'email'
+            merged = {item.get(key): item for item in d_data if isinstance(item, dict) and key in item}
+            for item in s_data:
+                if isinstance(item, dict) and key in item:
+                    merged[item[key]] = item
+
+            if fname == 'products.json':
+                for prod in merged.values():
+                    envs = prod.get('environments', [])
+                    if isinstance(envs, list):
+                        if 'test' not in envs: envs.append('test')
+                    else: envs = ['test']
+                    prod['environments'] = envs
+                    if 'operationGroup' in prod or 'llmOperationGroup' in prod:
+                        prod.pop('proxies', None)
+                        prod.pop('apiResources', None)
+
+            with open(dst_dist, 'w') as f:
+                json.dump(list(merged.values()), f, indent=2)
+            print(f'  • Updated {fname} ({len(merged)} entries total)')
+        except Exception as e:
+            print(f'  • Warning merging {fname}: {e}')
+"
+    else
+      echo -e "${RED}Failed to convert $dep_file with aft${NC}" >&2
+    fi
+    rm -rf "$tmp_dep_dir"
+  done
+
+  echo -e "\n${BOLD}================================================================${NC}"
+  echo -e "${GREEN}✓ Conversion completed! Processed $total_proxies proxy bundle(s).${NC}"
+  echo -e "  Assets created in:\n    • ${CYAN}$ROOT_DIR/data/bundles/${NC} (proxy bundles for emulator service)\n    • ${CYAN}$DIST_DIR/bundle/${NC} (unpacked bundles for deploy.sh)\n    • ${CYAN}$DIST_DIR/${NC} (merged products & apps)"
+  echo -e "${BOLD}================================================================${NC}\n"
+}
+
+# ------------------------------------------------------------------------------
 # Sub-menu Selector Helper
 # ------------------------------------------------------------------------------
 browse_and_select() {
@@ -313,6 +505,14 @@ while [[ $# -gt 0 ]]; do
       browse_and_select "features" get_available_features ""
       shift
       ;;
+    -d|--deployments)
+      browse_and_select "data/deployments" get_available_deployments ""
+      shift
+      ;;
+    -c|--convert|--convert-deployments)
+      CONVERT_ONLY=1
+      shift
+      ;;
     *)
       if [[ "$1" == -* ]]; then
         echo -e "${RED}Unknown option: $1${NC}" >&2
@@ -325,18 +525,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [ ${#SELECTED_TEMPLATES[@]} -eq 0 ]; then
+if [ "${CONVERT_ONLY:-0}" -ne 1 ] && [ ${#SELECTED_TEMPLATES[@]} -eq 0 ]; then
   # Interactive mode if a terminal is attached
   if [ -t 0 ]; then
     echo -e "\n${BOLD}Select what you would like to deploy to Apigee Emulator:${NC}"
     echo -e "  ${BOLD}1)${NC} ${CYAN}proxies/TestProxy.yaml${NC} ${GREEN}(default)${NC}"
-    echo -e "  ${BOLD}2)${NC} Proxies   (browse proxies/*.yaml)"
-    echo -e "  ${BOLD}3)${NC} Templates (browse templates/*.yaml)"
-    echo -e "  ${BOLD}4)${NC} Features  (browse features/*.yaml)"
+    echo -e "  ${BOLD}2)${NC} Proxies     (browse proxies/*.yaml)"
+    echo -e "  ${BOLD}3)${NC} Templates   (browse templates/*.yaml)"
+    echo -e "  ${BOLD}4)${NC} Features    (browse features/*.yaml)"
+    echo -e "  ${BOLD}5)${NC} Deployments (browse data/deployments/*.yaml)"
+    echo -e "  ${BOLD}C)${NC} Convert data/deployments/ into local assets with aft"
     echo -e "  ${BOLD}A)${NC} Deploy ALL templates"
 
     echo ""
-    read -r -p "Enter selection [1-4, A] (default 1): " choice
+    read -r -p "Enter selection [1-5, C, A] (default 1): " choice
     choice="${choice:-1}"
 
     case "$choice" in
@@ -351,6 +553,12 @@ if [ ${#SELECTED_TEMPLATES[@]} -eq 0 ]; then
         ;;
       4)
         browse_and_select "features" get_available_features ""
+        ;;
+      5)
+        browse_and_select "data/deployments" get_available_deployments ""
+        ;;
+      [Cc])
+        CONVERT_ONLY=1
         ;;
       [Aa])
         while IFS= read -r f; do
@@ -375,20 +583,17 @@ if [ ${#SELECTED_TEMPLATES[@]} -eq 0 ]; then
   fi
 fi
 
+# If convert-only requested, run asset conversion and exit
+if [ "${CONVERT_ONLY:-0}" -eq 1 ]; then
+  convert_deployments_to_assets "${SELECTED_TEMPLATES[@]}"
+  exit 0
+fi
+
 # ------------------------------------------------------------------------------
 # Main Execution
 # ------------------------------------------------------------------------------
 check_prerequisites
 ensure_emulator_running
-
-if [ -d "$ROOT_DIR/emulator" ]; then
-  DIST_DIR="$ROOT_DIR/emulator/dist"
-else
-  DIST_DIR="$ROOT_DIR/dist"
-fi
-BUNDLE_DIR="$DIST_DIR/bundle"
-ENV_DIR="$BUNDLE_DIR/src/main/apigee/environments/test"
-PROXIES_DIR="$BUNDLE_DIR/src/main/apigee/apiproxies"
 
 # Validate test data files exist
 TESTDATA_FILES=(
@@ -420,58 +625,113 @@ for YAML_FILE in "${SELECTED_TEMPLATES[@]}"; do
     exit 1
   fi
 
-  PROXY_NAME=$(python3 -c "
+  # Check if YAML_FILE is a deployment definition
+  IS_DEPLOYMENT=$(python3 -c "
+import yaml
+try:
+    with open('$YAML_FILE') as f:
+        d = yaml.safe_load(f)
+    if isinstance(d, dict) and (d.get('type') == 'deployment' or 'templates' in d or 'deployments' in '$YAML_FILE'):
+        print('true')
+    else:
+        print('false')
+except:
+    print('false')
+")
+
+  if [ "$IS_DEPLOYMENT" = "true" ]; then
+    echo -e "\n${BLUE}Compiling deployment from '$YAML_FILE' with aft...${NC}"
+    TMP_DEP_DIR=$(mktemp -d /tmp/aft-dep-XXXXXX)
+    if aft -i "$YAML_FILE" -f zip -o "$TMP_DEP_DIR" --no-animation; then
+      for PZIP in "$TMP_DEP_DIR"/*.zip; do
+        if [ -f "$PZIP" ]; then
+          PNAME="$(basename "$PZIP" .zip)"
+          TARGET_DIR="$PROXIES_DIR/$PNAME"
+          mkdir -p "$TARGET_DIR"
+          unzip -q -o "$PZIP" -d "$TARGET_DIR"
+
+          cp "$PZIP" "$DIST_DIR/$PNAME.zip" 2>/dev/null || true
+          mkdir -p "$ROOT_DIR/data/bundles"
+          cp "$PZIP" "$ROOT_DIR/data/bundles/$PNAME.zip" 2>/dev/null || true
+
+          sanitize_proxy_targets "$TARGET_DIR"
+          PROXIES+=("$PNAME")
+          echo -e "${GREEN}✓ Successfully compiled $PNAME from deployment${NC}"
+        fi
+      done
+
+      # Merge products, developers, apps into DIST_DIR
+      python3 -c "
+import json, os
+for fname in ['products.json', 'developers.json', 'developerapps.json']:
+    src = os.path.join('$TMP_DEP_DIR', fname)
+    dst = os.path.join('$DIST_DIR', fname)
+    if os.path.exists(src):
+        try:
+            with open(src) as f: s_data = json.load(f)
+            d_data = []
+            if os.path.exists(dst):
+                with open(dst) as f: d_data = json.load(f)
+            elif os.path.exists(os.path.join('$SCRIPT_DIR', fname)):
+                with open(os.path.join('$SCRIPT_DIR', fname)) as f: d_data = json.load(f)
+            key = 'name' if fname != 'developers.json' else 'email'
+            merged = {item.get(key): item for item in d_data if isinstance(item, dict) and key in item}
+            for item in s_data:
+                if isinstance(item, dict) and key in item:
+                    merged[item[key]] = item
+
+            if fname == 'products.json':
+                for prod in merged.values():
+                    envs = prod.get('environments', [])
+                    if isinstance(envs, list):
+                        if 'test' not in envs: envs.append('test')
+                    else: envs = ['test']
+                    prod['environments'] = envs
+                    if 'operationGroup' in prod or 'llmOperationGroup' in prod:
+                        prod.pop('proxies', None)
+                        prod.pop('apiResources', None)
+
+            with open(dst, 'w') as f:
+                json.dump(list(merged.values()), f, indent=2)
+            print(f'  • Merged {fname} with {len(s_data)} deployment entries')
+        except Exception as e:
+            print(f'  • Warning merging {fname}: {e}')
+"
+    else
+      echo -e "${RED}Error: Failed to compile deployment $YAML_FILE with aft.${NC}" >&2
+      rm -rf "$TMP_DEP_DIR"
+      exit 1
+    fi
+    rm -rf "$TMP_DEP_DIR"
+  else
+    PROXY_NAME=$(python3 -c "
 import yaml
 with open('$YAML_FILE') as f:
     data = yaml.safe_load(f)
 print(data.get('name', '') if isinstance(data, dict) else '')
 ")
 
-  if [ -z "$PROXY_NAME" ]; then
-    PROXY_NAME="$(basename "$YAML_FILE" .yaml)"
+    if [ -z "$PROXY_NAME" ]; then
+      PROXY_NAME="$(basename "$YAML_FILE" .yaml)"
+    fi
+
+    echo -e "\n${BLUE}Compiling proxy '${BOLD}$PROXY_NAME${NC}${BLUE}' from '$YAML_FILE'...${NC}"
+    ZIP_PATH="$DIST_DIR/$PROXY_NAME.zip"
+    aft -i "$YAML_FILE" -o "$ZIP_PATH" --no-animation
+
+    TARGET_DIR="$PROXIES_DIR/$PROXY_NAME"
+    mkdir -p "$TARGET_DIR"
+    unzip -q -o "$ZIP_PATH" -d "$TARGET_DIR"
+
+    # Also copy to data/bundles/
+    mkdir -p "$ROOT_DIR/data/bundles"
+    cp "$ZIP_PATH" "$ROOT_DIR/data/bundles/$PROXY_NAME.zip" 2>/dev/null || true
+
+    sanitize_proxy_targets "$TARGET_DIR"
+
+    PROXIES+=("$PROXY_NAME")
+    echo -e "${GREEN}✓ Successfully compiled $PROXY_NAME${NC}"
   fi
-
-  echo -e "\n${BLUE}Compiling proxy '${BOLD}$PROXY_NAME${NC}${BLUE}' from '$YAML_FILE'...${NC}"
-  ZIP_PATH="$DIST_DIR/$PROXY_NAME.zip"
-  aft -i "$YAML_FILE" -o "$ZIP_PATH" --no-animation
-
-  TARGET_DIR="$PROXIES_DIR/$PROXY_NAME"
-  mkdir -p "$TARGET_DIR"
-  unzip -q -o "$ZIP_PATH" -d "$TARGET_DIR"
-
-  # Sanitize any dangling TargetEndpoints in proxy XML (e.g. default route rules)
-  python3 -c "
-import glob, os, xml.etree.ElementTree as ET
-
-target_dir = '$TARGET_DIR/apiproxy'
-target_xmls = glob.glob(f'{target_dir}/targets/*.xml')
-targets = [os.path.splitext(os.path.basename(f))[0] for f in target_xmls]
-
-for proxy_file in glob.glob(f'{target_dir}/proxies/*.xml'):
-    try:
-        tree = ET.parse(proxy_file)
-        root = tree.getroot()
-        changed = False
-        for rr in root.findall('RouteRule'):
-            te = rr.find('TargetEndpoint')
-            if te is not None and te.text and te.text not in targets:
-                if 'googlecloud' in targets:
-                    te.text = 'googlecloud'
-                    changed = True
-                elif len(targets) > 0:
-                    te.text = targets[0]
-                    changed = True
-                else:
-                    rr.remove(te)
-                    changed = True
-        if changed:
-            tree.write(proxy_file, encoding='utf-8', xml_declaration=True)
-    except Exception as e:
-        print(f'Warning during sanitization of {proxy_file}: {e}')
-"
-
-  PROXIES+=("$PROXY_NAME")
-  echo -e "${GREEN}✓ Successfully compiled $PROXY_NAME${NC}"
 done
 
 # Generate test environment configuration
@@ -507,17 +767,35 @@ fi
 
 # Prepare dynamic products.json ensuring all deployed proxies are authorized
 python3 -c "
-import json
+import json, os
 
-with open('$SCRIPT_DIR/products.json') as f:
+prod_path = '$DIST_DIR/products.json' if os.path.exists('$DIST_DIR/products.json') else '$SCRIPT_DIR/products.json'
+with open(prod_path) as f:
     products = json.load(f)
 
 proxies = json.loads('$PROXIES_JSON')
 
 for prod in products:
-    op_group = prod.get('operationGroup', {})
+    envs = prod.get('environments', [])
+    if isinstance(envs, list):
+        if 'test' not in envs: envs.append('test')
+    else: envs = ['test']
+    prod['environments'] = envs
+
+    # In Apigee, if operationGroup or llmOperationGroup is set,
+    # proxies and apiResources MUST NOT be set
+    prod.pop('proxies', None)
+    prod.pop('apiResources', None)
+
+    op_group = prod.get('operationGroup')
+    if not isinstance(op_group, dict):
+        op_group = {'operationConfigType': 'proxy', 'operationConfigs': []}
+        prod['operationGroup'] = op_group
     existing_ops = op_group.get('operationConfigs', [])
-    existing_sources = {c.get('apiSource') for c in existing_ops}
+    if not isinstance(existing_ops, list):
+        existing_ops = []
+        op_group['operationConfigs'] = existing_ops
+    existing_sources = {c.get('apiSource') for c in existing_ops if isinstance(c, dict)}
 
     for p in proxies:
         if p not in existing_sources:
@@ -528,9 +806,15 @@ for prod in products:
             })
             existing_sources.add(p)
 
-    llm_group = prod.get('llmOperationGroup', {})
+    llm_group = prod.get('llmOperationGroup')
+    if not isinstance(llm_group, dict):
+        llm_group = {'operationConfigType': 'proxy', 'operationConfigs': []}
+        prod['llmOperationGroup'] = llm_group
     existing_llm_ops = llm_group.get('operationConfigs', [])
-    existing_llm_sources = {c.get('apiSource') for c in existing_llm_ops}
+    if not isinstance(existing_llm_ops, list):
+        existing_llm_ops = []
+        llm_group['operationConfigs'] = existing_llm_ops
+    existing_llm_sources = {c.get('apiSource') for c in existing_llm_ops if isinstance(c, dict)}
 
     for p in proxies:
         if p not in existing_llm_sources:
@@ -542,6 +826,39 @@ for prod in products:
                 })
             existing_llm_sources.add(p)
 
+# Ensure all products referenced by developer apps exist in products
+app_path = '$DIST_DIR/developerapps.json' if os.path.exists('$DIST_DIR/developerapps.json') else '$SCRIPT_DIR/developerapps.json'
+if os.path.exists(app_path):
+    try:
+        with open(app_path) as af:
+            apps = json.load(af)
+        existing_pnames = {p.get('name') for p in products if isinstance(p, dict)}
+        for app in apps:
+            if isinstance(app, dict):
+                prods_in_app = list(app.get('apiProducts', []))
+                for cred in app.get('credentials', []):
+                    if isinstance(cred, dict):
+                        for cred_p in cred.get('apiProducts', []):
+                            if isinstance(cred_p, dict) and 'apiproduct' in cred_p:
+                                prods_in_app.append(cred_p['apiproduct'])
+                            elif isinstance(cred_p, str):
+                                prods_in_app.append(cred_p)
+                for req_p in prods_in_app:
+                    if req_p and req_p not in existing_pnames:
+                        products.append({
+                            'name': req_p,
+                            'displayName': req_p,
+                            'approvalType': 'auto',
+                            'environments': ['test'],
+                            'operationGroup': {
+                                'operationConfigType': 'proxy',
+                                'operationConfigs': [{'apiSource': p, 'operations': [{'resource': '/'}], 'quota': {}} for p in proxies]
+                            }
+                        })
+                        existing_pnames.add(req_p)
+    except Exception as e:
+        print(f'  • Warning verifying app products: {e}')
+
 with open('$DIST_DIR/products.json', 'w') as f:
     json.dump(products, f, indent=2)
 "
@@ -551,7 +868,11 @@ TESTDATA_ZIP="$DIST_DIR/testdata.zip"
 (
   cd "$SCRIPT_DIR"
   zip -q "$TESTDATA_ZIP" datacollectors.json developerapps.json developers.json maps.json
-  (cd "$DIST_DIR" && zip -q -u "$TESTDATA_ZIP" products.json)
+  for f in products.json developerapps.json developers.json; do
+    if [ -f "$DIST_DIR/$f" ]; then
+      (cd "$DIST_DIR" && zip -q -u "$TESTDATA_ZIP" "$f")
+    fi
+  done
 )
 
 echo -e "${BLUE}Deploying test data (Products, Developer Apps, KVMs)...${NC}"

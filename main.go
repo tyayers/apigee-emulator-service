@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,6 +19,7 @@ type Server struct {
 	DeploymentManager *DeploymentManager
 	ProxyTester       *ProxyTester
 	AnalyticsManager  *AnalyticsManager
+	TestHistory       *TestHistoryManager
 	PublicDir         string
 	RootDir           string
 
@@ -67,6 +69,7 @@ func main() {
 	deploymentManager := NewDeploymentManager(dataDir)
 	proxyTester := NewProxyTester(emulatorClient)
 	analyticsManager := NewAnalyticsManager()
+	testHistory := NewTestHistoryManager(300)
 
 	s := &Server{
 		EmulatorClient:    emulatorClient,
@@ -74,6 +77,7 @@ func main() {
 		DeploymentManager: deploymentManager,
 		ProxyTester:       proxyTester,
 		AnalyticsManager:  analyticsManager,
+		TestHistory:       testHistory,
 		PublicDir:         publicDir,
 		RootDir:           rootDir,
 		isDeploying:       true,
@@ -98,6 +102,9 @@ func main() {
 		mux.HandleFunc(prefix+"/bundles", s.handleBundles)
 		mux.HandleFunc(prefix+"/deployments", s.handleDeployments)
 		mux.HandleFunc(prefix+"/tests", s.handleTests)
+		mux.HandleFunc(prefix+"/tests/run", s.handleTestsRun)
+		mux.HandleFunc(prefix+"/tests/history", s.handleTestsHistory)
+		mux.HandleFunc(prefix+"/tests/history/", s.handleTestHistoryDetail)
 		mux.HandleFunc(prefix+"/deploy", s.handleDeploy)
 		mux.HandleFunc(prefix+"/test", s.handleTest)
 		mux.HandleFunc(prefix+"/reset", s.handleReset)
@@ -390,7 +397,273 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Evaluate assertions if provided
+	if len(req.Assertions) > 0 {
+		resp.Assertions = EvaluateAssertions(req.Assertions, resp)
+		allPassed := true
+		for _, a := range resp.Assertions {
+			if !a.Passed {
+				allPassed = false
+				break
+			}
+		}
+		resp.Passed = allPassed
+	} else {
+		resp.Passed = (resp.StatusCode < 400 && resp.Error == "")
+	}
+
+	// Record in TestHistoryManager
+	runID := fmt.Sprintf("run_%d", time.Now().UnixNano())
+	resp.TestRunID = runID
+
+	proxyName := req.Proxy
+	if proxyName == "" {
+		proxyName = "General"
+	}
+
+	testName := req.TestName
+	if testName == "" {
+		testName = fmt.Sprintf("%s %s", req.Method, req.Path)
+	}
+
+	runResult := TestRunResult{
+		ID:             runID,
+		TestName:       testName,
+		Proxy:          proxyName,
+		Timestamp:      time.Now(),
+		Passed:         resp.Passed,
+		StatusCode:     resp.StatusCode,
+		StatusText:     resp.StatusText,
+		DurationMs:     resp.DurationMs,
+		Request:        req,
+		Response:       resp,
+		Assertions:     resp.Assertions,
+		TraceSessionID: resp.TraceSessionID,
+		TraceData:      resp.TraceData,
+		Error:          resp.Error,
+	}
+
+	s.TestHistory.Record(runResult)
+
 	jsonResponse(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleTestsRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var runReq TestsRunRequest
+	_ = json.NewDecoder(r.Body).Decode(&runReq)
+
+	allTests, err := s.DeploymentManager.LoadAllTests()
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	startTime := time.Now()
+	var results []TestRunResult
+	passedCount := 0
+	failedCount := 0
+
+	for _, tc := range allTests {
+		// Filter by proxy if requested
+		if runReq.Proxy != "" && !strings.EqualFold(tc.Proxy, runReq.Proxy) {
+			continue
+		}
+		// Filter by testName if requested
+		if runReq.TestName != "" && !strings.EqualFold(tc.Name, runReq.TestName) {
+			continue
+		}
+
+		verb := tc.Verb
+		if verb == "" {
+			if tc.Payload != "" {
+				verb = "POST"
+			} else {
+				verb = "GET"
+			}
+		}
+
+		path := tc.Path
+		if path == "" {
+			path = defaultPathForProxy(tc.Proxy)
+		}
+
+		testReq := TestRequest{
+			Proxy:       tc.Proxy,
+			Method:      verb,
+			Path:        path,
+			Headers:     tc.Headers,
+			Body:        tc.Payload,
+			RecordTrace: true, // Use trace result to evaluate
+			TestName:    tc.Name,
+			Assertions:  tc.Assertions,
+		}
+
+		resp, _ := s.ProxyTester.Execute(testReq)
+		if resp == nil {
+			resp = &TestResponse{
+				StatusCode: 500,
+				StatusText: "500 Internal Error",
+				Error:      "Failed to execute test",
+			}
+		}
+
+		// Evaluate assertions
+		if len(tc.Assertions) > 0 {
+			resp.Assertions = EvaluateAssertions(tc.Assertions, resp)
+			allPassed := true
+			for _, a := range resp.Assertions {
+				if !a.Passed {
+					allPassed = false
+					break
+				}
+			}
+			resp.Passed = allPassed
+		} else {
+			resp.Passed = (resp.StatusCode < 400 && resp.Error == "")
+		}
+
+		runID := fmt.Sprintf("run_%d", time.Now().UnixNano())
+		resp.TestRunID = runID
+
+		runResult := TestRunResult{
+			ID:             runID,
+			TestName:       tc.Name,
+			Proxy:          tc.Proxy,
+			Deployment:     tc.Deployment,
+			Timestamp:      time.Now(),
+			Passed:         resp.Passed,
+			StatusCode:     resp.StatusCode,
+			StatusText:     resp.StatusText,
+			DurationMs:     resp.DurationMs,
+			Request:        testReq,
+			Response:       resp,
+			Assertions:     resp.Assertions,
+			TraceSessionID: resp.TraceSessionID,
+			TraceData:      resp.TraceData,
+			Error:          resp.Error,
+		}
+
+		s.TestHistory.Record(runResult)
+		results = append(results, runResult)
+
+		if resp.Passed {
+			passedCount++
+		} else {
+			failedCount++
+		}
+	}
+
+	response := TestsRunResponse{
+		Total:      len(results),
+		Passed:     passedCount,
+		Failed:     failedCount,
+		DurationMs: time.Since(startTime).Milliseconds(),
+		Results:    results,
+	}
+
+	jsonResponse(w, http.StatusOK, response)
+}
+
+func (s *Server) handleTestsHistory(w http.ResponseWriter, r *http.Request) {
+	proxy := r.URL.Query().Get("proxy")
+
+	switch r.Method {
+	case http.MethodGet:
+		history := s.TestHistory.GetHistory(proxy)
+		// For list view, summarize trace availability without dumping full trace payload
+		list := make([]map[string]interface{}, len(history))
+		for i, run := range history {
+			hasTrace := (run.TraceData != nil || run.TraceSessionID != "")
+			list[i] = map[string]interface{}{
+				"id":             run.ID,
+				"testName":       run.TestName,
+				"proxy":          run.Proxy,
+				"deployment":     run.Deployment,
+				"timestamp":      run.Timestamp,
+				"passed":         run.Passed,
+				"statusCode":     run.StatusCode,
+				"statusText":     run.StatusText,
+				"durationMs":     run.DurationMs,
+				"hasTrace":       hasTrace,
+				"traceSessionId": run.TraceSessionID,
+				"assertions":     run.Assertions,
+				"request":        run.Request,
+				"error":          run.Error,
+			}
+		}
+		jsonResponse(w, http.StatusOK, list)
+
+	case http.MethodDelete:
+		s.TestHistory.Clear(proxy)
+		jsonResponse(w, http.StatusOK, map[string]string{"message": "History cleared"})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleTestHistoryDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := r.URL.Path
+	idx := strings.Index(path, "/tests/history/")
+	if idx == -1 {
+		http.NotFound(w, r)
+		return
+	}
+	subPath := path[idx+len("/tests/history/"):]
+	parts := strings.Split(strings.Trim(subPath, "/"), "/")
+
+	if len(parts) == 0 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	runID := parts[0]
+	run := s.TestHistory.GetRun(runID)
+	if run == nil {
+		jsonResponse(w, http.StatusNotFound, map[string]string{"error": "Test run not found"})
+		return
+	}
+
+	// If .../tests/history/{id}/trace -> download trace json
+	if len(parts) > 1 && parts[1] == "trace" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"trace_%s_%s.json\"", run.Proxy, run.ID))
+		tracePayload := run.TraceData
+		if tracePayload == nil {
+			tracePayload = map[string]interface{}{
+				"sessionId": run.TraceSessionID,
+				"proxy":     run.Proxy,
+				"message":   "No trace captured for this run",
+			}
+		}
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(tracePayload)
+		return
+	}
+
+	// If .../tests/history/{id}/result -> download test result json
+	if len(parts) > 1 && parts[1] == "result" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"test_result_%s_%s.json\"", run.Proxy, run.ID))
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(run)
+		return
+	}
+
+	// Otherwise return full test run detail
+	jsonResponse(w, http.StatusOK, run)
 }
 
 func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {

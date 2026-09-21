@@ -323,6 +323,18 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 		delete(prod, "proxies")
 		delete(prod, "apiResources")
 
+		envs, _ := prod["environments"].([]interface{})
+		hasTest := false
+		for _, e := range envs {
+			if eStr, ok := e.(string); ok && eStr == "test" {
+				hasTest = true
+				break
+			}
+		}
+		if !hasTest {
+			prod["environments"] = append(envs, "test")
+		}
+
 		opGroup, _ := prod["operationGroup"].(map[string]interface{})
 		if opGroup == nil {
 			opGroup = map[string]interface{}{
@@ -403,6 +415,73 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 			}
 		}
 		llmGroup["operationConfigs"] = llmConfigs
+	}
+
+	// Ensure all products referenced in developerapps.json exist
+	existingProds := make(map[string]bool)
+	for _, prod := range products {
+		if name, ok := prod["name"].(string); ok {
+			existingProds[name] = true
+		}
+	}
+
+	appsPath := filepath.Join(bm.RootDir, "developerapps.json")
+	if appsData, err := os.ReadFile(appsPath); err == nil {
+		var apps []map[string]interface{}
+		if err := json.Unmarshal(appsData, &apps); err == nil {
+			for _, app := range apps {
+				var reqProds []string
+				if pList, ok := app["apiProducts"].([]interface{}); ok {
+					for _, p := range pList {
+						if pStr, ok := p.(string); ok {
+							reqProds = append(reqProds, pStr)
+						}
+					}
+				}
+				if creds, ok := app["credentials"].([]interface{}); ok {
+					for _, c := range creds {
+						if cMap, ok := c.(map[string]interface{}); ok {
+							if cpList, ok := cMap["apiProducts"].([]interface{}); ok {
+								for _, cp := range cpList {
+									if cpStr, ok := cp.(string); ok {
+										reqProds = append(reqProds, cpStr)
+									} else if cpMap, ok := cp.(map[string]interface{}); ok {
+										if ap, ok := cpMap["apiproduct"].(string); ok {
+											reqProds = append(reqProds, ap)
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				for _, rp := range reqProds {
+					if rp != "" && !existingProds[rp] {
+						var defaultOps []map[string]interface{}
+						for _, p := range proxyNames {
+							defaultOps = append(defaultOps, map[string]interface{}{
+								"apiSource": p,
+								"operations": []map[string]interface{}{
+									{"resource": "/"},
+								},
+								"quota": map[string]interface{}{},
+							})
+						}
+						products = append(products, map[string]interface{}{
+							"name":         rp,
+							"displayName":  rp,
+							"approvalType": "auto",
+							"environments": []string{"test"},
+							"operationGroup": map[string]interface{}{
+								"operationConfigType": "proxy",
+								"operationConfigs":    defaultOps,
+							},
+						})
+						existingProds[rp] = true
+					}
+				}
+			}
+		}
 	}
 
 	updatedProducts, _ := json.MarshalIndent(products, "", "  ")
