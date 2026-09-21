@@ -581,6 +581,27 @@
     <span>Apigee Emulator Tester &bull; Go Service &bull; Ingress via Envoy</span>
   </footer>
 
-  <script src="app.js?v=3"></script>
+  <!-- Deployment Wait Dialog Modal -->
+  <div id="deploy-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="deploy-modal-title">
+    <div class="modal-card">
+      <div class="modal-spinner-wrap">
+        <div class="modal-spinner"></div>
+      </div>
+      <h3 id="deploy-modal-title" class="modal-title">Deploying Proxy Bundles</h3>
+      <p id="deploy-modal-desc" class="modal-desc">
+        The service is automatically deploying all proxy bundles to the Apigee emulator. Please wait while the environment and test data are initialized.
+      </p>
+      <div class="modal-progress-container">
+        <div class="modal-progress-bar"></div>
+      </div>
+      <div id="deploy-modal-status" class="modal-status-pill">
+        <span class="status-dot"></span>
+        <span id="deploy-modal-status-text">Deploying bundles...</span>
+      </div>
+      <button id="btn-deploy-modal-dismiss" class="btn btn-sm btn-outline modal-dismiss-btn hidden">Dismiss</button>
+    </div>
+  </div>
+
+  <script src="app.js?v=4"></script>
 </body>
 </html>

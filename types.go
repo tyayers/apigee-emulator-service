@@ -11,8 +11,10 @@ type EmulatorStatus struct {
 	ActiveProxies   []DeployedProxy    `json:"activeProxies"`
 	TotalProxies    int                `json:"totalProxies"`
 	AvailableBundles []BundleInfo      `json:"availableBundles"`
-	CheckedAt       time.Time          `json:"checkedAt"`
-	Error           string             `json:"error,omitempty"`
+	CheckedAt        time.Time       `json:"checkedAt"`
+	Error            string          `json:"error,omitempty"`
+	IsDeploying      bool            `json:"isDeploying"`
+	DeployMessage    string          `json:"deployMessage,omitempty"`
 }
 
 // DeployedProxy represents an active proxy deployed in the emulator.
@@ -57,7 +59,7 @@ type TestCase struct {
 	Deployment string            `json:"deployment,omitempty"`
 }
 
-// DeployRequest represents payload sent to /manage/api/deploy.
+// DeployRequest represents payload sent to /tester/api/deploy.
 type DeployRequest struct {
 	Bundles []string `json:"bundles"`
 	All     bool     `json:"all"`
@@ -71,6 +73,7 @@ type DeployResponse struct {
 	Revision      string          `json:"revision,omitempty"`
 	Deployed      []DeployedProxy `json:"deployed"`
 	TotalDeployed int             `json:"totalDeployed"`
+	DeployedCount int             `json:"deployedCount"`
 	DurationMs    int64           `json:"durationMs"`
 	Error         string          `json:"error,omitempty"`
 }

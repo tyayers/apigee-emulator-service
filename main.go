@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,26 @@ type Server struct {
 	AnalyticsManager  *AnalyticsManager
 	PublicDir         string
 	RootDir           string
+
+	mu              sync.RWMutex
+	deployMu        sync.Mutex
+	isDeploying     bool
+	deployStatusMsg string
+	deployError     string
+}
+
+func (s *Server) setDeployState(deploying bool, msg string, errMsg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.isDeploying = deploying
+	s.deployStatusMsg = msg
+	s.deployError = errMsg
+}
+
+func (s *Server) getDeployState() (bool, string, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isDeploying, s.deployStatusMsg, s.deployError
 }
 
 func getEnv(key, fallback string) string {
@@ -55,7 +76,12 @@ func main() {
 		AnalyticsManager:  analyticsManager,
 		PublicDir:         publicDir,
 		RootDir:           rootDir,
+		isDeploying:       true,
+		deployStatusMsg:   "Initializing service and waiting for Apigee emulator...",
 	}
+
+	// Automatically deploy all bundles on service startup
+	go s.startAutoDeploy()
 
 	mux := http.NewServeMux()
 
@@ -159,6 +185,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status.AvailableBundles = bundles
 
+	// Populate deployment status
+	isDeploying, msg, errMsg := s.getDeployState()
+	status.IsDeploying = isDeploying
+	status.DeployMessage = msg
+	if errMsg != "" && status.Error == "" {
+		status.Error = errMsg
+	}
+
 	jsonResponse(w, http.StatusOK, status)
 }
 
@@ -219,6 +253,100 @@ func (s *Server) handleTests(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, tests)
 }
 
+func (s *Server) executeDeploy(req DeployRequest) (*DeployResponse, error) {
+	s.deployMu.Lock()
+	defer s.deployMu.Unlock()
+
+	s.setDeployState(true, "Preparing deployment...", "")
+	defer func() {
+		s.setDeployState(false, "", "")
+	}()
+
+	startTime := time.Now()
+
+	// 1. Reset if requested (default true)
+	if req.Reset {
+		s.setDeployState(true, "Resetting emulator state...", "")
+		if err := s.EmulatorClient.Reset(); err != nil {
+			log.Printf("Warning during emulator reset: %v", err)
+		}
+	}
+
+	// 2. Build environment bundle
+	s.setDeployState(true, "Building environment bundle from proxy bundles...", "")
+	bundleZipBytes, proxyNames, err := s.BundleManager.BuildEnvironmentBundle(req.Bundles)
+	if err != nil {
+		s.setDeployState(false, "", err.Error())
+		return nil, fmt.Errorf("failed to build environment bundle: %w", err)
+	}
+
+	// 3. Build & upload test data bundle
+	s.setDeployState(true, "Building and uploading test data...", "")
+	testDataBytes, err := s.BundleManager.BuildTestDataBundle(proxyNames)
+	if err != nil {
+		log.Printf("Warning building testdata: %v", err)
+	} else {
+		if err := s.EmulatorClient.SetupTestData(testDataBytes); err != nil {
+			log.Printf("Warning uploading testdata: %v", err)
+		}
+	}
+
+	// 4. Deploy proxy bundle to emulator
+	s.setDeployState(true, fmt.Sprintf("Deploying %d proxy bundles to Apigee emulator...", len(proxyNames)), "")
+	revision, err := s.EmulatorClient.DeployBundle("test", bundleZipBytes)
+	if err != nil {
+		s.setDeployState(false, "", err.Error())
+		return nil, fmt.Errorf("deploy to emulator failed: %w", err)
+	}
+
+	// 5. Fetch updated active proxies
+	activeTree, _ := s.EmulatorClient.GetDeploymentTree()
+	duration := time.Since(startTime).Milliseconds()
+
+	return &DeployResponse{
+		Success:       true,
+		Message:       fmt.Sprintf("Successfully deployed %d proxies to Apigee Emulator", len(proxyNames)),
+		Revision:      revision,
+		Deployed:      activeTree,
+		TotalDeployed: len(activeTree),
+		DeployedCount: len(activeTree),
+		DurationMs:    duration,
+	}, nil
+}
+
+func (s *Server) startAutoDeploy() {
+	log.Printf("[AutoDeploy] Initializing startup auto-deployment of all proxy bundles...")
+	s.setDeployState(true, "Waiting for Apigee emulator to be ready...", "")
+
+	// Wait for emulator to become healthy (up to 120 seconds, polling every 2 seconds)
+	ready := false
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := s.EmulatorClient.CheckHealth()
+		if err == nil && status.Online {
+			ready = true
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	if !ready {
+		log.Printf("[AutoDeploy] Warning: Apigee emulator did not become ready within timeout. Auto-deploy aborted.")
+		s.setDeployState(false, "", "Emulator did not become ready within timeout")
+		return
+	}
+
+	log.Printf("[AutoDeploy] Apigee emulator is online. Deploying all bundles...")
+	resp, err := s.executeDeploy(DeployRequest{All: true, Reset: true})
+	if err != nil {
+		log.Printf("[AutoDeploy] Auto-deployment failed: %v", err)
+		s.setDeployState(false, "", err.Error())
+		return
+	}
+
+	log.Printf("[AutoDeploy] Successfully auto-deployed %d proxies (revision %s) in %dms", resp.TotalDeployed, resp.Revision, resp.DurationMs)
+}
+
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -232,57 +360,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		req.Reset = true
 	}
 
-	startTime := time.Now()
-
-	// 1. Reset if requested (default true)
-	if req.Reset {
-		if err := s.EmulatorClient.Reset(); err != nil {
-			log.Printf("Warning during emulator reset: %v", err)
-		}
-	}
-
-	// 2. Build environment bundle
-	bundleZipBytes, proxyNames, err := s.BundleManager.BuildEnvironmentBundle(req.Bundles)
-	if err != nil {
-		jsonResponse(w, http.StatusBadRequest, DeployResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to build environment bundle: %v", err),
-		})
-		return
-	}
-
-	// 3. Build & upload test data bundle
-	testDataBytes, err := s.BundleManager.BuildTestDataBundle(proxyNames)
-	if err != nil {
-		log.Printf("Warning building testdata: %v", err)
-	} else {
-		if err := s.EmulatorClient.SetupTestData(testDataBytes); err != nil {
-			log.Printf("Warning uploading testdata: %v", err)
-		}
-	}
-
-	// 4. Deploy proxy bundle to emulator
-	revision, err := s.EmulatorClient.DeployBundle("test", bundleZipBytes)
+	resp, err := s.executeDeploy(req)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, DeployResponse{
 			Success: false,
-			Error:   fmt.Sprintf("Deploy to emulator failed: %v", err),
+			Error:   err.Error(),
 		})
 		return
 	}
 
-	// 5. Fetch updated active proxies
-	activeTree, _ := s.EmulatorClient.GetDeploymentTree()
-	duration := time.Since(startTime).Milliseconds()
-
-	jsonResponse(w, http.StatusOK, DeployResponse{
-		Success:       true,
-		Message:       fmt.Sprintf("Successfully deployed %d proxies to Apigee Emulator", len(proxyNames)),
-		Revision:      revision,
-		Deployed:      activeTree,
-		TotalDeployed: len(activeTree),
-		DurationMs:    duration,
-	})
+	jsonResponse(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {

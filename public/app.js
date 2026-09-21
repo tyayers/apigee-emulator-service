@@ -134,7 +134,120 @@
     drawerGeneralContent: document.getElementById('drawer-general-content'),
     drawerRawJson: document.getElementById('drawer-raw-json'),
     btnCopyDrawerJson: document.getElementById('btn-copy-drawer-json'),
+
+    // Deployment Wait Modal
+    deployModal: document.getElementById('deploy-modal'),
+    deployModalTitle: document.getElementById('deploy-modal-title'),
+    deployModalDesc: document.getElementById('deploy-modal-desc'),
+    deployModalStatusText: document.getElementById('deploy-modal-status-text'),
+    btnDeployModalDismiss: document.getElementById('btn-deploy-modal-dismiss'),
   };
+
+  // Deployment Wait Dialog Management
+  function showDeployWaitDialog(options = {}) {
+    if (!el.deployModal) return;
+    const title = options.title || 'Deploying Proxy Bundles';
+    const desc = options.desc || 'The service is automatically deploying all proxy bundles to the Apigee emulator. Please wait while the environment and test data are initialized.';
+    const status = options.status || 'Deploying bundles...';
+
+    if (el.deployModalTitle) el.deployModalTitle.textContent = title;
+    if (el.deployModalDesc) el.deployModalDesc.textContent = desc;
+    if (el.deployModalStatusText) el.deployModalStatusText.textContent = status;
+    if (el.btnDeployModalDismiss) el.btnDeployModalDismiss.classList.add('hidden');
+
+    el.deployModal.classList.remove('hidden');
+  }
+
+  function updateDeployWaitDialog(statusText) {
+    if (el.deployModalStatusText && statusText) {
+      el.deployModalStatusText.textContent = statusText;
+    }
+  }
+
+  function hideDeployWaitDialog() {
+    if (!el.deployModal) return;
+    el.deployModal.classList.add('hidden');
+    if (el.btnDeployModalDismiss) el.btnDeployModalDismiss.classList.add('hidden');
+  }
+
+  function isDeployWaitDialogVisible() {
+    return el.deployModal && !el.deployModal.classList.contains('hidden');
+  }
+
+  let isWaitingForDeployment = false;
+  async function waitForDeployment(customStatusText) {
+    if (isWaitingForDeployment) return;
+    isWaitingForDeployment = true;
+
+    showDeployWaitDialog({
+      status: customStatusText || (state.status && state.status.deployMessage) || 'Waiting for Apigee emulator and deploying bundles...'
+    });
+
+    return new Promise((resolve) => {
+      let attempts = 0;
+      const maxAttempts = 120; // 2 minutes with 1s interval
+      const pollTimer = setInterval(async () => {
+        attempts++;
+        try {
+          const resp = await fetch(`${API_BASE}/status`);
+          if (resp.ok) {
+            const data = await resp.json();
+            state.status = data;
+            state.activeProxies = data.activeProxies || [];
+            state.bundles = data.availableBundles || [];
+
+            if (data.isDeploying) {
+              updateDeployWaitDialog(data.deployMessage || 'Deploying bundles to Apigee emulator...');
+            } else {
+              clearInterval(pollTimer);
+              isWaitingForDeployment = false;
+              hideDeployWaitDialog();
+
+              if (data.online) {
+                el.statusBadge.className = 'status-badge status-online';
+                const proxyCount = state.activeProxies.length;
+                el.statusText.textContent = `Emulator Ready (${proxyCount} deployed)`;
+              } else {
+                el.statusBadge.className = 'status-badge status-offline';
+                el.statusText.textContent = data.error || 'Emulator Offline';
+              }
+
+              try { renderActiveProxies(); } catch (e) { console.error(e); }
+              try { renderBundles(); } catch (e) { console.error(e); }
+              try { updateProxySelector(); } catch (e) { console.error(e); }
+
+              if (data.error && (!data.activeProxies || data.activeProxies.length === 0)) {
+                showToast(`Deployment error: ${data.error}`, 5000);
+              } else if (data.activeProxies && data.activeProxies.length > 0) {
+                showToast(`All bundles deployed successfully! (${data.activeProxies.length} active proxies)`);
+                if (!state.selectedProxyName && state.activeProxies.length > 0) {
+                  const first = state.activeProxies[0];
+                  const name = first.name || first.Name;
+                  if (name) selectProxy(name, false);
+                }
+              }
+              resolve(data);
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn('[AutoDeploy] Error polling status:', err);
+        }
+
+        if (attempts >= maxAttempts) {
+          clearInterval(pollTimer);
+          isWaitingForDeployment = false;
+          if (el.deployModalStatusText) {
+            el.deployModalStatusText.textContent = 'Deployment timeout reached';
+          }
+          if (el.btnDeployModalDismiss) {
+            el.btnDeployModalDismiss.classList.remove('hidden');
+          }
+          resolve(null);
+        }
+      }, 1000);
+    });
+  }
 
   // Initialization
   async function init() {
@@ -155,6 +268,11 @@
       fetchStatus(),
       fetchTests(),
     ]);
+
+    // If the service is currently auto-deploying bundles on startup, wait for it
+    if (state.status && state.status.isDeploying) {
+      await waitForDeployment();
+    }
 
     // Handle deep linked proxy parameter from URL (e.g. ?proxy=TestProxy)
     const urlParams = new URLSearchParams(window.location.search);
@@ -214,6 +332,9 @@
     el.btnDeploySelected.addEventListener('click', deploySelected);
     el.btnReset.addEventListener('click', resetEmulator);
     el.btnSendReq.addEventListener('click', sendTestRequest);
+    if (el.btnDeployModalDismiss) {
+      el.btnDeployModalDismiss.addEventListener('click', hideDeployWaitDialog);
+    }
 
     el.btnAddHeader.addEventListener('click', () => addHeaderRow('', ''));
     el.btnAddApiKey.addEventListener('click', () => {
@@ -370,6 +491,11 @@
       state.status = data;
       state.activeProxies = data.activeProxies || [];
       state.bundles = data.availableBundles || [];
+
+      // If service is currently deploying bundles and dialog is not yet shown, wait for it
+      if (data.isDeploying && !isDeployWaitDialogVisible()) {
+        waitForDeployment();
+      }
 
       // Update UI
       if (data.online) {
@@ -654,6 +780,12 @@
     el.statusBadge.className = 'status-badge status-loading';
     el.statusText.textContent = 'Deploying all bundles...';
 
+    showDeployWaitDialog({
+      title: 'Deploying All Bundles',
+      desc: 'Packaging all proxy bundles and uploading test data to the Apigee emulator...',
+      status: 'Deploying all bundles to Apigee emulator...',
+    });
+
     try {
       const resp = await fetch(`${API_BASE}/deploy`, {
         method: 'POST',
@@ -663,12 +795,14 @@
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Deployment failed');
 
-      showToast(`Deployed ${data.deployedCount} proxies successfully!`);
+      const count = data.deployedCount || data.totalDeployed || (data.deployed ? data.deployed.length : 0);
+      showToast(`Deployed ${count} proxies successfully!`);
       await fetchStatus();
     } catch (err) {
       alert('Deployment failed: ' + err.message);
       await fetchStatus();
     } finally {
+      hideDeployWaitDialog();
       el.btnDeployAll.disabled = false;
     }
   }
@@ -686,6 +820,12 @@
     el.statusBadge.className = 'status-badge status-loading';
     el.statusText.textContent = `Deploying ${files.length} bundle(s)...`;
 
+    showDeployWaitDialog({
+      title: 'Deploying Selected Bundles',
+      desc: `Packaging and deploying ${files.length} selected proxy bundle(s) to the Apigee emulator...`,
+      status: `Deploying ${files.length} bundle(s)...`,
+    });
+
     try {
       const resp = await fetch(`${API_BASE}/deploy`, {
         method: 'POST',
@@ -695,12 +835,14 @@
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Deployment failed');
 
-      showToast(`Deployed ${data.deployedCount} proxies!`);
+      const count = data.deployedCount || data.totalDeployed || (data.deployed ? data.deployed.length : 0);
+      showToast(`Deployed ${count} proxies!`);
       await fetchStatus();
     } catch (err) {
       alert('Deployment failed: ' + err.message);
       await fetchStatus();
     } finally {
+      hideDeployWaitDialog();
       updateDeploySelectedState();
     }
   }

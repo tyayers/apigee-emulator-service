@@ -728,7 +728,7 @@ Current Service URL: https://apigee-emulator-xxxxxx-ew.a.run.app
   9) Test proxy traffic (/testproxy)
  10) Start trace recording
  11) Stop trace recording & save trace.json
- 12) Open Apigee Emulator Manager Web UI (/manage/)
+ 12) Open Apigee Emulator Tester Web UI (/tester/)
   Q) Quit
 
 Enter selection [1-12, Q] (default 1):
@@ -783,8 +783,8 @@ http://localhost:8085/tester/
 *(Note: `/manage/` automatically redirects to `/tester/` for backward compatibility).*
 
 Quick links available from the UI sidebar:
-- Built-in visualizer: [`http://localhost:8085/manage/trace.html`](http://localhost:8085/manage/trace.html)
-- JSON trace tree: [`http://localhost:8085/manage/viewer.html`](http://localhost:8085/manage/viewer.html)
+- Built-in visualizer: [`http://localhost:8085/tester/trace.html`](http://localhost:8085/tester/trace.html)
+- JSON trace tree: [`http://localhost:8085/tester/viewer.html`](http://localhost:8085/tester/viewer.html)
 - Apigee Emulator Tree: [`http://localhost:8080/v1/emulator/tree`](http://localhost:8080/v1/emulator/tree)
 
 ---

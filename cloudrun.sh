@@ -918,7 +918,7 @@ interactive_menu() {
   echo -e "  ${BOLD}9)${NC} Test proxy traffic (/testproxy)"
   echo -e " ${BOLD}10)${NC} Start trace recording"
   echo -e " ${BOLD}11)${NC} Stop trace recording & save trace.json"
-  echo -e " ${BOLD}12)${NC} ${CYAN}Open Apigee Emulator Manager Web UI${NC} (/manage/)"
+  echo -e " ${BOLD}12)${NC} ${CYAN}Open Apigee Emulator Tester Web UI${NC} (/tester/)"
   echo -e "  ${BOLD}Q)${NC} Quit"
   echo ""
 
@@ -964,9 +964,9 @@ interactive_menu() {
     12)
       local cr_url
       cr_url=$(get_service_url)
-      echo -e "${BOLD}Apigee Emulator Manager UI:${NC} ${GREEN}$cr_url/manage/${NC}"
+      echo -e "${BOLD}Apigee Emulator Tester UI:${NC} ${GREEN}$cr_url/tester/${NC}"
       if command -v xdg-open &>/dev/null; then
-        xdg-open "$cr_url/manage/" 2>/dev/null || true
+        xdg-open "$cr_url/tester/" 2>/dev/null || true
       fi
       ;;
     [Qq])
