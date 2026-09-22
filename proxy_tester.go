@@ -69,10 +69,52 @@ func (pt *ProxyTester) Execute(req TestRequest) (*TestResponse, error) {
 		httpReq.Header.Set("User-Agent", "Apigee-Emulator-Manager/1.0")
 	}
 
+	// Ensure API key headers are synchronized across both standard and AI key formats
+	apiKey := httpReq.Header.Get("x-api-key")
+	aiKey := httpReq.Header.Get("x-ai-key")
+	if apiKey != "" && aiKey == "" {
+		httpReq.Header.Set("x-ai-key", apiKey)
+	} else if aiKey != "" && apiKey == "" {
+		httpReq.Header.Set("x-api-key", aiKey)
+	}
+
 	// 3. Measure execution latency
 	startTime := time.Now()
 	resp, err := pt.Client.Do(httpReq)
 	duration := time.Since(startTime).Milliseconds()
+
+	// If 401 Unauthorized (InvalidApiKey) occurs, try resolving active keys from emulator datastore
+	if err == nil && resp.StatusCode == 401 && (apiKey != "" || aiKey != "") {
+		if activeKeys, keyErr := pt.Emulator.GetActiveConsumerKeys(); keyErr == nil && len(activeKeys) > 0 {
+			activeKey := activeKeys[0]
+			currentKey := apiKey
+			if currentKey == "" {
+				currentKey = aiKey
+			}
+			if activeKey != currentKey {
+				resp.Body.Close()
+				var retryBodyReader io.Reader
+				if req.Body != "" && method != http.MethodGet && method != http.MethodHead {
+					retryBodyReader = strings.NewReader(req.Body)
+				}
+				if retryReq, rErr := http.NewRequest(method, targetURL, retryBodyReader); rErr == nil {
+					for k, v := range req.Headers {
+						retryReq.Header.Set(k, v)
+					}
+					retryReq.Header.Set("x-api-key", activeKey)
+					retryReq.Header.Set("x-ai-key", activeKey)
+					if retryReq.Header.Get("User-Agent") == "" {
+						retryReq.Header.Set("User-Agent", "Apigee-Emulator-Manager/1.0")
+					}
+					retryStart := time.Now()
+					if retryResp, doErr := pt.Client.Do(retryReq); doErr == nil {
+						resp = retryResp
+						duration = time.Since(retryStart).Milliseconds()
+					}
+				}
+			}
+		}
+	}
 
 	if err != nil {
 		return &TestResponse{

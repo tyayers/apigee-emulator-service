@@ -8,6 +8,10 @@
     status: null,
     bundles: [],
     activeProxies: [],
+    products: [],
+    users: [],
+    apps: [],
+    collapsedSections: new Set(JSON.parse(localStorage.getItem('sidebar_collapsed_sections') || '[]')),
     tests: [],
     selectedProxyName: null,
     selectedPreset: null,
@@ -27,6 +31,7 @@
     play: `<svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
     download: `<svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
     delete: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+    copy: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`,
   };
 
   // DOM Elements
@@ -40,6 +45,12 @@
     activeProxiesCount: document.getElementById('active-proxies-count'),
     bundlesList: document.getElementById('bundles-list'),
     bundlesCount: document.getElementById('bundles-count'),
+    productsList: document.getElementById('products-list'),
+    productsCount: document.getElementById('products-count'),
+    usersList: document.getElementById('users-list'),
+    usersCount: document.getElementById('users-count'),
+    appsList: document.getElementById('apps-list'),
+    appsCount: document.getElementById('apps-count'),
     btnDeploySelected: document.getElementById('btn-deploy-selected'),
     presetSelect: document.getElementById('test-preset-select'),
     btnTestAll: document.getElementById('btn-test-all'),
@@ -101,8 +112,46 @@
     viewAnalytics: document.getElementById('view-analytics'),
     navBtnTester: document.getElementById('nav-btn-tester'),
     navBtnAnalytics: document.getElementById('nav-btn-analytics'),
+    navBtnEmulatorState: document.getElementById('nav-btn-emulator-state'),
+    btnEmulatorState: document.getElementById('btn-emulator-state'),
     navAnalyticsBadge: document.getElementById('nav-analytics-badge'),
     btnViewTraceAnalytics: document.getElementById('btn-view-trace-analytics'),
+
+    // Main Workspace Panels
+    testerCardsWrap: document.getElementById('tester-cards-wrap'),
+    resourceDetailCard: document.getElementById('resource-detail-card'),
+    btnBackToTester: document.getElementById('btn-back-to-tester'),
+    resourceDetailCategoryBadge: document.getElementById('resource-detail-category-badge'),
+    resourceDetailTitle: document.getElementById('resource-detail-title'),
+    resourceDetailActions: document.getElementById('resource-detail-actions'),
+    resourceDetailSummary: document.getElementById('resource-detail-summary'),
+    resourceDetailContent: document.getElementById('resource-detail-content'),
+    resourceRawJson: document.getElementById('resource-raw-json'),
+    btnCopyResourceJson: document.getElementById('btn-copy-resource-json'),
+
+    // Emulator State & Validation
+    emulatorStateCard: document.getElementById('emulator-state-card'),
+    btnStateBackToTester: document.getElementById('btn-state-back-to-tester'),
+    btnStateReuploadTestdata: document.getElementById('btn-state-reupload-testdata'),
+    btnStateRefresh: document.getElementById('btn-state-refresh'),
+    emulatorStateOverallBadge: document.getElementById('emulator-state-overall-badge'),
+    stateMetricOnline: document.getElementById('state-metric-online'),
+    stateMetricUrls: document.getElementById('state-metric-urls'),
+    stateMetricProxies: document.getElementById('state-metric-proxies'),
+    stateMetricProxiesSub: document.getElementById('state-metric-proxies-sub'),
+    stateMetricProducts: document.getElementById('state-metric-products'),
+    stateMetricProductsSub: document.getElementById('state-metric-products-sub'),
+    stateMetricApps: document.getElementById('state-metric-apps'),
+    stateMetricAppsSub: document.getElementById('state-metric-apps-sub'),
+    stateMetricDatastore: document.getElementById('state-metric-datastore'),
+    stateMetricDatastoreSub: document.getElementById('state-metric-datastore-sub'),
+    stateValidationChecklist: document.getElementById('state-validation-checklist'),
+    stateTableProxiesBody: document.getElementById('state-table-proxies-body'),
+    stateProductsCards: document.getElementById('state-products-cards'),
+    stateTableUsersBody: document.getElementById('state-table-users-body'),
+    stateTableAppsBody: document.getElementById('state-table-apps-body'),
+    stateRawTreeJson: document.getElementById('state-raw-tree-json'),
+    btnCopyStateTree: document.getElementById('btn-copy-state-tree'),
 
     // Analytics Header & Toolbar
     btnRefreshAnalytics: document.getElementById('btn-refresh-analytics'),
@@ -275,6 +324,7 @@
 
   // Initialization
   async function init() {
+    initCollapsibleCards();
     setupTabHandlers();
     setupEventListeners();
     setupAnalyticsEventListeners();
@@ -284,7 +334,40 @@
 
     if (window.location.hash === '#analytics' || new URLSearchParams(window.location.search).get('view') === 'analytics') {
       switchView('analytics');
+    } else if (window.location.hash === '#emulator-state' || new URLSearchParams(window.location.search).get('view') === 'emulator-state') {
+      switchView('emulator-state');
     }
+  }
+
+  // Collapsible Sidebar Cards
+  function initCollapsibleCards() {
+    document.querySelectorAll('.collapsible-header').forEach(header => {
+      const card = header.closest('.collapsible-card');
+      if (!card) return;
+      const cardId = card.id;
+
+      // Restore collapsed state from localStorage
+      if (state.collapsedSections.has(cardId)) {
+        card.classList.add('collapsed');
+      }
+
+      header.addEventListener('click', (e) => {
+        // Prevent toggle if clicking interactive elements inside header
+        if (e.target.closest('button, input, a, select')) return;
+
+        card.classList.toggle('collapsed');
+        if (card.classList.contains('collapsed')) {
+          state.collapsedSections.add(cardId);
+        } else {
+          state.collapsedSections.delete(cardId);
+        }
+        try {
+          localStorage.setItem('sidebar_collapsed_sections', JSON.stringify(Array.from(state.collapsedSections)));
+        } catch (err) {
+          console.warn('Failed saving sidebar collapsed state:', err);
+        }
+      });
+    });
   }
 
   async function loadInitialData() {
@@ -445,6 +528,53 @@
     if (el.navBtnAnalytics) {
       el.navBtnAnalytics.addEventListener('click', () => switchView('analytics'));
     }
+    if (el.navBtnEmulatorState) {
+      el.navBtnEmulatorState.addEventListener('click', () => switchView('emulator-state'));
+    }
+    if (el.btnEmulatorState) {
+      el.btnEmulatorState.addEventListener('click', () => switchView('emulator-state'));
+    }
+    if (el.btnBackToTester) {
+      el.btnBackToTester.addEventListener('click', showTesterView);
+    }
+    if (el.btnStateBackToTester) {
+      el.btnStateBackToTester.addEventListener('click', showTesterView);
+    }
+    if (el.btnStateRefresh) {
+      el.btnStateRefresh.addEventListener('click', fetchEmulatorState);
+    }
+    if (el.btnStateReuploadTestdata) {
+      el.btnStateReuploadTestdata.addEventListener('click', reuploadTestData);
+    }
+    if (el.btnCopyResourceJson) {
+      el.btnCopyResourceJson.addEventListener('click', () => {
+        if (el.resourceRawJson) {
+          navigator.clipboard.writeText(el.resourceRawJson.textContent);
+          showToast('Resource JSON copied to clipboard!');
+        }
+      });
+    }
+    if (el.btnCopyStateTree) {
+      el.btnCopyStateTree.addEventListener('click', () => {
+        if (el.stateRawTreeJson) {
+          navigator.clipboard.writeText(el.stateRawTreeJson.textContent);
+          showToast('Emulator Tree JSON copied to clipboard!');
+        }
+      });
+    }
+
+    // State tabs switching
+    document.querySelectorAll('[data-state-tab]').forEach(tabBtn => {
+      tabBtn.addEventListener('click', () => {
+        const targetId = tabBtn.getAttribute('data-state-tab');
+        document.querySelectorAll('[data-state-tab]').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.state-tab-panel').forEach(p => p.classList.add('hidden'));
+        tabBtn.classList.add('active');
+        const targetPanel = document.getElementById(targetId);
+        if (targetPanel) targetPanel.classList.remove('hidden');
+      });
+    });
+
     if (el.btnViewTraceAnalytics) {
       el.btnViewTraceAnalytics.addEventListener('click', () => switchView('analytics'));
     }
@@ -533,6 +663,25 @@
       state.status = data;
       state.activeProxies = data.activeProxies || [];
       state.bundles = data.availableBundles || [];
+      state.products = data.products || [];
+      state.users = data.users || [];
+      state.apps = data.apps || [];
+
+      // Fallback: if products, users, or apps missing from status payload, fetch endpoints
+      if (!data.products) {
+        try {
+          const [pResp, uResp, aResp] = await Promise.all([
+            fetch(`${API_BASE}/products`).then(r => r.ok ? r.json() : []),
+            fetch(`${API_BASE}/users`).then(r => r.ok ? r.json() : []),
+            fetch(`${API_BASE}/apps`).then(r => r.ok ? r.json() : [])
+          ]);
+          state.products = pResp || [];
+          state.users = uResp || [];
+          state.apps = aResp || [];
+        } catch (e) {
+          console.warn('Fallback fetching products/users/apps:', e);
+        }
+      }
 
       // If service is currently deploying bundles and dialog is not yet shown, wait for it
       if (data.isDeploying && !isDeployWaitDialogVisible()) {
@@ -551,6 +700,9 @@
 
       try { renderActiveProxies(); } catch (e) { console.error('Error rendering active proxies:', e); }
       try { renderBundles(); } catch (e) { console.error('Error rendering bundles:', e); }
+      try { renderProducts(); } catch (e) { console.error('Error rendering products:', e); }
+      try { renderUsers(); } catch (e) { console.error('Error rendering users:', e); }
+      try { renderApps(); } catch (e) { console.error('Error rendering apps:', e); }
       try { updateProxySelector(); } catch (e) { console.error('Error updating proxy selector:', e); }
 
       // Restore selected proxy if in URL or active
@@ -722,14 +874,21 @@
       addHeaderRow('Content-Type', 'application/json', true);
     }
 
-    // Populate Body
-    const bodyContent = test.payload || test.body || '';
-    if (bodyContent) {
-      try {
-        const parsed = JSON.parse(bodyContent);
-        el.reqBody.value = JSON.stringify(parsed, null, 2);
-      } catch {
-        el.reqBody.value = bodyContent;
+    // Populate Body (handles body, request, or payload in string or object format)
+    const rawBody = (test.body !== undefined && test.body !== '') ? test.body
+      : ((test.request !== undefined && test.request !== '') ? test.request
+      : ((test.payload !== undefined && test.payload !== '') ? test.payload : ''));
+
+    if (rawBody) {
+      if (typeof rawBody === 'object') {
+        el.reqBody.value = JSON.stringify(rawBody, null, 2);
+      } else {
+        try {
+          const parsed = JSON.parse(rawBody);
+          el.reqBody.value = JSON.stringify(parsed, null, 2);
+        } catch {
+          el.reqBody.value = String(rawBody);
+        }
       }
     } else {
       el.reqBody.value = '';
@@ -825,6 +984,7 @@
   // Select Proxy & Deep Link
   function selectProxy(proxyName, updateUrl = true, autoPopulateTest = true) {
     if (!proxyName) return;
+    showTesterView();
     state.selectedProxyName = proxyName;
 
     // Update target dropdown if exists
@@ -971,6 +1131,639 @@
     });
 
     updateDeploySelectedState();
+  }
+
+  function highlightActiveResource(targetLi) {
+    document.querySelectorAll('.resource-item.selected, .bundle-item.selected, .proxy-item.selected').forEach(elem => {
+      elem.classList.remove('selected');
+    });
+    if (targetLi) {
+      targetLi.classList.add('selected');
+    }
+  }
+
+  function showTesterView() {
+    if (el.resourceDetailCard) el.resourceDetailCard.classList.add('hidden');
+    if (el.emulatorStateCard) el.emulatorStateCard.classList.add('hidden');
+    if (el.viewAnalytics) el.viewAnalytics.classList.add('hidden');
+    if (el.viewTester) el.viewTester.classList.remove('hidden');
+    if (el.testerCardsWrap) el.testerCardsWrap.classList.remove('hidden');
+
+    if (el.navBtnTester) el.navBtnTester.classList.add('active');
+    if (el.navBtnAnalytics) el.navBtnAnalytics.classList.remove('active');
+    if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.remove('active');
+  }
+
+  function showResourceDetail(category, data) {
+    if (!el.resourceDetailCard) return;
+
+    // Switch right pane to resource detail
+    if (el.viewAnalytics) el.viewAnalytics.classList.add('hidden');
+    if (el.viewTester) el.viewTester.classList.remove('hidden');
+    if (el.testerCardsWrap) el.testerCardsWrap.classList.add('hidden');
+    if (el.emulatorStateCard) el.emulatorStateCard.classList.add('hidden');
+    el.resourceDetailCard.classList.remove('hidden');
+
+    // Deselect main nav tabs
+    if (el.navBtnTester) el.navBtnTester.classList.remove('active');
+    if (el.navBtnAnalytics) el.navBtnAnalytics.classList.remove('active');
+    if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.remove('active');
+
+    let title = '';
+    let categoryLabel = '';
+    let summaryHtml = '';
+    let contentHtml = '';
+    let actionsHtml = '';
+
+    if (category === 'product') {
+      categoryLabel = 'API Product';
+      title = data.displayName || data.name || 'Product Details';
+
+      const envs = data.environments || [];
+      const quota = data.quota ? `${data.quota} calls / ${data.quotaInterval || '1'} ${data.quotaTimeUnit || 'month'}` : 'None configured';
+      const approval = data.approvalType || 'auto';
+
+      summaryHtml = `
+        <div class="detail-badge-group">
+          <span class="detail-badge"><span class="detail-badge-label">Environments:</span> ${escapeHtml(envs.join(', ') || 'All')}</span>
+          <span class="detail-badge"><span class="detail-badge-label">Quota:</span> ${escapeHtml(quota)}</span>
+          <span class="detail-badge"><span class="detail-badge-label">Approval:</span> ${escapeHtml(approval)}</span>
+          ${data.description ? `<span class="detail-badge"><span class="detail-badge-label">Description:</span> ${escapeHtml(data.description)}</span>` : ''}
+        </div>
+      `;
+
+      // Standard operations
+      const ops = data.operationGroup?.operationConfigs || [];
+      let opsHtml = '';
+      if (ops.length > 0) {
+        opsHtml = `
+          <div class="detail-section">
+            <h3 class="detail-section-title">Standard Operations (${ops.length})</h3>
+            <table class="key-value-table">
+              <thead><tr><th>API Source / Proxy</th><th>Path / Resource</th><th>HTTP Methods</th><th>Quota</th></tr></thead>
+              <tbody>
+                ${ops.map(cfg => {
+                  const proxy = cfg.apiSource || '-';
+                  const opList = cfg.operations || [];
+                  return opList.map(op => `
+                    <tr>
+                      <td><code>${escapeHtml(proxy)}</code></td>
+                      <td><code>${escapeHtml(op.resource || '/')}</code></td>
+                      <td>${(op.methods || ['ALL']).map(m => `<span class="badge method-badge-${(m||'all').toLowerCase()}">${escapeHtml(m)}</span>`).join(' ')}</td>
+                      <td>${cfg.quota ? `${cfg.quota.limit}/${cfg.quota.interval} ${cfg.quota.timeUnit}` : 'Default'}</td>
+                    </tr>
+                  `).join('');
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      // LLM Operations
+      const llmConfigs = data.llmOperationGroup?.operationConfigs || [];
+      let llmHtml = '';
+      if (llmConfigs.length > 0) {
+        llmHtml = `
+          <div class="detail-section">
+            <h3 class="detail-section-title">AI &amp; LLM Operations (${llmConfigs.length})</h3>
+            <table class="key-value-table">
+              <thead><tr><th>Proxy / Source</th><th>Resource Path</th><th>Authorized Models</th><th>LLM Token Quota</th></tr></thead>
+              <tbody>
+                ${llmConfigs.map(cfg => {
+                  const src = cfg.apiSource || '-';
+                  const quotaInfo = cfg.llmTokenQuota ? `${cfg.llmTokenQuota.limit} tokens / ${cfg.llmTokenQuota.interval} ${cfg.llmTokenQuota.timeUnit}` : 'Unlimited';
+                  const opsList = cfg.llmOperations || [];
+                  return opsList.map(op => `
+                    <tr>
+                      <td><code>${escapeHtml(src)}</code></td>
+                      <td><code>${escapeHtml(op.resource || '/')}</code></td>
+                      <td><span class="badge badge-llm">${escapeHtml(op.model || 'ALL')}</span></td>
+                      <td><code>${escapeHtml(quotaInfo)}</code></td>
+                    </tr>
+                  `).join('');
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      contentHtml = opsHtml + llmHtml;
+
+    } else if (category === 'user') {
+      categoryLabel = 'Developer / User';
+      title = `${data.firstName || ''} ${data.lastName || ''}`.trim() || data.userName || data.email || 'User Details';
+
+      summaryHtml = `
+        <div class="detail-badge-group">
+          <span class="detail-badge"><span class="detail-badge-label">Email:</span> ${escapeHtml(data.email || '-')}</span>
+          <span class="detail-badge"><span class="detail-badge-label">Username:</span> ${escapeHtml(data.userName || '-')}</span>
+          <span class="detail-badge"><span class="detail-badge-label">Status:</span> <span class="badge badge-status-approved">${escapeHtml(data.status || 'active')}</span></span>
+          <span class="detail-badge"><span class="detail-badge-label">Developer ID:</span> <code>${escapeHtml(data.developerId || '-')}</code></span>
+        </div>
+      `;
+
+      // Attributes
+      const attrs = data.attributes || [];
+      let attrsHtml = '';
+      if (attrs.length > 0) {
+        attrsHtml = `
+          <div class="detail-section">
+            <h3 class="detail-section-title">Developer Attributes</h3>
+            <table class="key-value-table">
+              <thead><tr><th>Name</th><th>Value</th></tr></thead>
+              <tbody>
+                ${attrs.map(a => `<tr><td><strong>${escapeHtml(a.name || '')}</strong></td><td><code>${escapeHtml(a.value || '')}</code></td></tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      contentHtml = attrsHtml;
+
+    } else if (category === 'app') {
+      categoryLabel = 'Developer App';
+      title = data.name || 'Developer App Details';
+
+      const devEmail = data.developerEmail || data.developerId || '-';
+      const prods = data.apiProducts || [];
+      const creds = data.credentials || [];
+
+      summaryHtml = `
+        <div class="detail-badge-group">
+          <span class="detail-badge"><span class="detail-badge-label">App ID:</span> <code>${escapeHtml(data.appId || '-')}</code></span>
+          <span class="detail-badge"><span class="detail-badge-label">Developer:</span> ${escapeHtml(devEmail)}</span>
+          <span class="detail-badge"><span class="detail-badge-label">Status:</span> <span class="badge badge-status-approved">${escapeHtml(data.status || 'approved')}</span></span>
+          <span class="detail-badge"><span class="detail-badge-label">Associated Products:</span> ${escapeHtml(prods.join(', ') || 'None')}</span>
+        </div>
+      `;
+
+      // Credentials table
+      let credsHtml = '';
+      if (creds.length > 0) {
+        const firstKey = creds[0].consumerKey || '';
+        if (firstKey) {
+          actionsHtml = `
+            <button class="btn btn-sm btn-primary" id="btn-use-app-key-primary" data-key="${escapeHtml(firstKey)}" title="Copy key and set into x-api-key header of API Tester">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+              </svg>
+              <span>Use Key in API Tester</span>
+            </button>
+          `;
+        }
+
+        credsHtml = `
+          <div class="detail-section">
+            <h3 class="detail-section-title">Credentials &amp; Consumer Keys (${creds.length})</h3>
+            <table class="key-value-table">
+              <thead><tr><th>Consumer Key</th><th>Consumer Secret</th><th>Status</th><th>Products Bound</th><th>Action</th></tr></thead>
+              <tbody>
+                ${creds.map(c => {
+                  const key = c.consumerKey || '';
+                  const secret = c.consumerSecret || '';
+                  const status = c.status || 'approved';
+                  const boundProds = (c.apiProducts || []).map(p => p.apiproduct || p).join(', ');
+                  return `
+                    <tr>
+                      <td><code class="selectable-key">${escapeHtml(key)}</code></td>
+                      <td><code>${escapeHtml(secret ? secret.substring(0, 16) + '...' : '-')}</code></td>
+                      <td><span class="badge badge-status-${(status || '').toLowerCase()}">${escapeHtml(status)}</span></td>
+                      <td>${escapeHtml(boundProds || prods.join(', '))}</td>
+                      <td>
+                        <button class="btn btn-sm btn-outline-accent btn-use-key-action" data-key="${escapeHtml(key)}" title="Set this key into API Tester">
+                          Use in Tester
+                        </button>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      contentHtml = credsHtml;
+    }
+
+    if (el.resourceDetailCategoryBadge) el.resourceDetailCategoryBadge.textContent = categoryLabel;
+    if (el.resourceDetailTitle) el.resourceDetailTitle.textContent = title;
+    if (el.resourceDetailSummary) el.resourceDetailSummary.innerHTML = summaryHtml;
+    if (el.resourceDetailContent) el.resourceDetailContent.innerHTML = contentHtml;
+    if (el.resourceDetailActions) el.resourceDetailActions.innerHTML = actionsHtml;
+    if (el.resourceRawJson) el.resourceRawJson.textContent = JSON.stringify(data, null, 2);
+
+    // Attach actions
+    const useKeyBtn = el.resourceDetailActions?.querySelector('#btn-use-app-key-primary');
+    if (useKeyBtn) {
+      useKeyBtn.addEventListener('click', () => {
+        const k = useKeyBtn.getAttribute('data-key');
+        applyApiKeyToHeaders(k);
+        showTesterView();
+      });
+    }
+
+    el.resourceDetailContent?.querySelectorAll('.btn-use-key-action').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const k = btn.getAttribute('data-key');
+        applyApiKeyToHeaders(k);
+        showTesterView();
+      });
+    });
+  }
+
+  function showEmulatorState() {
+    if (el.viewAnalytics) el.viewAnalytics.classList.add('hidden');
+    if (el.viewTester) el.viewTester.classList.remove('hidden');
+    if (el.testerCardsWrap) el.testerCardsWrap.classList.add('hidden');
+    if (el.resourceDetailCard) el.resourceDetailCard.classList.add('hidden');
+    if (el.emulatorStateCard) el.emulatorStateCard.classList.remove('hidden');
+
+    if (el.navBtnTester) el.navBtnTester.classList.remove('active');
+    if (el.navBtnAnalytics) el.navBtnAnalytics.classList.remove('active');
+    if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.add('active');
+
+    fetchEmulatorState();
+  }
+
+  async function fetchEmulatorState() {
+    try {
+      if (el.btnStateRefresh) el.btnStateRefresh.disabled = true;
+      if (el.emulatorStateOverallBadge) el.emulatorStateOverallBadge.textContent = 'Checking...';
+
+      const resp = await fetch('/tester/api/emulator/state');
+      if (!resp.ok) {
+        throw new Error(`State endpoint returned HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      renderEmulatorState(data);
+    } catch (err) {
+      console.error('Failed to fetch emulator state:', err);
+      showToast(`Error fetching emulator state: ${err.message}`, 'error');
+      if (el.emulatorStateOverallBadge) {
+        el.emulatorStateOverallBadge.className = 'badge badge-status-revoked';
+        el.emulatorStateOverallBadge.textContent = 'Connection Error';
+      }
+    } finally {
+      if (el.btnStateRefresh) el.btnStateRefresh.disabled = false;
+    }
+  }
+
+  function renderEmulatorState(data) {
+    if (!data) return;
+
+    // Overall status badge
+    if (el.emulatorStateOverallBadge) {
+      if (data.online) {
+        el.emulatorStateOverallBadge.className = 'badge badge-status-approved';
+        el.emulatorStateOverallBadge.textContent = 'ONLINE & CONNECTED';
+      } else {
+        el.emulatorStateOverallBadge.className = 'badge badge-status-revoked';
+        el.emulatorStateOverallBadge.textContent = 'OFFLINE';
+      }
+    }
+
+    // Metrics cards
+    if (el.stateMetricOnline) {
+      el.stateMetricOnline.textContent = data.online ? 'Healthy' : 'Disconnected';
+      el.stateMetricOnline.style.color = data.online ? 'var(--color-success)' : 'var(--color-danger)';
+    }
+    if (el.stateMetricUrls) {
+      el.stateMetricUrls.textContent = `Mgmt: ${data.mgmtUrl} • Runtime: ${data.runtimeUrl}`;
+    }
+    if (el.stateMetricProxies) {
+      el.stateMetricProxies.textContent = data.totalActiveProxies ?? (data.activeProxies || []).length;
+    }
+    if (el.stateMetricProducts) {
+      el.stateMetricProducts.textContent = data.totalProducts ?? (data.products || []).length;
+    }
+    if (el.stateMetricApps) {
+      el.stateMetricApps.textContent = data.totalApps ?? (data.apps || []).length;
+    }
+    if (el.stateMetricDatastore) {
+      el.stateMetricDatastore.textContent = data.testDataLoaded ? 'Synchronized' : 'Pending';
+      el.stateMetricDatastore.style.color = data.testDataLoaded ? 'var(--color-success)' : 'var(--color-warning)';
+    }
+    if (el.stateMetricDatastoreSub) {
+      el.stateMetricDatastoreSub.textContent = data.lastTestDataStatus ? `${data.lastTestDataStatus}` : 'Cassandra Datastore';
+    }
+
+    // Validation checklist
+    if (el.stateValidationChecklist) {
+      const checks = data.validationChecks || [];
+      if (checks.length === 0) {
+        el.stateValidationChecklist.innerHTML = '<div class="empty-state">No validation checks available.</div>';
+      } else {
+        el.stateValidationChecklist.innerHTML = checks.map(c => {
+          let badgeClass = 'badge-status-approved';
+          let icon = '✓';
+          if (c.status === 'WARN') {
+            badgeClass = 'badge-status-pending';
+            icon = '⚠';
+          } else if (c.status === 'FAIL') {
+            badgeClass = 'badge-status-revoked';
+            icon = '✗';
+          }
+          return `
+            <div class="validation-item validation-status-${(c.status || '').toLowerCase()}">
+              <div class="validation-item-header">
+                <span class="validation-status-icon">${icon}</span>
+                <span class="validation-category">[${escapeHtml(c.category)}]</span>
+                <strong class="validation-title">${escapeHtml(c.title)}</strong>
+                <span class="badge ${badgeClass}">${escapeHtml(c.status)}</span>
+              </div>
+              <div class="validation-message">${escapeHtml(c.message)}</div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    // Tab 1: Deployed proxies table
+    if (el.stateTableProxiesBody) {
+      const proxies = data.activeProxies || [];
+      if (proxies.length === 0) {
+        el.stateTableProxiesBody.innerHTML = '<tr><td colspan="6" class="empty-state">No active proxies deployed in emulator.</td></tr>';
+      } else {
+        el.stateTableProxiesBody.innerHTML = proxies.map(p => `
+          <tr>
+            <td><strong>${escapeHtml(p.name)}</strong></td>
+            <td><span class="badge badge-dim">${escapeHtml(p.environment || 'test')}</span></td>
+            <td><code>r${escapeHtml(p.revision || '1')}</code></td>
+            <td><code>${escapeHtml(p.basePath || '/')}</code></td>
+            <td><a href="${escapeHtml(p.url)}" target="_blank" class="table-link">${escapeHtml(p.url)}</a></td>
+            <td>
+              <button class="btn btn-sm btn-outline-accent btn-test-deployed-proxy" data-proxy="${escapeHtml(p.name)}">
+                Test in API Tester
+              </button>
+            </td>
+          </tr>
+        `).join('');
+
+        el.stateTableProxiesBody.querySelectorAll('.btn-test-deployed-proxy').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const proxyName = btn.getAttribute('data-proxy');
+            selectProxy(proxyName, true);
+            showTesterView();
+          });
+        });
+      }
+    }
+
+    // Tab 2: Products cards
+    if (el.stateProductsCards) {
+      const prods = data.products || [];
+      if (prods.length === 0) {
+        el.stateProductsCards.innerHTML = '<div class="empty-state">No products loaded.</div>';
+      } else {
+        el.stateProductsCards.innerHTML = prods.map(p => {
+          const name = p.name || 'Product';
+          const llmOps = p.llmOperationGroup?.operationConfigs || [];
+          const ops = p.operationGroup?.operationConfigs || [];
+          return `
+            <div class="state-card">
+              <div class="state-card-header">
+                <h4>${escapeHtml(p.displayName || name)}</h4>
+                <span class="badge">${escapeHtml(name)}</span>
+              </div>
+              <div class="state-card-meta">
+                <div><strong>Environments:</strong> ${(p.environments || []).join(', ') || 'All'}</div>
+                <div><strong>Standard Ops:</strong> ${ops.length} proxy source(s)</div>
+                <div><strong>LLM Ops:</strong> ${llmOps.length} AI model config(s)</div>
+              </div>
+              <button class="btn btn-sm btn-outline btn-inspect-state-prod" data-name="${escapeHtml(name)}">
+                View Full Details
+              </button>
+            </div>
+          `;
+        }).join('');
+
+        el.stateProductsCards.querySelectorAll('.btn-inspect-state-prod').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const n = btn.getAttribute('data-name');
+            const targetProd = (data.products || []).find(p => p.name === n);
+            if (targetProd) showResourceDetail('product', targetProd);
+          });
+        });
+      }
+    }
+
+    // Tab 3: Users table
+    if (el.stateTableUsersBody) {
+      const users = data.users || [];
+      if (users.length === 0) {
+        el.stateTableUsersBody.innerHTML = '<tr><td colspan="4" class="empty-state">No developers loaded.</td></tr>';
+      } else {
+        el.stateTableUsersBody.innerHTML = users.map(u => `
+          <tr>
+            <td><strong>${escapeHtml(`${u.firstName || ''} ${u.lastName || ''}`.trim() || u.userName || '-')}</strong></td>
+            <td><code>${escapeHtml(u.email || '-')}</code></td>
+            <td><code>${escapeHtml(u.userName || '-')}</code></td>
+            <td><span class="badge badge-status-approved">${escapeHtml(u.status || 'active')}</span></td>
+          </tr>
+        `).join('');
+      }
+    }
+
+    // Tab 4: Apps table
+    if (el.stateTableAppsBody) {
+      const apps = data.apps || [];
+      if (apps.length === 0) {
+        el.stateTableAppsBody.innerHTML = '<tr><td colspan="5" class="empty-state">No developer apps loaded.</td></tr>';
+      } else {
+        el.stateTableAppsBody.innerHTML = apps.map(app => {
+          const creds = app.credentials || [];
+          const keys = creds.map(c => c.consumerKey).filter(Boolean);
+          const firstKey = keys[0] || '';
+          return `
+            <tr>
+              <td><strong>${escapeHtml(app.name || '-')}</strong></td>
+              <td><code>${escapeHtml(app.developerEmail || app.developerId || '-')}</code></td>
+              <td><code>${escapeHtml(keys.join(', ') || '-')}</code></td>
+              <td>${escapeHtml((app.apiProducts || []).join(', ') || '-')}</td>
+              <td>
+                ${firstKey ? `<button class="btn btn-sm btn-outline-accent btn-state-use-key" data-key="${escapeHtml(firstKey)}">Use in Tester</button>` : '-'}
+              </td>
+            </tr>
+          `;
+        }).join('');
+
+        el.stateTableAppsBody.querySelectorAll('.btn-state-use-key').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const k = btn.getAttribute('data-key');
+            applyApiKeyToHeaders(k);
+            showTesterView();
+          });
+        });
+      }
+    }
+
+    // Tab 5: Raw tree JSON
+    if (el.stateRawTreeJson) {
+      el.stateRawTreeJson.textContent = JSON.stringify(data.deploymentTree || data, null, 2);
+    }
+  }
+
+  async function reuploadTestData() {
+    try {
+      if (el.btnStateReuploadTestdata) el.btnStateReuploadTestdata.disabled = true;
+      showToast('Building and re-uploading test data bundle to emulator...');
+
+      const resp = await fetch('/tester/api/emulator/setup-testdata', { method: 'POST' });
+      const res = await resp.json();
+      if (!resp.ok || !res.success) {
+        throw new Error(res.error || res.message || 'Failed to upload test data');
+      }
+
+      showToast(res.message || 'Test data successfully uploaded to emulator!', 'success');
+      await fetchEmulatorState();
+    } catch (err) {
+      console.error('Failed to upload test data:', err);
+      showToast(`Upload failed: ${err.message}`, 'error');
+    } finally {
+      if (el.btnStateReuploadTestdata) el.btnStateReuploadTestdata.disabled = false;
+    }
+  }
+
+  function renderProducts() {
+    if (!el.productsList) return;
+    const products = state.products || [];
+    if (el.productsCount) el.productsCount.textContent = products.length;
+
+    if (products.length === 0) {
+      el.productsList.innerHTML = '<li class="empty-state">No products deployed.</li>';
+      return;
+    }
+
+    el.productsList.innerHTML = '';
+    products.forEach((prod, index) => {
+      const name = prod.displayName || prod.name || `Product ${index + 1}`;
+      const hasLLM = Boolean(prod.llmOperationGroup?.operationConfigs?.length);
+
+      const li = document.createElement('li');
+      li.className = 'resource-item resource-item-simple';
+      li.setAttribute('data-resource-type', 'product');
+      li.setAttribute('data-resource-id', prod.name || index);
+      li.setAttribute('title', `Click to view details for ${name}`);
+
+      li.innerHTML = `
+        <div class="resource-item-simple-content">
+          <span class="resource-name">${escapeHtml(name)}</span>
+          ${hasLLM ? '<span class="badge badge-llm-mini" title="AI / LLM Enabled">AI</span>' : ''}
+        </div>
+      `;
+
+      li.addEventListener('click', () => {
+        highlightActiveResource(li);
+        showResourceDetail('product', prod);
+      });
+
+      el.productsList.appendChild(li);
+    });
+  }
+
+  function renderUsers() {
+    if (!el.usersList) return;
+    const users = state.users || [];
+    if (el.usersCount) el.usersCount.textContent = users.length;
+
+    if (users.length === 0) {
+      el.usersList.innerHTML = '<li class="empty-state">No users deployed.</li>';
+      return;
+    }
+
+    el.usersList.innerHTML = '';
+    users.forEach((user, index) => {
+      let displayName = '';
+      if (user.firstName || user.lastName) {
+        displayName = `${user.firstName || ''} ${user.lastName || ''}`.trim();
+      } else {
+        displayName = user.userName || user.email || `User ${index + 1}`;
+      }
+
+      const li = document.createElement('li');
+      li.className = 'resource-item resource-item-simple';
+      li.setAttribute('data-resource-type', 'user');
+      li.setAttribute('data-resource-id', user.email || user.userName || index);
+      li.setAttribute('title', `Click to view details for ${displayName} (${user.email || ''})`);
+
+      li.innerHTML = `
+        <div class="resource-item-simple-content">
+          <span class="resource-name">${escapeHtml(displayName)}</span>
+        </div>
+      `;
+
+      li.addEventListener('click', () => {
+        highlightActiveResource(li);
+        showResourceDetail('user', user);
+      });
+
+      el.usersList.appendChild(li);
+    });
+  }
+
+  function applyApiKeyToHeaders(key) {
+    if (!key) return;
+    let found = false;
+    el.headersTbody.querySelectorAll('tr').forEach(tr => {
+      const kInput = tr.querySelector('.header-key');
+      const vInput = tr.querySelector('.header-val');
+      const chk = tr.querySelector('.header-enable');
+      if (kInput && (kInput.value.trim().toLowerCase() === 'x-api-key' || kInput.value.trim().toLowerCase() === 'apikey')) {
+        if (vInput) vInput.value = key;
+        if (chk) chk.checked = true;
+        found = true;
+      }
+    });
+
+    if (!found) {
+      addHeaderRow('x-api-key', key, true);
+    }
+    updateHeaderCount();
+    try {
+      navigator.clipboard.writeText(key);
+      showToast('API Key copied & set in request headers (x-api-key)!');
+    } catch {
+      showToast('API Key set in request headers (x-api-key)!');
+    }
+  }
+
+  function renderApps() {
+    if (!el.appsList) return;
+    const apps = state.apps || [];
+    if (el.appsCount) el.appsCount.textContent = apps.length;
+
+    if (apps.length === 0) {
+      el.appsList.innerHTML = '<li class="empty-state">No apps deployed.</li>';
+      return;
+    }
+
+    el.appsList.innerHTML = '';
+    apps.forEach((app, index) => {
+      const name = app.name || `App ${index + 1}`;
+
+      const li = document.createElement('li');
+      li.className = 'resource-item resource-item-simple';
+      li.setAttribute('data-resource-type', 'app');
+      li.setAttribute('data-resource-id', app.appId || app.name || index);
+      li.setAttribute('title', `Click to view details for ${name}`);
+
+      li.innerHTML = `
+        <div class="resource-item-simple-content">
+          <span class="resource-name">${escapeHtml(name)}</span>
+        </div>
+      `;
+
+      li.addEventListener('click', () => {
+        highlightActiveResource(li);
+        showResourceDetail('app', app);
+      });
+
+      el.appsList.appendChild(li);
+    });
   }
 
   function updateProxySelector() {
@@ -1835,14 +2628,32 @@
     if (viewName === 'tester') {
       if (el.viewTester) el.viewTester.classList.remove('hidden');
       if (el.viewAnalytics) el.viewAnalytics.classList.add('hidden');
+      if (el.testerCardsWrap) el.testerCardsWrap.classList.remove('hidden');
+      if (el.resourceDetailCard) el.resourceDetailCard.classList.add('hidden');
+      if (el.emulatorStateCard) el.emulatorStateCard.classList.add('hidden');
+
       if (el.navBtnTester) el.navBtnTester.classList.add('active');
       if (el.navBtnAnalytics) el.navBtnAnalytics.classList.remove('active');
+      if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.remove('active');
       history.replaceState(null, '', window.location.pathname + (window.location.search || ''));
+    } else if (viewName === 'emulator-state') {
+      if (el.viewTester) el.viewTester.classList.remove('hidden');
+      if (el.viewAnalytics) el.viewAnalytics.classList.add('hidden');
+      if (el.testerCardsWrap) el.testerCardsWrap.classList.add('hidden');
+      if (el.resourceDetailCard) el.resourceDetailCard.classList.add('hidden');
+      if (el.emulatorStateCard) el.emulatorStateCard.classList.remove('hidden');
+
+      if (el.navBtnTester) el.navBtnTester.classList.remove('active');
+      if (el.navBtnAnalytics) el.navBtnAnalytics.classList.remove('active');
+      if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.add('active');
+      history.replaceState(null, '', window.location.pathname + '#emulator-state');
+      fetchEmulatorState();
     } else if (viewName === 'analytics') {
       if (el.viewTester) el.viewTester.classList.add('hidden');
       if (el.viewAnalytics) el.viewAnalytics.classList.remove('hidden');
       if (el.navBtnTester) el.navBtnTester.classList.remove('active');
       if (el.navBtnAnalytics) el.navBtnAnalytics.classList.add('active');
+      if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.remove('active');
       history.replaceState(null, '', window.location.pathname + '#analytics');
       fetchAnalyticsData();
     }

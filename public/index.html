@@ -39,6 +39,15 @@
           Analytics
           <span id="nav-analytics-badge" class="badge-mini">0</span>
         </button>
+        <button id="nav-btn-emulator-state" class="nav-tab" title="View Apigee Emulator State, Loaded Resources & Validation">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+            <line x1="6" y1="6" x2="6.01" y2="6"/>
+            <line x1="6" y1="18" x2="6.01" y2="18"/>
+          </svg>
+          Emulator State
+        </button>
       </nav>
       <div id="emulator-status-badge" class="status-badge status-loading">
         <span class="status-dot"></span>
@@ -46,6 +55,14 @@
       </div>
     </div>
     <div class="header-right">
+      <button id="btn-emulator-state" class="btn btn-outline" title="Inspect Apigee Emulator State, Loaded Products, Apps & Validation">
+        <svg class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="16" x2="12" y2="12"/>
+          <line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
+        Emulator State
+      </button>
       <button id="btn-deploy-all" class="btn btn-primary" title="Deploy all packaged bundles to the Apigee emulator">
         <svg class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -76,9 +93,15 @@
   <main id="view-tester" class="app-container">
     <!-- Left Column: Bundles & Deployed Proxies (Fixed Width Sidebar) -->
     <aside class="sidebar">
-      <section class="card">
-        <div class="card-header">
-          <h2>Active Proxies</h2>
+      <!-- Active Proxies Section -->
+      <section class="card collapsible-card" id="card-active-proxies">
+        <div class="card-header collapsible-header" data-target="card-active-proxies" title="Toggle section">
+          <div class="header-title-group">
+            <svg class="collapse-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+            <h2>Active Proxies</h2>
+          </div>
           <span id="active-proxies-count" class="badge">0</span>
         </div>
         <div class="card-body">
@@ -88,9 +111,15 @@
         </div>
       </section>
 
-      <section class="card">
-        <div class="card-header">
-          <h2>Packaged Bundles</h2>
+      <!-- Packaged Bundles Section -->
+      <section class="card collapsible-card" id="card-packaged-bundles">
+        <div class="card-header collapsible-header" data-target="card-packaged-bundles" title="Toggle section">
+          <div class="header-title-group">
+            <svg class="collapse-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+            <h2>Packaged Bundles</h2>
+          </div>
           <span id="bundles-count" class="badge">0</span>
         </div>
         <div class="card-body">
@@ -102,6 +131,60 @@
           <button id="btn-deploy-selected" class="btn btn-secondary btn-sm" disabled>
             Deploy Selected
           </button>
+        </div>
+      </section>
+
+      <!-- Deployed Products Section -->
+      <section class="card collapsible-card" id="card-products">
+        <div class="card-header collapsible-header" data-target="card-products" title="Toggle section">
+          <div class="header-title-group">
+            <svg class="collapse-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+            <h2>Products</h2>
+          </div>
+          <span id="products-count" class="badge">0</span>
+        </div>
+        <div class="card-body">
+          <ul id="products-list" class="resource-list">
+            <li class="empty-state">No products deployed.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- Deployed Users / Developers Section -->
+      <section class="card collapsible-card" id="card-users">
+        <div class="card-header collapsible-header" data-target="card-users" title="Toggle section">
+          <div class="header-title-group">
+            <svg class="collapse-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+            <h2>Users</h2>
+          </div>
+          <span id="users-count" class="badge">0</span>
+        </div>
+        <div class="card-body">
+          <ul id="users-list" class="resource-list">
+            <li class="empty-state">No users deployed.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- Deployed Apps Section -->
+      <section class="card collapsible-card" id="card-apps">
+        <div class="card-header collapsible-header" data-target="card-apps" title="Toggle section">
+          <div class="header-title-group">
+            <svg class="collapse-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+            <h2>Apps</h2>
+          </div>
+          <span id="apps-count" class="badge">0</span>
+        </div>
+        <div class="card-body">
+          <ul id="apps-list" class="resource-list">
+            <li class="empty-state">No apps deployed.</li>
+          </ul>
         </div>
       </section>
 
@@ -122,8 +205,9 @@
 
     <!-- Right Column: Postman Tester & Live Trace Inspector -->
     <section class="content">
-      <!-- Tester Card -->
-      <div class="card tester-card">
+      <div id="tester-cards-wrap" class="tester-cards-wrap">
+        <!-- Tester Card -->
+        <div class="card tester-card">
         <div class="card-header">
           <div class="tester-title">
             <h2>Proxy API Tester</h2>
@@ -409,6 +493,196 @@
                 <tr><td colspan="8" class="empty-state">No test runs recorded for this proxy yet. Run a test or click "Test All".</td></tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+      </div> <!-- /#tester-cards-wrap -->
+
+      <!-- Resource Detail Inspection Card -->
+      <div id="resource-detail-card" class="card resource-detail-card hidden">
+        <div class="card-header resource-detail-header">
+          <div class="resource-detail-title-group">
+            <button id="btn-back-to-tester" class="btn btn-sm btn-outline" title="Return to API Tester">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="19" y1="12" x2="5" y2="12"></line>
+                <polyline points="12 19 5 12 12 5"></polyline>
+              </svg>
+              &larr; Back to API Tester
+            </button>
+            <span id="resource-detail-category-badge" class="badge">Product</span>
+            <h2 id="resource-detail-title">Resource Name</h2>
+          </div>
+          <div class="resource-detail-actions" id="resource-detail-actions">
+            <!-- Dynamic contextual action buttons (e.g. Use Key in Tester) -->
+          </div>
+        </div>
+
+        <div class="card-body">
+          <!-- Overview summary badges and metadata -->
+          <div id="resource-detail-summary" class="resource-detail-summary-bar"></div>
+
+          <!-- Structured details (operations, credentials, quotas) -->
+          <div id="resource-detail-content" class="resource-detail-content-area"></div>
+
+          <!-- Raw JSON view -->
+          <div class="resource-raw-json-section">
+            <div class="section-label-bar">
+              <h4>Raw JSON Resource Definition</h4>
+              <button id="btn-copy-resource-json" class="copy-btn">Copy JSON</button>
+            </div>
+            <pre id="resource-raw-json" class="code-viewer"></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Emulator State & Validation Card -->
+      <div id="emulator-state-card" class="card emulator-state-card hidden">
+        <div class="card-header emulator-state-header">
+          <div class="emulator-state-title-group">
+            <button id="btn-state-back-to-tester" class="btn btn-sm btn-outline" title="Return to API Tester">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="19" y1="12" x2="5" y2="12"></line>
+                <polyline points="12 19 5 12 12 5"></polyline>
+              </svg>
+              &larr; Back to API Tester
+            </button>
+            <h2>Apigee Emulator State &amp; Verification</h2>
+            <span id="emulator-state-overall-badge" class="badge badge-status-approved">Checking...</span>
+          </div>
+          <div class="emulator-state-actions">
+            <button id="btn-state-reupload-testdata" class="btn btn-sm btn-primary" title="Re-bundle and re-upload products, developers, and apps to emulator Cassandra datastore">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+              Re-upload Test Data
+            </button>
+            <button id="btn-state-refresh" class="btn btn-sm btn-outline" title="Refresh emulator state">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <polyline points="1 20 1 14 7 14"></polyline>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <!-- Summary metrics grid -->
+          <div class="state-metrics-grid">
+            <div class="state-metric-card">
+              <div class="state-metric-label">Emulator Status</div>
+              <div id="state-metric-online" class="state-metric-val">-</div>
+              <div id="state-metric-urls" class="state-metric-sub">Mgmt: :8080 &bull; Runtime: :8998</div>
+            </div>
+            <div class="state-metric-card">
+              <div class="state-metric-label">Active Proxies</div>
+              <div id="state-metric-proxies" class="state-metric-val">0</div>
+              <div id="state-metric-proxies-sub" class="state-metric-sub">Deployed in 'test' env</div>
+            </div>
+            <div class="state-metric-card">
+              <div class="state-metric-label">Products &amp; LLM</div>
+              <div id="state-metric-products" class="state-metric-val">0</div>
+              <div id="state-metric-products-sub" class="state-metric-sub">Loaded API Products</div>
+            </div>
+            <div class="state-metric-card">
+              <div class="state-metric-label">Developer Apps</div>
+              <div id="state-metric-apps" class="state-metric-val">0</div>
+              <div id="state-metric-apps-sub" class="state-metric-sub">Active Consumer Keys</div>
+            </div>
+            <div class="state-metric-card">
+              <div class="state-metric-label">Datastore Sync</div>
+              <div id="state-metric-datastore" class="state-metric-val">-</div>
+              <div id="state-metric-datastore-sub" class="state-metric-sub">Cassandra Test Data</div>
+            </div>
+          </div>
+
+          <!-- Verification Health Checklist -->
+          <div class="state-section">
+            <div class="state-section-header">
+              <h3>Deployment &amp; Configuration Health Checklist</h3>
+              <p>Validation of emulator connectivity, bundle routing, product authorization, LLM quotas, and test credentials.</p>
+            </div>
+            <div id="state-validation-checklist" class="validation-checklist">
+              <div class="empty-state">Running validation checks...</div>
+            </div>
+          </div>
+
+          <!-- Tabbed Inspector for Deployed Proxies, Products, Users, Apps, Raw Tree -->
+          <div class="state-tabs-section">
+            <div class="tabs state-tabs">
+              <button class="tab-btn active" data-state-tab="tab-state-proxies">Active Proxies</button>
+              <button class="tab-btn" data-state-tab="tab-state-products">API Products</button>
+              <button class="tab-btn" data-state-tab="tab-state-users">Developers</button>
+              <button class="tab-btn" data-state-tab="tab-state-apps">Developer Apps &amp; Keys</button>
+              <button class="tab-btn" data-state-tab="tab-state-tree">Raw Emulator Tree</button>
+            </div>
+
+            <div class="state-tab-content-wrap">
+              <div id="tab-state-proxies" class="state-tab-panel active">
+                <table class="key-value-table state-table">
+                  <thead>
+                    <tr>
+                      <th>Proxy Name</th>
+                      <th>Environment</th>
+                      <th>Revision</th>
+                      <th>Base Path</th>
+                      <th>Runtime URL</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="state-table-proxies-body">
+                    <tr><td colspan="6" class="empty-state">Loading deployed proxies...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div id="tab-state-products" class="state-tab-panel hidden">
+                <div id="state-products-cards" class="state-cards-grid"></div>
+              </div>
+
+              <div id="tab-state-users" class="state-tab-panel hidden">
+                <table class="key-value-table state-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Email</th>
+                      <th>Username</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="state-table-users-body">
+                    <tr><td colspan="4" class="empty-state">Loading users...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div id="tab-state-apps" class="state-tab-panel hidden">
+                <table class="key-value-table state-table">
+                  <thead>
+                    <tr>
+                      <th>App Name</th>
+                      <th>Developer Email</th>
+                      <th>Consumer Key</th>
+                      <th>Associated Products</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="state-table-apps-body">
+                    <tr><td colspan="5" class="empty-state">Loading developer apps...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div id="tab-state-tree" class="state-tab-panel hidden">
+                <div class="code-container">
+                  <button id="btn-copy-state-tree" class="copy-btn">Copy Tree JSON</button>
+                  <pre id="state-raw-tree-json" class="code-viewer"></pre>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

@@ -45,6 +45,119 @@ func NewBundleManager(dataDir, rootDir string) *BundleManager {
 	}
 }
 
+// FindDataFile locates a data file by checking subdirectories of DataDir first, then DataDir, then RootDir.
+func (bm *BundleManager) FindDataFile(category, filename string) string {
+	candidates := []string{
+		filepath.Join(bm.DataDir, category, filename),
+		filepath.Join(bm.DataDir, filename),
+		filepath.Join(bm.RootDir, "data", category, filename),
+		filepath.Join(bm.RootDir, "data", filename),
+		filepath.Join(bm.RootDir, filename),
+	}
+	if category == "developers" {
+		candidates = append([]string{
+			filepath.Join(bm.DataDir, "users", filename),
+			filepath.Join(bm.RootDir, "data", "users", filename),
+		}, candidates...)
+	} else if category == "developerapps" {
+		candidates = append([]string{
+			filepath.Join(bm.DataDir, "apps", filename),
+			filepath.Join(bm.RootDir, "data", "apps", filename),
+		}, candidates...)
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	return ""
+}
+
+// GetProducts loads products from data/products/products.json or fallbacks.
+func (bm *BundleManager) GetProducts() ([]map[string]interface{}, error) {
+	p := bm.FindDataFile("products", "products.json")
+	if p == "" {
+		return []map[string]interface{}{}, nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var prods []map[string]interface{}
+	if err := json.Unmarshal(data, &prods); err != nil {
+		return nil, err
+	}
+	return prods, nil
+}
+
+// GetUsers loads users/developers from data/developers/developers.json or fallbacks.
+func (bm *BundleManager) GetUsers() ([]map[string]interface{}, error) {
+	p := bm.FindDataFile("developers", "developers.json")
+	if p == "" {
+		return []map[string]interface{}{}, nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var users []map[string]interface{}
+	if err := json.Unmarshal(data, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// GetApps loads developer apps from data/developerapps/developerapps.json or fallbacks.
+func (bm *BundleManager) GetApps() ([]map[string]interface{}, error) {
+	p := bm.FindDataFile("developerapps", "developerapps.json")
+	if p == "" {
+		return []map[string]interface{}{}, nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var apps []map[string]interface{}
+	if err := json.Unmarshal(data, &apps); err != nil {
+		return nil, err
+	}
+	return apps, nil
+}
+
+// GetMaps loads key-value maps from data/maps/maps.json or fallbacks.
+func (bm *BundleManager) GetMaps() ([]map[string]interface{}, error) {
+	p := bm.FindDataFile("maps", "maps.json")
+	if p == "" {
+		return []map[string]interface{}{}, nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var maps []map[string]interface{}
+	if err := json.Unmarshal(data, &maps); err != nil {
+		return nil, err
+	}
+	return maps, nil
+}
+
+// GetDataCollectors loads data collectors from data/datacollectors/datacollectors.json or fallbacks.
+func (bm *BundleManager) GetDataCollectors() ([]map[string]interface{}, error) {
+	p := bm.FindDataFile("datacollectors", "datacollectors.json")
+	if p == "" {
+		return []map[string]interface{}{}, nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var collectors []map[string]interface{}
+	if err := json.Unmarshal(data, &collectors); err != nil {
+		return nil, err
+	}
+	return collectors, nil
+}
+
 // ListBundles scans data/bundles and parses bundle metadata.
 func (bm *BundleManager) ListBundles() ([]BundleInfo, error) {
 	bundlesDir := filepath.Join(bm.DataDir, "bundles")
@@ -285,9 +398,11 @@ func (bm *BundleManager) BuildEnvironmentBundle(bundleFileNames []string) ([]byt
 	}
 
 	// Copy datacollectors.json if present
-	dcPath := filepath.Join(bm.RootDir, "datacollectors.json")
-	if data, err := os.ReadFile(dcPath); err == nil {
-		_ = writeZipFile(zw, "src/main/apigee/environments/test/datacollectors.json", data)
+	dcPath := bm.FindDataFile("datacollectors", "datacollectors.json")
+	if dcPath != "" {
+		if data, err := os.ReadFile(dcPath); err == nil {
+			_ = writeZipFile(zw, "src/main/apigee/environments/test/datacollectors.json", data)
+		}
 	}
 
 	if err := zw.Close(); err != nil {
@@ -303,7 +418,10 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 	zw := zip.NewWriter(&buf)
 
 	// Load products.json
-	productsPath := filepath.Join(bm.RootDir, "products.json")
+	productsPath := bm.FindDataFile("products", "products.json")
+	if productsPath == "" {
+		return nil, fmt.Errorf("failed to locate products.json")
+	}
 	productsData, err := os.ReadFile(productsPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read products.json: %w", err)
@@ -315,10 +433,6 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 	}
 
 	// Ensure each deployed proxy is authorized in products
-	models := []string{
-		"gemini-3.8-flash", "claude-sonnet-5",
-	}
-
 	for _, prod := range products {
 		delete(prod, "proxies")
 		delete(prod, "apiResources")
@@ -343,37 +457,7 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 			}
 			prod["operationGroup"] = opGroup
 		}
-		opConfigs, _ := opGroup["operationConfigs"].([]interface{})
-		existingOps := make(map[string]bool)
-		for _, cfg := range opConfigs {
-			if cfgMap, ok := cfg.(map[string]interface{}); ok {
-				if src, ok := cfgMap["apiSource"].(string); ok {
-					existingOps[src] = true
-				}
-			}
-		}
-
-		for _, p := range proxyNames {
-			if !existingOps[p] {
-				opConfigs = append(opConfigs, map[string]interface{}{
-					"apiSource": p,
-					"operations": []map[string]interface{}{
-						{"resource": "/"},
-					},
-					"quota": map[string]interface{}{},
-				})
-				opConfigs = append(opConfigs, map[string]interface{}{
-					"apiSource": p,
-					"operations": []map[string]interface{}{
-						{"resource": "/*"},
-					},
-					"quota": map[string]interface{}{},
-				})
-			}
-		}
-		opGroup["operationConfigs"] = opConfigs
-
-		// LLM operations
+		// Identify LLM proxies first so they are not placed into standard operationGroup
 		llmGroup, _ := prod["llmOperationGroup"].(map[string]interface{})
 		if llmGroup == nil {
 			llmGroup = map[string]interface{}{
@@ -391,30 +475,152 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 				}
 			}
 		}
-
 		for _, p := range proxyNames {
 			if strings.Contains(strings.ToLower(p), "ai") || strings.Contains(strings.ToLower(p), "completions") {
-				if !existingLLMs[p] {
-					for _, m := range models {
-						llmConfigs = append(llmConfigs, map[string]interface{}{
-							"apiSource": p,
-							"llmOperations": []map[string]interface{}{
-								{
-									"resource": "/",
-									"model":    m,
-								},
-							},
-							"llmTokenQuota": map[string]interface{}{
-								"limit":    "50000",
-								"interval": "1",
-								"timeUnit": "minute",
-							},
+				existingLLMs[p] = true
+			}
+		}
+
+		opConfigs, _ := opGroup["operationConfigs"].([]interface{})
+		existingOps := make(map[string]bool)
+		for _, cfg := range opConfigs {
+			if cfgMap, ok := cfg.(map[string]interface{}); ok {
+				if src, ok := cfgMap["apiSource"].(string); ok {
+					existingOps[src] = true
+				}
+			}
+		}
+
+		// Filter out any LLM proxies mistakenly in operationGroup
+		var filteredOps []interface{}
+		for _, cfg := range opConfigs {
+			if cfgMap, ok := cfg.(map[string]interface{}); ok {
+				src, _ := cfgMap["apiSource"].(string)
+				if !existingLLMs[src] {
+					filteredOps = append(filteredOps, cfg)
+				}
+			}
+		}
+		var splitOps []interface{}
+		for _, cfg := range filteredOps {
+			if cfgMap, ok := cfg.(map[string]interface{}); ok {
+				src, _ := cfgMap["apiSource"].(string)
+				quota := cfgMap["quota"]
+				if quota == nil {
+					quota = map[string]interface{}{}
+				}
+				if rawOps, ok := cfgMap["operations"].([]interface{}); ok && len(rawOps) > 1 {
+					for _, op := range rawOps {
+						splitOps = append(splitOps, map[string]interface{}{
+							"apiSource":  src,
+							"operations": []interface{}{op},
+							"quota":      quota,
 						})
+					}
+				} else if rawOps, ok := cfgMap["operations"].([]map[string]interface{}); ok && len(rawOps) > 1 {
+					for _, op := range rawOps {
+						splitOps = append(splitOps, map[string]interface{}{
+							"apiSource":  src,
+							"operations": []interface{}{op},
+							"quota":      quota,
+						})
+					}
+				} else {
+					splitOps = append(splitOps, cfg)
+				}
+			} else {
+				splitOps = append(splitOps, cfg)
+			}
+		}
+		opConfigs = splitOps
+
+		for _, p := range proxyNames {
+			if !existingLLMs[p] && !existingOps[p] {
+				opConfigs = append(opConfigs,
+					map[string]interface{}{
+						"apiSource": p,
+						"operations": []map[string]interface{}{
+							{"resource": "/"},
+						},
+						"quota": map[string]interface{}{},
+					},
+					map[string]interface{}{
+						"apiSource": p,
+						"operations": []map[string]interface{}{
+							{"resource": "/*"},
+						},
+						"quota": map[string]interface{}{},
+					},
+				)
+			}
+		}
+		opGroup["operationConfigs"] = opConfigs
+
+		// Configure LLM operations: Apigee requires exactly ONE entity per operationConfig
+		targetLLMModels := []string{"gemini-3.8-flash", "google/gemini-3.8-flash", "gemini-3.7-flash", "claude-sonnet-5"}
+		targetLLMResources := []string{"/", "/*", "/**", "/v1/chat/completions", "/v1/chat/completions/*"}
+
+		var normalizedLLMConfigs []interface{}
+		seenLLMOps := make(map[string]bool)
+
+		for _, cfg := range llmConfigs {
+			if cfgMap, ok := cfg.(map[string]interface{}); ok {
+				src, _ := cfgMap["apiSource"].(string)
+				quota := cfgMap["llmTokenQuota"]
+				if quota == nil {
+					quota = map[string]interface{}{
+						"limit":    "50000",
+						"interval": "1",
+						"timeUnit": "minute",
+					}
+				}
+				rawOps, _ := cfgMap["llmOperations"].([]interface{})
+				for _, op := range rawOps {
+					if opMap, ok := op.(map[string]interface{}); ok {
+						m, _ := opMap["model"].(string)
+						r, _ := opMap["resource"].(string)
+						k := fmt.Sprintf("%s:%s:%s", src, m, r)
+						if !seenLLMOps[k] {
+							normalizedLLMConfigs = append(normalizedLLMConfigs, map[string]interface{}{
+								"apiSource":     src,
+								"llmOperations": []interface{}{opMap},
+								"llmTokenQuota": quota,
+							})
+							seenLLMOps[k] = true
+						}
 					}
 				}
 			}
 		}
-		llmGroup["operationConfigs"] = llmConfigs
+
+		for _, p := range proxyNames {
+			if existingLLMs[p] {
+				for _, m := range targetLLMModels {
+					for _, r := range targetLLMResources {
+						k := fmt.Sprintf("%s:%s:%s", p, m, r)
+						if !seenLLMOps[k] {
+							normalizedLLMConfigs = append(normalizedLLMConfigs, map[string]interface{}{
+								"apiSource": p,
+								"llmOperations": []interface{}{
+									map[string]interface{}{
+										"resource": r,
+										"methods":  []string{"POST"},
+										"model":    m,
+									},
+								},
+								"llmTokenQuota": map[string]interface{}{
+									"limit":    "50000",
+									"interval": "1",
+									"timeUnit": "minute",
+								},
+							})
+							seenLLMOps[k] = true
+						}
+					}
+				}
+			}
+		}
+		llmGroup["operationConfigs"] = normalizedLLMConfigs
 	}
 
 	// Ensure all products referenced in developerapps.json exist
@@ -425,59 +631,61 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 		}
 	}
 
-	appsPath := filepath.Join(bm.RootDir, "developerapps.json")
-	if appsData, err := os.ReadFile(appsPath); err == nil {
-		var apps []map[string]interface{}
-		if err := json.Unmarshal(appsData, &apps); err == nil {
-			for _, app := range apps {
-				var reqProds []string
-				if pList, ok := app["apiProducts"].([]interface{}); ok {
-					for _, p := range pList {
-						if pStr, ok := p.(string); ok {
-							reqProds = append(reqProds, pStr)
+	appsPath := bm.FindDataFile("developerapps", "developerapps.json")
+	if appsPath != "" {
+		if appsData, err := os.ReadFile(appsPath); err == nil {
+			var apps []map[string]interface{}
+			if err := json.Unmarshal(appsData, &apps); err == nil {
+				for _, app := range apps {
+					var reqProds []string
+					if pList, ok := app["apiProducts"].([]interface{}); ok {
+						for _, p := range pList {
+							if pStr, ok := p.(string); ok {
+								reqProds = append(reqProds, pStr)
+							}
 						}
 					}
-				}
-				if creds, ok := app["credentials"].([]interface{}); ok {
-					for _, c := range creds {
-						if cMap, ok := c.(map[string]interface{}); ok {
-							if cpList, ok := cMap["apiProducts"].([]interface{}); ok {
-								for _, cp := range cpList {
-									if cpStr, ok := cp.(string); ok {
-										reqProds = append(reqProds, cpStr)
-									} else if cpMap, ok := cp.(map[string]interface{}); ok {
-										if ap, ok := cpMap["apiproduct"].(string); ok {
-											reqProds = append(reqProds, ap)
+					if creds, ok := app["credentials"].([]interface{}); ok {
+						for _, c := range creds {
+							if cMap, ok := c.(map[string]interface{}); ok {
+								if cpList, ok := cMap["apiProducts"].([]interface{}); ok {
+									for _, cp := range cpList {
+										if cpStr, ok := cp.(string); ok {
+											reqProds = append(reqProds, cpStr)
+										} else if cpMap, ok := cp.(map[string]interface{}); ok {
+											if ap, ok := cpMap["apiproduct"].(string); ok {
+												reqProds = append(reqProds, ap)
+											}
 										}
 									}
 								}
 							}
 						}
 					}
-				}
-				for _, rp := range reqProds {
-					if rp != "" && !existingProds[rp] {
-						var defaultOps []map[string]interface{}
-						for _, p := range proxyNames {
-							defaultOps = append(defaultOps, map[string]interface{}{
-								"apiSource": p,
-								"operations": []map[string]interface{}{
-									{"resource": "/"},
+					for _, rp := range reqProds {
+						if rp != "" && !existingProds[rp] {
+							var defaultOps []map[string]interface{}
+							for _, p := range proxyNames {
+								defaultOps = append(defaultOps, map[string]interface{}{
+									"apiSource": p,
+									"operations": []map[string]interface{}{
+										{"resource": "/"},
+									},
+									"quota": map[string]interface{}{},
+								})
+							}
+							products = append(products, map[string]interface{}{
+								"name":         rp,
+								"displayName":  rp,
+								"approvalType": "auto",
+								"environments": []string{"test"},
+								"operationGroup": map[string]interface{}{
+									"operationConfigType": "proxy",
+									"operationConfigs":    defaultOps,
 								},
-								"quota": map[string]interface{}{},
 							})
+							existingProds[rp] = true
 						}
-						products = append(products, map[string]interface{}{
-							"name":         rp,
-							"displayName":  rp,
-							"approvalType": "auto",
-							"environments": []string{"test"},
-							"operationGroup": map[string]interface{}{
-								"operationConfigType": "proxy",
-								"operationConfigs":    defaultOps,
-							},
-						})
-						existingProds[rp] = true
 					}
 				}
 			}
@@ -490,13 +698,54 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 	}
 
 	// Add developerapps.json, developers.json, maps.json, datacollectors.json
-	otherFiles := []string{"developerapps.json", "developers.json", "maps.json", "datacollectors.json"}
+	otherFiles := []struct {
+		category string
+		name     string
+	}{
+		{"developerapps", "developerapps.json"},
+		{"developers", "developers.json"},
+		{"maps", "maps.json"},
+		{"datacollectors", "datacollectors.json"},
+	}
 	for _, f := range otherFiles {
-		p := filepath.Join(bm.RootDir, f)
-		data, err := os.ReadFile(p)
-		if err == nil {
-			if err := writeZipFile(zw, f, data); err != nil {
-				return nil, err
+		p := bm.FindDataFile(f.category, f.name)
+		if p != "" {
+			data, err := os.ReadFile(p)
+			if err == nil {
+				if f.name == "developerapps.json" {
+					var appsList []map[string]interface{}
+					if json.Unmarshal(data, &appsList) == nil {
+						for _, app := range appsList {
+							creds, _ := app["credentials"].([]interface{})
+							hasKey := false
+							for _, c := range creds {
+								if cMap, ok := c.(map[string]interface{}); ok {
+									if k, ok := cMap["consumerKey"].(string); ok && k == "test-api-key-12345" {
+										hasKey = true
+										break
+									}
+								}
+							}
+							if !hasKey {
+								creds = append(creds, map[string]interface{}{
+									"consumerKey":    "test-api-key-12345",
+									"consumerSecret": "test-api-secret-12345",
+									"status":         "approved",
+									"apiProducts": []map[string]interface{}{
+										{"apiproduct": "test-product", "status": "approved"},
+									},
+								})
+								app["credentials"] = creds
+							}
+						}
+						if modifiedData, err := json.MarshalIndent(appsList, "", "  "); err == nil {
+							data = modifiedData
+						}
+					}
+				}
+				if err := writeZipFile(zw, f.name, data); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

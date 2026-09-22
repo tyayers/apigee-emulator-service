@@ -23,11 +23,13 @@ type Server struct {
 	PublicDir         string
 	RootDir           string
 
-	mu              sync.RWMutex
-	deployMu        sync.Mutex
-	isDeploying     bool
-	deployStatusMsg string
-	deployError     string
+	mu                 sync.RWMutex
+	deployMu           sync.Mutex
+	isDeploying        bool
+	deployStatusMsg    string
+	deployError        string
+	lastTestDataTime   time.Time
+	lastTestDataStatus string
 }
 
 func (s *Server) setDeployState(deploying bool, msg string, errMsg string) {
@@ -42,6 +44,19 @@ func (s *Server) getDeployState() (bool, string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.isDeploying, s.deployStatusMsg, s.deployError
+}
+
+func (s *Server) recordTestDataStatus(status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastTestDataTime = time.Now()
+	s.lastTestDataStatus = status
+}
+
+func (s *Server) getTestDataStatus() (time.Time, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastTestDataTime, s.lastTestDataStatus
 }
 
 func getEnv(key, fallback string) string {
@@ -100,6 +115,9 @@ func main() {
 	registerAPI := func(prefix string) {
 		mux.HandleFunc(prefix+"/status", s.handleStatus)
 		mux.HandleFunc(prefix+"/bundles", s.handleBundles)
+		mux.HandleFunc(prefix+"/products", s.handleProducts)
+		mux.HandleFunc(prefix+"/users", s.handleUsers)
+		mux.HandleFunc(prefix+"/apps", s.handleApps)
 		mux.HandleFunc(prefix+"/deployments", s.handleDeployments)
 		mux.HandleFunc(prefix+"/tests", s.handleTests)
 		mux.HandleFunc(prefix+"/tests/run", s.handleTestsRun)
@@ -112,6 +130,8 @@ func main() {
 		mux.HandleFunc(prefix+"/trace/transactions", s.handleTraceTransactions)
 		mux.HandleFunc(prefix+"/analytics", s.handleAnalytics)
 		mux.HandleFunc(prefix+"/analytics/seed", s.handleAnalyticsSeed)
+		mux.HandleFunc(prefix+"/emulator/state", s.handleEmulatorState)
+		mux.HandleFunc(prefix+"/emulator/setup-testdata", s.handleSetupTestData)
 	}
 	registerAPI("/tester/api")
 	registerAPI("/manage/api")
@@ -192,6 +212,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status.AvailableBundles = bundles
 
+	// Populate deployed products, users, and apps
+	if prods, err := s.BundleManager.GetProducts(); err == nil {
+		status.Products = prods
+	}
+	if users, err := s.BundleManager.GetUsers(); err == nil {
+		status.Users = users
+	}
+	if apps, err := s.BundleManager.GetApps(); err == nil {
+		status.Apps = apps
+	}
+
 	// Populate deployment status
 	isDeploying, msg, errMsg := s.getDeployState()
 	status.IsDeploying = isDeploying
@@ -201,6 +232,302 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, status)
+}
+
+func (s *Server) handleProducts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	prods, err := s.BundleManager.GetProducts()
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, prods)
+}
+
+func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	users, err := s.BundleManager.GetUsers()
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, users)
+}
+
+func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	apps, err := s.BundleManager.GetApps()
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, apps)
+}
+
+func (s *Server) handleEmulatorState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	health, _ := s.EmulatorClient.CheckHealth()
+	online := health != nil && health.Online
+
+	treeRaw, _ := s.EmulatorClient.GetRawDeploymentTree()
+	deployedProxies, _ := s.EmulatorClient.GetDeploymentTree()
+	bundles, _ := s.BundleManager.ListBundles()
+	products, _ := s.BundleManager.GetProducts()
+	users, _ := s.BundleManager.GetUsers()
+	apps, _ := s.BundleManager.GetApps()
+	maps, _ := s.BundleManager.GetMaps()
+	datacollectors, _ := s.BundleManager.GetDataCollectors()
+
+	lastUploadTime, lastStatus := s.getTestDataStatus()
+	lastUploadStr := ""
+	if !lastUploadTime.IsZero() {
+		lastUploadStr = lastUploadTime.Format(time.RFC3339)
+	}
+
+	var checks []ValidationCheck
+
+	// Check 1: Emulator connectivity
+	if online {
+		checks = append(checks, ValidationCheck{
+			Category: "Connectivity",
+			Title:    "Emulator Management & Runtime API",
+			Status:   "PASS",
+			Message:  fmt.Sprintf("Connected to Emulator Management (%s) and Runtime (%s)", s.EmulatorClient.MgmtURL, s.EmulatorClient.RuntimeURL),
+		})
+	} else {
+		checks = append(checks, ValidationCheck{
+			Category: "Connectivity",
+			Title:    "Emulator Management & Runtime API",
+			Status:   "FAIL",
+			Message:  fmt.Sprintf("Could not connect to emulator at %s", s.EmulatorClient.MgmtURL),
+		})
+	}
+
+	// Check 2: Deployed proxies
+	if len(deployedProxies) > 0 {
+		var names []string
+		for _, p := range deployedProxies {
+			names = append(names, fmt.Sprintf("%s (%s)", p.Name, p.BasePath))
+		}
+		checks = append(checks, ValidationCheck{
+			Category: "Proxies",
+			Title:    "Deployed Active Proxies",
+			Status:   "PASS",
+			Message:  fmt.Sprintf("%d active proxies deployed in emulator: %s", len(deployedProxies), strings.Join(names, ", ")),
+		})
+	} else {
+		checks = append(checks, ValidationCheck{
+			Category: "Proxies",
+			Title:    "Deployed Active Proxies",
+			Status:   "WARN",
+			Message:  "No proxies are currently deployed in the emulator. Click 'Deploy All Bundles' to deploy.",
+		})
+	}
+
+	// Check 3: Products configuration
+	if len(products) > 0 {
+		hasLLM := false
+		var prodNames []string
+		for _, p := range products {
+			name, _ := p["name"].(string)
+			prodNames = append(prodNames, name)
+			if llm, ok := p["llmOperationGroup"].(map[string]interface{}); ok {
+				if cfgs, ok := llm["operationConfigs"].([]interface{}); ok && len(cfgs) > 0 {
+					hasLLM = true
+				}
+			}
+		}
+		msg := fmt.Sprintf("%d API product(s) configured: %s", len(products), strings.Join(prodNames, ", "))
+		if hasLLM {
+			msg += " (includes AI/LLM operation configurations)"
+		}
+		checks = append(checks, ValidationCheck{
+			Category: "Products",
+			Title:    "API Products Loaded",
+			Status:   "PASS",
+			Message:  msg,
+		})
+	} else {
+		checks = append(checks, ValidationCheck{
+			Category: "Products",
+			Title:    "API Products Loaded",
+			Status:   "FAIL",
+			Message:  "No products found in data/products/products.json.",
+		})
+	}
+
+	// Check 4: Developer Apps & Credentials
+	totalCreds := 0
+	appKeys := make(map[string]bool)
+	for _, app := range apps {
+		if creds, ok := app["credentials"].([]interface{}); ok {
+			for _, c := range creds {
+				if cMap, ok := c.(map[string]interface{}); ok {
+					if key, ok := cMap["consumerKey"].(string); ok && key != "" {
+						appKeys[key] = true
+						totalCreds++
+					}
+				}
+			}
+		}
+	}
+	if len(apps) > 0 && totalCreds > 0 {
+		var keyList []string
+		for k := range appKeys {
+			keyList = append(keyList, k)
+		}
+		checks = append(checks, ValidationCheck{
+			Category: "Apps",
+			Title:    "Developer Apps & Consumer Keys",
+			Status:   "PASS",
+			Message:  fmt.Sprintf("%d app(s) registered with %d active consumer key(s): %s", len(apps), totalCreds, strings.Join(keyList, ", ")),
+		})
+	} else {
+		checks = append(checks, ValidationCheck{
+			Category: "Apps",
+			Title:    "Developer Apps & Consumer Keys",
+			Status:   "FAIL",
+			Message:  "No developer apps or credentials found in data/developerapps/developerapps.json.",
+		})
+	}
+
+	// Check 5: Test Suite API Key Verification
+	var tests []TestCase
+	if s.DeploymentManager != nil {
+		tests, _ = s.DeploymentManager.LoadAllTests()
+	}
+	missingKeys := make(map[string]bool)
+	usedKeys := make(map[string]bool)
+	for _, t := range tests {
+		for k, v := range t.Headers {
+			if strings.EqualFold(k, "x-api-key") || strings.EqualFold(k, "apikey") || strings.EqualFold(k, "x-ai-key") {
+				usedKeys[v] = true
+				if !appKeys[v] {
+					missingKeys[v] = true
+				}
+			}
+		}
+	}
+	if len(missingKeys) == 0 && len(usedKeys) > 0 {
+		var verifiedList []string
+		for k := range usedKeys {
+			verifiedList = append(verifiedList, k)
+		}
+		checks = append(checks, ValidationCheck{
+			Category: "Tests",
+			Title:    "Test Suite Key Authorization",
+			Status:   "PASS",
+			Message:  fmt.Sprintf("All test API keys (%s) match authorized developer app credentials in the emulator.", strings.Join(verifiedList, ", ")),
+		})
+	} else if len(missingKeys) > 0 {
+		var unauth []string
+		for k := range missingKeys {
+			unauth = append(unauth, k)
+		}
+		checks = append(checks, ValidationCheck{
+			Category: "Tests",
+			Title:    "Test Suite Key Authorization",
+			Status:   "WARN",
+			Message:  fmt.Sprintf("Some tests use API key(s) not registered in developer apps: %s", strings.Join(unauth, ", ")),
+		})
+	}
+
+	// Check 6: Emulator Datastore Upload Status
+	if lastStatus != "" {
+		statusType := "PASS"
+		if strings.Contains(strings.ToLower(lastStatus), "fail") || strings.Contains(strings.ToLower(lastStatus), "error") {
+			statusType = "FAIL"
+		}
+		uploadInfo := ""
+		if lastUploadStr != "" {
+			uploadInfo = " (Last upload: " + lastUploadStr + ")"
+		}
+		checks = append(checks, ValidationCheck{
+			Category: "Datastore",
+			Title:    "Emulator Datastore (Cassandra) Test Data",
+			Status:   statusType,
+			Message:  fmt.Sprintf("Status: %s%s", lastStatus, uploadInfo),
+		})
+	} else {
+		checks = append(checks, ValidationCheck{
+			Category: "Datastore",
+			Title:    "Emulator Datastore (Cassandra) Test Data",
+			Status:   "WARN",
+			Message:  "Test data has not yet been pushed in this session. Click 'Deploy All Bundles' or 'Re-upload Test Data' to populate.",
+		})
+	}
+
+	resp := EmulatorStateResponse{
+		Online:             online,
+		MgmtURL:            s.EmulatorClient.MgmtURL,
+		RuntimeURL:         s.EmulatorClient.RuntimeURL,
+		DeploymentTree:     treeRaw,
+		ActiveProxies:      deployedProxies,
+		PackagedBundles:    bundles,
+		Products:           products,
+		Users:              users,
+		Apps:               apps,
+		Maps:               maps,
+		DataCollectors:     datacollectors,
+		TestDataLoaded:     lastStatus != "" && !strings.Contains(strings.ToLower(lastStatus), "fail"),
+		LastTestDataUpload: lastUploadStr,
+		LastTestDataStatus: lastStatus,
+		ValidationChecks:   checks,
+		TotalActiveProxies: len(deployedProxies),
+		TotalProducts:      len(products),
+		TotalUsers:         len(users),
+		TotalApps:          len(apps),
+	}
+
+	jsonResponse(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleSetupTestData(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.deployMu.Lock()
+	defer s.deployMu.Unlock()
+
+	bundles, _ := s.BundleManager.ListBundles()
+	var proxyNames []string
+	for _, b := range bundles {
+		proxyNames = append(proxyNames, b.ProxyName)
+	}
+
+	testDataBytes, err := s.BundleManager.BuildTestDataBundle(proxyNames)
+	if err != nil {
+		s.recordTestDataStatus(fmt.Sprintf("Build failed: %v", err))
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if err := s.EmulatorClient.SetupTestData(testDataBytes); err != nil {
+		s.recordTestDataStatus(fmt.Sprintf("Upload failed: %v", err))
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.recordTestDataStatus("Loaded successfully into Apigee emulator datastore")
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Test data bundle (products, developers, apps, credentials) re-uploaded and initialized in emulator",
+	})
 }
 
 func (s *Server) handleBundles(w http.ResponseWriter, r *http.Request) {
@@ -292,9 +619,13 @@ func (s *Server) executeDeploy(req DeployRequest) (*DeployResponse, error) {
 	testDataBytes, err := s.BundleManager.BuildTestDataBundle(proxyNames)
 	if err != nil {
 		log.Printf("Warning building testdata: %v", err)
+		s.recordTestDataStatus(fmt.Sprintf("Build failed: %v", err))
 	} else {
 		if err := s.EmulatorClient.SetupTestData(testDataBytes); err != nil {
 			log.Printf("Warning uploading testdata: %v", err)
+			s.recordTestDataStatus(fmt.Sprintf("Upload failed: %v", err))
+		} else {
+			s.recordTestDataStatus("Loaded successfully into Apigee emulator datastore")
 		}
 	}
 

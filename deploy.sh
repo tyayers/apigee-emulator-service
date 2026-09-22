@@ -282,6 +282,11 @@ convert_deployments_to_assets() {
   rm -rf "$DIST_DIR"
   rm -rf "$ROOT_DIR/data/bundles"
   mkdir -p "$ROOT_DIR/data/bundles"
+  mkdir -p "$ROOT_DIR/data/products"
+  mkdir -p "$ROOT_DIR/data/developers"
+  mkdir -p "$ROOT_DIR/data/developerapps"
+  mkdir -p "$ROOT_DIR/data/maps"
+  mkdir -p "$ROOT_DIR/data/datacollectors"
   mkdir -p "$PROXIES_DIR"
   mkdir -p "$DIST_DIR"
 
@@ -324,14 +329,17 @@ convert_deployments_to_assets() {
       python3 -c "
 import json, os
 
-for fname in ['products.json', 'developers.json', 'developerapps.json']:
+for fname, subdir in [('products.json', 'products'), ('developers.json', 'developers'), ('developerapps.json', 'developerapps')]:
     src = os.path.join('$tmp_dep_dir', fname)
     if os.path.exists(src):
         try:
             with open(src) as f: s_data = json.load(f)
             dst_dist = os.path.join('$DIST_DIR', fname)
+            dst_data = os.path.join('$ROOT_DIR', 'data', subdir, fname)
             d_data = []
-            if os.path.exists(dst_dist):
+            if os.path.exists(dst_data):
+                with open(dst_data) as f: d_data = json.load(f)
+            elif os.path.exists(dst_dist):
                 with open(dst_dist) as f: d_data = json.load(f)
             elif os.path.exists(os.path.join('$SCRIPT_DIR', fname)):
                 with open(os.path.join('$SCRIPT_DIR', fname)) as f: d_data = json.load(f)
@@ -353,12 +361,24 @@ for fname in ['products.json', 'developers.json', 'developerapps.json']:
                         prod.pop('proxies', None)
                         prod.pop('apiResources', None)
 
+            os.makedirs(os.path.dirname(dst_data), exist_ok=True)
+            with open(dst_data, 'w') as f:
+                json.dump(list(merged.values()), f, indent=2)
+
             with open(dst_dist, 'w') as f:
                 json.dump(list(merged.values()), f, indent=2)
-            print(f'  • Updated {fname} ({len(merged)} entries total)')
+            print(f'  • Updated {fname} in data/{subdir}/ and dist/ ({len(merged)} entries total)')
         except Exception as e:
             print(f'  • Warning merging {fname}: {e}')
 "
+      if [ -f "$tmp_dep_dir/maps.json" ]; then
+        cp "$tmp_dep_dir/maps.json" "$ROOT_DIR/data/maps/maps.json"
+        cp "$tmp_dep_dir/maps.json" "$DIST_DIR/maps.json"
+      fi
+      if [ -f "$tmp_dep_dir/datacollectors.json" ]; then
+        cp "$tmp_dep_dir/datacollectors.json" "$ROOT_DIR/data/datacollectors/datacollectors.json"
+        cp "$tmp_dep_dir/datacollectors.json" "$DIST_DIR/datacollectors.json"
+      fi
     else
       echo -e "${RED}Failed to convert $dep_file with aft${NC}" >&2
     fi
@@ -367,7 +387,7 @@ for fname in ['products.json', 'developers.json', 'developerapps.json']:
 
   echo -e "\n${BOLD}================================================================${NC}"
   echo -e "${GREEN}✓ Conversion completed! Processed $total_proxies proxy bundle(s).${NC}"
-  echo -e "  Assets created in:\n    • ${CYAN}$ROOT_DIR/data/bundles/${NC} (proxy bundles for emulator service)\n    • ${CYAN}$DIST_DIR/bundle/${NC} (unpacked bundles for deploy.sh)\n    • ${CYAN}$DIST_DIR/${NC} (merged products & apps)"
+  echo -e "  Assets created in:\n    • ${CYAN}$ROOT_DIR/data/bundles/${NC} (proxy bundles)\n    • ${CYAN}$ROOT_DIR/data/{products,developers,developerapps,maps,datacollectors}/${NC} (test data)\n    • ${CYAN}$DIST_DIR/bundle/${NC} (unpacked bundles for deploy.sh)"
   echo -e "${BOLD}================================================================${NC}\n"
 }
 
@@ -514,17 +534,19 @@ check_prerequisites
 ensure_emulator_running
 
 # Validate test data files exist
-TESTDATA_FILES=(
-  "datacollectors.json"
-  "developerapps.json"
-  "developers.json"
-  "maps.json"
-  "products.json"
+TESTDATA_MAP=(
+  "datacollectors.json:datacollectors"
+  "developerapps.json:developerapps"
+  "developers.json:developers"
+  "maps.json:maps"
+  "products.json:products"
 )
 
-for td in "${TESTDATA_FILES[@]}"; do
-  if [ ! -f "$SCRIPT_DIR/$td" ]; then
-    echo -e "${RED}Error: Required test data file missing: emulator/$td${NC}" >&2
+for item in "${TESTDATA_MAP[@]}"; do
+  td="${item%%:*}"
+  sub="${item##*:}"
+  if [ ! -f "$ROOT_DIR/data/$sub/$td" ] && [ ! -f "$SCRIPT_DIR/$td" ]; then
+    echo -e "${RED}Error: Required test data file missing: data/$sub/$td${NC}" >&2
     exit 1
   fi
 done
@@ -578,18 +600,21 @@ except:
         fi
       done
 
-      # Merge products, developers, apps into DIST_DIR
+      # Merge products, developers, apps into data/ subdirectories and DIST_DIR
       python3 -c "
 import json, os
-for fname in ['products.json', 'developers.json', 'developerapps.json']:
+for fname, subdir in [('products.json', 'products'), ('developers.json', 'developers'), ('developerapps.json', 'developerapps')]:
     src = os.path.join('$TMP_DEP_DIR', fname)
-    dst = os.path.join('$DIST_DIR', fname)
+    dst_dist = os.path.join('$DIST_DIR', fname)
+    dst_data = os.path.join('$ROOT_DIR', 'data', subdir, fname)
     if os.path.exists(src):
         try:
             with open(src) as f: s_data = json.load(f)
             d_data = []
-            if os.path.exists(dst):
-                with open(dst) as f: d_data = json.load(f)
+            if os.path.exists(dst_data):
+                with open(dst_data) as f: d_data = json.load(f)
+            elif os.path.exists(dst_dist):
+                with open(dst_dist) as f: d_data = json.load(f)
             elif os.path.exists(os.path.join('$SCRIPT_DIR', fname)):
                 with open(os.path.join('$SCRIPT_DIR', fname)) as f: d_data = json.load(f)
             key = 'name' if fname != 'developers.json' else 'email'
@@ -609,12 +634,24 @@ for fname in ['products.json', 'developers.json', 'developerapps.json']:
                         prod.pop('proxies', None)
                         prod.pop('apiResources', None)
 
-            with open(dst, 'w') as f:
+            os.makedirs(os.path.dirname(dst_data), exist_ok=True)
+            with open(dst_data, 'w') as f:
                 json.dump(list(merged.values()), f, indent=2)
-            print(f'  • Merged {fname} with {len(s_data)} deployment entries')
+
+            with open(dst_dist, 'w') as f:
+                json.dump(list(merged.values()), f, indent=2)
+            print(f'  • Merged {fname} into data/{subdir}/ and dist/ ({len(s_data)} deployment entries)')
         except Exception as e:
             print(f'  • Warning merging {fname}: {e}')
 "
+      if [ -f "$TMP_DEP_DIR/maps.json" ]; then
+        cp "$TMP_DEP_DIR/maps.json" "$ROOT_DIR/data/maps/maps.json"
+        cp "$TMP_DEP_DIR/maps.json" "$DIST_DIR/maps.json"
+      fi
+      if [ -f "$TMP_DEP_DIR/datacollectors.json" ]; then
+        cp "$TMP_DEP_DIR/datacollectors.json" "$ROOT_DIR/data/datacollectors/datacollectors.json"
+        cp "$TMP_DEP_DIR/datacollectors.json" "$DIST_DIR/datacollectors.json"
+      fi
     else
       echo -e "${RED}Error: Failed to compile deployment $YAML_FILE with aft.${NC}" >&2
       rm -rf "$TMP_DEP_DIR"
@@ -668,7 +705,11 @@ cat << EOF > "$ENV_DIR/deployments.json"
 EOF
 
 # Copy datacollectors.json to environment directory
-cp "$SCRIPT_DIR/datacollectors.json" "$ENV_DIR/datacollectors.json"
+if [ -f "$ROOT_DIR/data/datacollectors/datacollectors.json" ]; then
+  cp "$ROOT_DIR/data/datacollectors/datacollectors.json" "$ENV_DIR/datacollectors.json"
+elif [ -f "$SCRIPT_DIR/datacollectors.json" ]; then
+  cp "$SCRIPT_DIR/datacollectors.json" "$ENV_DIR/datacollectors.json"
+fi
 
 # Package deployment bundle
 DEPLOY_ZIP="$DIST_DIR/bundle.zip"
@@ -687,7 +728,7 @@ fi
 python3 -c "
 import json, os
 
-prod_path = '$DIST_DIR/products.json' if os.path.exists('$DIST_DIR/products.json') else '$SCRIPT_DIR/products.json'
+prod_path = '$DIST_DIR/products.json' if os.path.exists('$DIST_DIR/products.json') else '$ROOT_DIR/data/products/products.json' if os.path.exists('$ROOT_DIR/data/products/products.json') else '$SCRIPT_DIR/products.json'
 with open(prod_path) as f:
     products = json.load(f)
 
@@ -715,15 +756,41 @@ for prod in products:
         op_group['operationConfigs'] = existing_ops
     existing_sources = {c.get('apiSource') for c in existing_ops if isinstance(c, dict)}
 
+    llm_proxies = {p for p in proxies if 'ai' in p.lower() or 'completions' in p.lower()}
+
+    # Standard proxies in operationGroup (split so each config has exactly 1 operation)
+    split_ops = []
+    for c in existing_ops:
+        if isinstance(c, dict):
+            src = c.get('apiSource')
+            quota = c.get('quota', {})
+            ops = c.get('operations', [])
+            if len(ops) > 1:
+                for op in ops:
+                    split_ops.append({'apiSource': src, 'operations': [op], 'quota': quota})
+            elif len(ops) == 1:
+                split_ops.append(c)
+    existing_ops = split_ops
+
+    existing_ops[:] = [c for c in existing_ops if isinstance(c, dict) and c.get('apiSource') not in llm_proxies]
     for p in proxies:
+        if p in llm_proxies:
+            continue
         if p not in existing_sources:
             existing_ops.append({
                 'apiSource': p,
                 'operations': [{'resource': '/'}],
                 'quota': {}
             })
+            existing_ops.append({
+                'apiSource': p,
+                'operations': [{'resource': '/*'}],
+                'quota': {}
+            })
             existing_sources.add(p)
+    op_group['operationConfigs'] = existing_ops
 
+    # LLM operations in llmOperationGroup (split so each model/resource is exactly 1 entity per config)
     llm_group = prod.get('llmOperationGroup')
     if not isinstance(llm_group, dict):
         llm_group = {'operationConfigType': 'proxy', 'operationConfigs': []}
@@ -731,21 +798,39 @@ for prod in products:
     existing_llm_ops = llm_group.get('operationConfigs', [])
     if not isinstance(existing_llm_ops, list):
         existing_llm_ops = []
-        llm_group['operationConfigs'] = existing_llm_ops
-    existing_llm_sources = {c.get('apiSource') for c in existing_llm_ops if isinstance(c, dict)}
 
-    for p in proxies:
-        if p not in existing_llm_sources:
-            for model in ['gemini-3.6-flash', 'claude-sonnet-5', 'gemini-3.6-flash-lite']:
-                existing_llm_ops.append({
-                    'apiSource': p,
-                    'llmOperations': [{'resource': '/', 'model': model}],
-                    'llmTokenQuota': {}
-                })
-            existing_llm_sources.add(p)
+    new_llm_configs = []
+    seen_llm = set()
+    for c in existing_llm_ops:
+        if isinstance(c, dict):
+            src = c.get('apiSource')
+            quota = c.get('llmTokenQuota', {'limit': '50000', 'interval': '1', 'timeUnit': 'minute'})
+            ops = c.get('llmOperations', [])
+            for op in ops:
+                key = (src, op.get('model'), op.get('resource'))
+                if key not in seen_llm:
+                    new_llm_configs.append({
+                        'apiSource': src,
+                        'llmOperations': [op],
+                        'llmTokenQuota': quota
+                    })
+                    seen_llm.add(key)
+
+    for p in llm_proxies:
+        for m in ['gemini-3.8-flash', 'google/gemini-3.8-flash', 'gemini-3.7-flash', 'claude-sonnet-5']:
+            for r in ['/', '/*', '/**', '/v1/chat/completions', '/v1/chat/completions/*']:
+                key = (p, m, r)
+                if key not in seen_llm:
+                    new_llm_configs.append({
+                        'apiSource': p,
+                        'llmOperations': [{'resource': r, 'methods': ['POST'], 'model': m}],
+                        'llmTokenQuota': {'limit': '50000', 'interval': '1', 'timeUnit': 'minute'}
+                    })
+                    seen_llm.add(key)
+    llm_group['operationConfigs'] = new_llm_configs
 
 # Ensure all products referenced by developer apps exist in products
-app_path = '$DIST_DIR/developerapps.json' if os.path.exists('$DIST_DIR/developerapps.json') else '$SCRIPT_DIR/developerapps.json'
+app_path = '$DIST_DIR/developerapps.json' if os.path.exists('$DIST_DIR/developerapps.json') else '$ROOT_DIR/data/developerapps/developerapps.json' if os.path.exists('$ROOT_DIR/data/developerapps/developerapps.json') else '$SCRIPT_DIR/developerapps.json'
 if os.path.exists(app_path):
     try:
         with open(app_path) as af:
@@ -783,15 +868,20 @@ with open('$DIST_DIR/products.json', 'w') as f:
 
 # Package test data zip
 TESTDATA_ZIP="$DIST_DIR/testdata.zip"
-(
-  cd "$SCRIPT_DIR"
-  zip -q "$TESTDATA_ZIP" datacollectors.json developerapps.json developers.json maps.json
-  for f in products.json developerapps.json developers.json; do
-    if [ -f "$DIST_DIR/$f" ]; then
-      (cd "$DIST_DIR" && zip -q -u "$TESTDATA_ZIP" "$f")
-    fi
-  done
-)
+rm -f "$TESTDATA_ZIP"
+for item in "${TESTDATA_MAP[@]}"; do
+  td="${item%%:*}"
+  sub="${item##*:}"
+  src_file="$ROOT_DIR/data/$sub/$td"
+  if [ -f "$DIST_DIR/$td" ]; then
+    src_file="$DIST_DIR/$td"
+  elif [ ! -f "$src_file" ] && [ -f "$SCRIPT_DIR/$td" ]; then
+    src_file="$SCRIPT_DIR/$td"
+  fi
+  if [ -f "$src_file" ]; then
+    (cd "$(dirname "$src_file")" && zip -q -u "$TESTDATA_ZIP" "$td")
+  fi
+done
 
 echo -e "${BLUE}Deploying test data (Products, Developer Apps, KVMs)...${NC}"
 TEST_STATUS=$(curl -s -o /tmp/emulator_setup_response.txt -w "%{http_code}" -X POST "$EMULATOR_MGMT_URL/v1/emulator/setup/tests" \
@@ -803,6 +893,62 @@ if [ "$TEST_STATUS" -ne 200 ]; then
   cat /tmp/emulator_setup_response.txt >&2
   echo "" >&2
   exit 1
+fi
+
+# Sync configured developer app credentials into Cassandra so configured keys (e.g. test-app-key-123) are immediately valid
+if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -q "^apigee$"; then
+  echo -e "${BLUE}Syncing configured developer app credentials into Cassandra...${NC}"
+  python3 -c "
+import subprocess, json, os
+
+def run_cql(query):
+    cmd = ['docker', 'exec', 'apigee', '/opt/apigee/apache-cassandra-4.0.19/bin/cqlsh', '-e', query]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    return res.stdout
+
+try:
+    prods_raw = run_cql('SELECT id, name FROM kms_hybrid_hybrid.api_product;')
+    apps_raw = run_cql('SELECT id, name FROM kms_hybrid_hybrid.app;')
+
+    prod_map = {}
+    for line in prods_raw.splitlines():
+        parts = [p.strip() for p in line.split('|')]
+        if len(parts) == 2 and len(parts[0]) == 36:
+            prod_map[parts[1]] = parts[0]
+
+    app_map = {}
+    for line in apps_raw.splitlines():
+        parts = [p.strip() for p in line.split('|')]
+        if len(parts) == 2 and len(parts[0]) == 36:
+            app_map[parts[1]] = parts[0]
+
+    app_files = ['$ROOT_DIR/data/developerapps/developerapps.json', '$DIST_DIR/developerapps.json']
+    for af in app_files:
+        if os.path.exists(af):
+            with open(af) as f:
+                dev_apps = json.load(f)
+                for app in dev_apps:
+                    app_name = app.get('name')
+                    app_id = app_map.get(app_name)
+                    if not app_id and app_map:
+                        app_id = list(app_map.values())[0]
+                    if not app_id:
+                        continue
+                    for cred in app.get('credentials', []):
+                        ckey = cred.get('consumerKey')
+                        csec = cred.get('consumerSecret', 'secret')
+                        if not ckey:
+                            continue
+                        prod_map_str = '{' + ', '.join([f\"{pid}: 'APPROVED'\" for pid in prod_map.values()]) + '}'
+                        q1 = f\"INSERT INTO kms_hybrid_hybrid.app_credential (tid, id, app_id, c_at, iss_at, sts, c_sec, api_prdt) VALUES ('hybrid', '{ckey}', {app_id}, toTimestamp(now()), toTimestamp(now()), 'APPROVED', '{csec}', {prod_map_str});\"
+                        q2 = f\"INSERT INTO kms_hybrid_hybrid.app_credential_idx (key, rid) VALUES ('app_id={app_id}&tid=hybrid', 'id={ckey}:tid=hybrid');\"
+                        q3 = f\"INSERT INTO kms_hybrid_hybrid.app_credential_idx (key, rid) VALUES ('tid=hybrid', 'id={ckey}:tid=hybrid');\"
+                        run_cql(q1)
+                        run_cql(q2)
+                        run_cql(q3)
+except Exception as e:
+    pass
+" || true
 fi
 echo -e "${GREEN}✓ Test data deployed successfully.${NC}"
 

@@ -3,6 +3,8 @@ gateway: apigee
 schemaVersion: 1.0.0
 name: deployment-1
 type: deployment
+templates:
+  - REST-AI-Completions
 proxies:
   - name: TestProxy
     displayName: Hello World Proxy
@@ -120,8 +122,10 @@ products:
   approvalType: auto
   environments:
     - default-dev
+    - test
   proxies:
     - TestProxy
+    - REST-AI-Completions
   apiResources: []
   quota: "50000"
   quotaInterval: "1"
@@ -136,7 +140,22 @@ products:
         limit: "5"
         interval: "1"
         timeUnit: minute
-  llmOperations: []
+  llmOperations:
+    - apiSource: REST-AI-Completions
+      operations:
+        - name: /
+          methods:
+            - POST
+          model: gemini-3.8-flash
+        - name: /v1/chat/completions
+          methods:
+            - POST
+          model: google/gemini-3.8-flash
+        - name: /
+          methods:
+            - POST
+          model: google/gemini-3.8-flash
+      llmTokenQuota: {}
   payloadOperations: []
   graphqlOperations: []
   grpcOperations: []
@@ -179,7 +198,27 @@ tests:
     path: /testproxy
     method: GET
     headers:
-      x-api-key: test-api-key-12345
+      x-api-key: test-app-key-123
     assertions:
       - response.status == 200
       - request.headers.x-api-key exists
+  - name: completions-test1
+    description: This tests the completions API.
+    proxy: REST-AI-Completions
+    path: /v1/chat/completions
+    method: POST
+    headers:
+      x-api-key: test-app-key-123
+      x-ai-key: test-app-key-123
+    body: |
+      {
+        "model": "google/gemini-3.8-flash",
+        "stream": true,
+        "max_tokens": 100,
+        "messages": [{
+          "role": "user",
+          "content": "Why is the sky blue?"
+        }]
+      }
+    assertions:
+      - response.status == 200

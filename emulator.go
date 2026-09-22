@@ -346,3 +346,60 @@ func (c *EmulatorClient) GetTraceTransactions(sessionID string) (map[string]inte
 		"raw": string(bodyBytes),
 	}, nil
 }
+
+// GetRawDeploymentTree queries GET /v1/emulator/tree and returns raw decoded JSON.
+func (c *EmulatorClient) GetRawDeploymentTree() (interface{}, error) {
+	req, err := http.NewRequest(http.MethodGet, c.MgmtURL+"/v1/emulator/tree", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var raw interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return string(body), nil
+	}
+	return raw, nil
+}
+
+// GetActiveConsumerKeys retrieves active consumer keys from the emulator datastore.
+func (c *EmulatorClient) GetActiveConsumerKeys() ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet, c.MgmtURL+"/v1/emulator/test/developerapps", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("emulator returned status %d", resp.StatusCode)
+	}
+
+	var apps []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&apps); err != nil {
+		return nil, err
+	}
+
+	var keys []string
+	for _, app := range apps {
+		if creds, ok := app["credentials"].([]interface{}); ok {
+			for _, cr := range creds {
+				if crMap, ok := cr.(map[string]interface{}); ok {
+					if k, ok := crMap["consumerKey"].(string); ok && k != "" {
+						keys = append(keys, k)
+					}
+				}
+			}
+		}
+	}
+	return keys, nil
+}

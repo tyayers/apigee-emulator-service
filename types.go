@@ -15,6 +15,9 @@ type EmulatorStatus struct {
 	Error            string          `json:"error,omitempty"`
 	IsDeploying      bool            `json:"isDeploying"`
 	DeployMessage    string          `json:"deployMessage,omitempty"`
+	Products         []map[string]interface{} `json:"products,omitempty"`
+	Users            []map[string]interface{} `json:"users,omitempty"`
+	Apps             []map[string]interface{} `json:"apps,omitempty"`
 }
 
 // DeployedProxy represents an active proxy deployed in the emulator.
@@ -56,6 +59,8 @@ type TestCase struct {
 	Path        string            `json:"path"`
 	Headers     map[string]string `json:"headers"`
 	Payload     string            `json:"payload"`
+	Body        string            `json:"body,omitempty"`
+	Request     string            `json:"request,omitempty"`
 	Assertions  []string          `json:"assertions,omitempty"`
 	Deployment  string            `json:"deployment,omitempty"`
 }
@@ -166,4 +171,35 @@ type AnalyticsQueryResponse struct {
 	ProjectID string                   `json:"projectId,omitempty"`
 	Database  string                   `json:"database,omitempty"`
 	Error     string                   `json:"error,omitempty"`
+}
+
+// ValidationCheck represents a health and integrity validation item.
+type ValidationCheck struct {
+	Category string `json:"category"` // "Connectivity", "Proxies", "Products", "Apps", "Credentials", "Tests"
+	Title    string `json:"title"`
+	Status   string `json:"status"` // "PASS", "WARN", "FAIL"
+	Message  string `json:"message"`
+}
+
+// EmulatorStateResponse represents comprehensive state and inspection data of the emulator.
+type EmulatorStateResponse struct {
+	Online             bool                     `json:"online"`
+	MgmtURL            string                   `json:"mgmtUrl"`
+	RuntimeURL         string                   `json:"runtimeUrl"`
+	DeploymentTree     interface{}              `json:"deploymentTree"`
+	ActiveProxies      []DeployedProxy          `json:"activeProxies"`
+	PackagedBundles    []BundleInfo             `json:"packagedBundles"`
+	Products           []map[string]interface{} `json:"products"`
+	Users              []map[string]interface{} `json:"users"`
+	Apps               []map[string]interface{} `json:"apps"`
+	Maps               []map[string]interface{} `json:"maps"`
+	DataCollectors     []map[string]interface{} `json:"dataCollectors"`
+	TestDataLoaded     bool                     `json:"testDataLoaded"`
+	LastTestDataUpload string                   `json:"lastTestDataUpload,omitempty"`
+	LastTestDataStatus string                   `json:"lastTestDataStatus,omitempty"`
+	ValidationChecks   []ValidationCheck        `json:"validationChecks"`
+	TotalActiveProxies int                      `json:"totalActiveProxies"`
+	TotalProducts      int                      `json:"totalProducts"`
+	TotalUsers         int                      `json:"totalUsers"`
+	TotalApps          int                      `json:"totalApps"`
 }

@@ -18,7 +18,11 @@ WORKDIR /app
 COPY --from=builder /apigee-emulator-service /app/apigee-emulator-service
 COPY public /app/public
 COPY data /app/data
-COPY products.json developerapps.json developers.json maps.json datacollectors.json /app/
+RUN cp /app/data/products/products.json /app/products.json 2>/dev/null || true && \
+    cp /app/data/developers/developers.json /app/developers.json 2>/dev/null || true && \
+    cp /app/data/developerapps/developerapps.json /app/developerapps.json 2>/dev/null || true && \
+    cp /app/data/maps/maps.json /app/maps.json 2>/dev/null || true && \
+    cp /app/data/datacollectors/datacollectors.json /app/datacollectors.json 2>/dev/null || true
 
 ENV PORT=8082 \
     EMULATOR_MGMT_URL=http://127.0.0.1:8080 \

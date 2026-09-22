@@ -304,4 +304,144 @@ func TestTestHistoryAPIEndpoints(t *testing.T) {
 	}
 }
 
+func TestDataSubdirectoriesAndResourceEndpoints(t *testing.T) {
+	bm := NewBundleManager("data", ".")
+
+	// Test finding files in data subdirectories
+	prodPath := bm.FindDataFile("products", "products.json")
+	if prodPath == "" {
+		t.Fatalf("Expected to find products.json in data/products/products.json")
+	}
+
+	devPath := bm.FindDataFile("developers", "developers.json")
+	if devPath == "" {
+		t.Fatalf("Expected to find developers.json in data/developers/developers.json")
+	}
+
+	appsPath := bm.FindDataFile("developerapps", "developerapps.json")
+	if appsPath == "" {
+		t.Fatalf("Expected to find developerapps.json in data/developerapps/developerapps.json")
+	}
+
+	mapsPath := bm.FindDataFile("maps", "maps.json")
+	if mapsPath == "" {
+		t.Fatalf("Expected to find maps.json in data/maps/maps.json")
+	}
+
+	dcPath := bm.FindDataFile("datacollectors", "datacollectors.json")
+	if dcPath == "" {
+		t.Fatalf("Expected to find datacollectors.json in data/datacollectors/datacollectors.json")
+	}
+
+	// Test GetProducts and verify llmOperationGroup
+	prods, err := bm.GetProducts()
+	if err != nil {
+		t.Fatalf("Failed to get products: %v", err)
+	}
+	if len(prods) == 0 {
+		t.Fatalf("Expected at least 1 product")
+	}
+
+	foundLLM := false
+	for _, p := range prods {
+		if llmGroup, ok := p["llmOperationGroup"].(map[string]interface{}); ok {
+			if configs, ok := llmGroup["operationConfigs"].([]interface{}); ok && len(configs) > 0 {
+				for _, cfg := range configs {
+					if cfgMap, ok := cfg.(map[string]interface{}); ok {
+						if src, _ := cfgMap["apiSource"].(string); src == "REST-AI-Completions" {
+							foundLLM = true
+						}
+					}
+				}
+			}
+		}
+	}
+	if !foundLLM {
+		t.Errorf("Expected test-product to have llmOperationGroup with REST-AI-Completions")
+	}
+
+	// Test GetUsers
+	users, err := bm.GetUsers()
+	if err != nil {
+		t.Fatalf("Failed to get users: %v", err)
+	}
+	if len(users) == 0 {
+		t.Fatalf("Expected at least 1 user")
+	}
+
+	// Test GetApps
+	apps, err := bm.GetApps()
+	if err != nil {
+		t.Fatalf("Failed to get apps: %v", err)
+	}
+	if len(apps) == 0 {
+		t.Fatalf("Expected at least 1 app")
+	}
+
+	// Test HTTP endpoints
+	s := &Server{
+		BundleManager:  bm,
+		EmulatorClient: NewEmulatorClient("http://localhost:8998", "http://localhost:8998"),
+	}
+
+	// GET /tester/api/products
+	reqP := httptest.NewRequest("GET", "/tester/api/products", nil)
+	wP := httptest.NewRecorder()
+	s.handleProducts(wP, reqP)
+	if wP.Code != http.StatusOK {
+		t.Errorf("handleProducts status: expected 200, got %d", wP.Code)
+	}
+
+	// GET /tester/api/users
+	reqU := httptest.NewRequest("GET", "/tester/api/users", nil)
+	wU := httptest.NewRecorder()
+	s.handleUsers(wU, reqU)
+	if wU.Code != http.StatusOK {
+		t.Errorf("handleUsers status: expected 200, got %d", wU.Code)
+	}
+
+	// GET /tester/api/apps
+	reqA := httptest.NewRequest("GET", "/tester/api/apps", nil)
+	wA := httptest.NewRecorder()
+	s.handleApps(wA, reqA)
+	if wA.Code != http.StatusOK {
+		t.Errorf("handleApps status: expected 200, got %d", wA.Code)
+	}
+}
+
+func TestEmulatorStateAndSetupTestDataEndpoints(t *testing.T) {
+	bm := NewBundleManager("data", ".")
+	s := &Server{
+		BundleManager:     bm,
+		DeploymentManager: NewDeploymentManager("data"),
+		EmulatorClient:    NewEmulatorClient("http://localhost:8998", "http://localhost:8080"),
+	}
+
+	// GET /tester/api/emulator/state
+	reqState := httptest.NewRequest("GET", "/tester/api/emulator/state", nil)
+	wState := httptest.NewRecorder()
+	s.handleEmulatorState(wState, reqState)
+	if wState.Code != http.StatusOK {
+		t.Errorf("handleEmulatorState status: expected 200, got %d", wState.Code)
+	}
+
+	var stateResp EmulatorStateResponse
+	if err := json.Unmarshal(wState.Body.Bytes(), &stateResp); err != nil {
+		t.Fatalf("Failed to parse emulator state response: %v", err)
+	}
+	if len(stateResp.ValidationChecks) == 0 {
+		t.Errorf("Expected validation checks in emulator state response")
+	}
+
+	// POST /tester/api/emulator/setup-testdata
+	reqSetup := httptest.NewRequest("POST", "/tester/api/emulator/setup-testdata", nil)
+	wSetup := httptest.NewRecorder()
+	s.handleSetupTestData(wSetup, reqSetup)
+	var setupResp map[string]interface{}
+	if err := json.Unmarshal(wSetup.Body.Bytes(), &setupResp); err != nil {
+		t.Fatalf("Failed to parse setup-testdata response: %v", err)
+	}
+}
+
+
 

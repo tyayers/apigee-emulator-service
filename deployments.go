@@ -92,9 +92,27 @@ func (dm *DeploymentManager) ListDeployments() ([]DeploymentConfig, error) {
 					if s, ok := tMap["path"].(string); ok {
 						tc.Path = s
 					}
-					if s, ok := tMap["payload"].(string); ok {
-						tc.Payload = s
+					var bodyStr string
+					for _, k := range []string{"body", "request", "payload"} {
+						if val, exists := tMap[k]; exists && val != nil {
+							switch v := val.(type) {
+							case string:
+								bodyStr = v
+							case map[string]interface{}, []interface{}:
+								if bBytes, err := json.MarshalIndent(v, "", "  "); err == nil {
+									bodyStr = string(bBytes)
+								}
+							default:
+								bodyStr = fmt.Sprintf("%v", v)
+							}
+							if bodyStr != "" {
+								break
+							}
+						}
 					}
+					tc.Payload = bodyStr
+					tc.Body = bodyStr
+					tc.Request = bodyStr
 					if hMap, ok := tMap["headers"].(map[string]interface{}); ok {
 						tc.Headers = make(map[string]string)
 						for k, v := range hMap {
@@ -172,6 +190,16 @@ func (dm *DeploymentManager) LoadAllTests() ([]TestCase, error) {
 		var list []TestCase
 		if err := json.Unmarshal(data, &list); err == nil {
 			for _, t := range list {
+				if t.Payload == "" {
+					if t.Body != "" {
+						t.Payload = t.Body
+					} else if t.Request != "" {
+						t.Payload = t.Request
+					}
+				}
+				if t.Body == "" && t.Payload != "" {
+					t.Body = t.Payload
+				}
 				if !isDuplicate(t) {
 					allTests = append(allTests, t)
 				}
