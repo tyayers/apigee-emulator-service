@@ -342,14 +342,59 @@
             <div id="resp-size-badge" class="meta-tag hidden">0 B</div>
           </div>
           <div class="response-tabs">
-            <button class="tab-btn active" data-tab="tab-resp-body">Body</button>
-            <button class="tab-btn" data-tab="tab-resp-headers">Headers</button>
+            <button class="tab-btn" data-tab="tab-resp-request">Request</button>
+            <button class="tab-btn active" data-tab="tab-resp-body">Response Body</button>
+            <button class="tab-btn" data-tab="tab-resp-headers">Response Headers</button>
             <button class="tab-btn" data-tab="tab-resp-assertions">Test Results <span id="resp-assert-badge" class="badge-mini hidden">0/0</span></button>
             <button class="tab-btn" data-tab="tab-resp-trace">Execution Trace <span id="trace-indicator" class="dot-badge hidden"></span></button>
           </div>
         </div>
 
         <div class="card-body response-body-container">
+          <!-- Request Sent Tab -->
+          <div id="tab-resp-request" class="tab-content">
+            <div class="request-summary-bar">
+              <div class="request-summary-meta">
+                <span id="req-sent-method" class="method-tag method-get">GET</span>
+                <span id="req-sent-url" class="req-sent-url">/</span>
+              </div>
+              <div class="request-summary-badges">
+                <span id="req-sent-headers-badge" class="meta-tag">0 headers</span>
+                <span id="req-sent-body-size-badge" class="meta-tag">0 B</span>
+              </div>
+            </div>
+
+            <div class="sub-panel-header">
+              <span class="sub-panel-label">Request Headers</span>
+              <button id="btn-copy-req-headers" class="btn btn-xs btn-outline" title="Copy request headers as JSON">
+                <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy Headers
+              </button>
+            </div>
+            <table class="key-value-table" style="margin-bottom: 1.25rem;">
+              <thead>
+                <tr>
+                  <th>Header</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody id="req-headers-tbody">
+                <tr><td colspan="2" class="empty-state">No request dispatched yet.</td></tr>
+              </tbody>
+            </table>
+
+            <div class="sub-panel-header">
+              <span class="sub-panel-label">Request Body</span>
+              <button id="btn-copy-req-body" class="btn btn-xs btn-outline" title="Copy request body">
+                <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy Body
+              </button>
+            </div>
+            <div class="code-container">
+              <pre id="req-body-content" class="code-viewer">No request body sent.</pre>
+            </div>
+          </div>
+
           <!-- Response Body Tab -->
           <div id="tab-resp-body" class="tab-content active">
             <div class="code-container">

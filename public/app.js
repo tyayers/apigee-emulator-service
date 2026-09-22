@@ -89,6 +89,16 @@
     respBodyContent: document.getElementById('resp-body-content'),
     respHeadersTbody: document.getElementById('resp-headers-tbody'),
     btnCopyResponse: document.getElementById('btn-copy-response'),
+    tabBtnRespRequest: document.querySelector('[data-tab="tab-resp-request"]'),
+    tabRespRequest: document.getElementById('tab-resp-request'),
+    reqSentMethod: document.getElementById('req-sent-method'),
+    reqSentUrl: document.getElementById('req-sent-url'),
+    reqSentHeadersBadge: document.getElementById('req-sent-headers-badge'),
+    reqSentBodySizeBadge: document.getElementById('req-sent-body-size-badge'),
+    reqHeadersTbody: document.getElementById('req-headers-tbody'),
+    reqBodyContent: document.getElementById('req-body-content'),
+    btnCopyReqHeaders: document.getElementById('btn-copy-req-headers'),
+    btnCopyReqBody: document.getElementById('btn-copy-req-body'),
     traceIndicator: document.getElementById('trace-indicator'),
     traceSummaryBar: document.getElementById('trace-summary-bar'),
     traceSessionId: document.getElementById('trace-session-id'),
@@ -467,6 +477,21 @@
       navigator.clipboard.writeText(el.respBodyContent.textContent);
       showToast('Response body copied to clipboard');
     });
+
+    if (el.btnCopyReqHeaders) {
+      el.btnCopyReqHeaders.addEventListener('click', () => {
+        const headers = state.lastResponse?.request?.headers || {};
+        navigator.clipboard.writeText(JSON.stringify(headers, null, 2));
+        showToast('Request headers copied as JSON');
+      });
+    }
+
+    if (el.btnCopyReqBody) {
+      el.btnCopyReqBody.addEventListener('click', () => {
+        navigator.clipboard.writeText(el.reqBodyContent?.textContent || '');
+        showToast('Request body copied to clipboard');
+      });
+    }
 
     if (el.btnCopySession) {
       el.btnCopySession.addEventListener('click', () => {
@@ -1951,6 +1976,9 @@
       // Render response headers
       renderResponseHeaders(data.headers);
 
+      // Render request dispatched
+      renderRequestSent(data.request || { method, path, proxy, headers, body });
+
       // Render assertions
       renderResponseAssertions(data.assertions, data.passed, data);
 
@@ -2048,6 +2076,70 @@
     });
   }
 
+  function formatPayload(payload) {
+    if (!payload) return '(Empty payload)';
+    try {
+      const parsed = JSON.parse(payload);
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return payload;
+    }
+  }
+
+  function renderRequestSent(req) {
+    if (!el.reqHeadersTbody || !el.reqBodyContent) return;
+
+    if (!req) {
+      el.reqHeadersTbody.innerHTML = '<tr><td colspan="2" class="empty-state">No request dispatched yet.</td></tr>';
+      el.reqBodyContent.textContent = 'No request body dispatched.';
+      if (el.reqSentMethod) el.reqSentMethod.textContent = 'GET';
+      if (el.reqSentUrl) el.reqSentUrl.textContent = '/';
+      if (el.reqSentHeadersBadge) el.reqSentHeadersBadge.textContent = '0 headers';
+      if (el.reqSentBodySizeBadge) el.reqSentBodySizeBadge.textContent = '0 B';
+      return;
+    }
+
+    const method = (req.method || 'GET').toUpperCase();
+    const path = req.path || req.targetURL || '/';
+    const headers = req.headers || {};
+    const body = req.body || '';
+    const bodyBytes = body ? new Blob([body]).size : 0;
+    const headerKeys = Object.keys(headers);
+
+    if (el.reqSentMethod) {
+      el.reqSentMethod.textContent = method;
+      el.reqSentMethod.className = `method-tag method-${method.toLowerCase()}`;
+    }
+    if (el.reqSentUrl) {
+      el.reqSentUrl.textContent = path;
+      el.reqSentUrl.title = path;
+    }
+    if (el.reqSentHeadersBadge) {
+      el.reqSentHeadersBadge.textContent = `${headerKeys.length} header${headerKeys.length === 1 ? '' : 's'}`;
+    }
+    if (el.reqSentBodySizeBadge) {
+      el.reqSentBodySizeBadge.textContent = formatBytes(bodyBytes);
+    }
+
+    // Render Headers
+    el.reqHeadersTbody.innerHTML = '';
+    if (headerKeys.length === 0) {
+      el.reqHeadersTbody.innerHTML = '<tr><td colspan="2" class="empty-state">No request headers sent.</td></tr>';
+    } else {
+      headerKeys.sort().forEach(k => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td style="font-family: var(--font-mono); color: var(--text-secondary); width: 220px;">${escapeHtml(k)}</td>
+          <td style="font-family: var(--font-mono); word-break: break-all;">${escapeHtml(headers[k])}</td>
+        `;
+        el.reqHeadersTbody.appendChild(tr);
+      });
+    }
+
+    // Render Body
+    el.reqBodyContent.textContent = formatPayload(body);
+  }
+
   function renderResponseAssertions(assertions, passed, data) {
     if (!el.respAssertionsContainer) return;
 
@@ -2143,6 +2235,7 @@
           renderResponseMeta(lastRun.response);
           renderResponseBody(lastRun.response.body);
           renderResponseHeaders(lastRun.response.headers);
+          renderRequestSent(lastRun.response.request || lastRun.request);
 
           if (lastRun.response.traceData) {
             el.traceIndicator.classList.remove('hidden');
@@ -2269,6 +2362,7 @@
         renderResponseMeta(run.response);
         renderResponseBody(run.response.body);
         renderResponseHeaders(run.response.headers);
+        renderRequestSent(run.response.request || run.request);
 
         if (run.response.traceData) {
           el.traceIndicator.classList.remove('hidden');
@@ -2423,6 +2517,30 @@
       });
     });
 
+    // Extract Request information
+    const reqData = testResponse?.request || state.lastResponse?.request || {
+      method: state.selectedMethod || 'GET',
+      path: state.currentPath || '/',
+      headers: {},
+      body: el.reqBody?.value || ''
+    };
+    const reqMethod = (reqData.method || 'GET').toUpperCase();
+    const reqPath = reqData.path || reqData.targetURL || '/';
+    const reqHeaders = reqData.headers || {};
+    const reqBody = reqData.body || '';
+    const reqBodyBytes = reqBody ? new Blob([reqBody]).size : 0;
+    const reqHeaderKeys = Object.keys(reqHeaders);
+
+    // Extract Response information
+    const respData = testResponse || state.lastResponse || {};
+    const respStatus = respData.statusCode || 200;
+    const respStatusText = respData.statusText || (respStatus < 400 ? 'OK' : 'Error');
+    const respHeaders = respData.headers || {};
+    const respBody = respData.body || '';
+    const respBodyBytes = respBody ? new Blob([respBody]).size : 0;
+    const respHeaderKeys = Object.keys(respHeaders);
+    const respDuration = respData.durationMs || 0;
+
     // Build Vertical Layout HTML
     let html = `
       <div class="trace-vertical-timeline">
@@ -2438,8 +2556,8 @@
           </div>
           <div class="trace-metric-card">
             <div class="trace-metric-title">Status</div>
-            <div class="trace-metric-value" style="color: ${testResponse?.statusCode < 400 ? '#34d399' : '#f87171'};">
-              ${testResponse?.statusCode || 'OK'}
+            <div class="trace-metric-value" style="color: ${respStatus < 400 ? '#34d399' : '#f87171'};">
+              ${respStatus || 'OK'}
             </div>
           </div>
           <div class="trace-metric-card">
@@ -2452,6 +2570,54 @@
 
         <!-- Request Ingress -->
         <div class="trace-flow-phase">Client Request &bull; PreFlow</div>
+
+        <div class="trace-step-item trace-step-ingress">
+          <div class="trace-step-connector"></div>
+          <div class="trace-step-node node-request">REQ</div>
+          <div class="trace-step-card expanded" id="trace-step-req-card">
+            <div class="trace-step-header" id="trace-step-req-header" style="cursor: pointer;">
+              <div class="trace-step-left">
+                <span class="step-type-pill method-tag method-${reqMethod.toLowerCase()}">${escapeHtml(reqMethod)}</span>
+                <span class="step-name-text" title="${escapeHtml(reqPath)}">${escapeHtml(reqPath)}</span>
+              </div>
+              <div class="trace-step-right">
+                <span class="step-duration-badge">${reqHeaderKeys.length} header${reqHeaderKeys.length === 1 ? '' : 's'}</span>
+                ${reqBody ? `<span class="step-duration-badge">${formatBytes(reqBodyBytes)}</span>` : ''}
+                <span class="step-status-pill step-status-info">Ingress</span>
+                <span class="step-expand-icon">▾</span>
+              </div>
+            </div>
+            <div class="trace-step-details-grid" id="trace-step-req-details">
+              <div class="trace-card-tab-bar">
+                <div class="trace-subtabs">
+                  <button type="button" class="trace-subtab-btn active" data-subtab="req-headers">Headers (${reqHeaderKeys.length})</button>
+                  <button type="button" class="trace-subtab-btn" data-subtab="req-body">Body ${reqBody ? `(${formatBytes(reqBodyBytes)})` : '(Empty)'}</button>
+                </div>
+                <div class="trace-card-tab-actions">
+                  <button type="button" class="btn btn-xs btn-outline" id="btn-copy-trace-req" title="Copy active request tab to clipboard">
+                    <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div class="trace-subtab-pane" id="pane-req-headers">
+                ${reqHeaderKeys.length === 0 ? '<div style="color: var(--text-muted); padding: 0.25rem 0;">No request headers sent.</div>' : `
+                  <table class="trace-kv-table">
+                    <thead>
+                      <tr><th>Header</th><th>Value</th></tr>
+                    </thead>
+                    <tbody>
+                      ${reqHeaderKeys.sort().map(k => `<tr><td class="header-key">${escapeHtml(k)}</td><td class="header-val">${escapeHtml(reqHeaders[k])}</td></tr>`).join('')}
+                    </tbody>
+                  </table>
+                `}
+              </div>
+              <div class="trace-subtab-pane hidden" id="pane-req-body">
+                <pre class="trace-body-pre">${escapeHtml(formatPayload(reqBody))}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
     `;
 
     if (steps.length === 0) {
@@ -2519,10 +2685,149 @@
     // Target Egress
     html += `
         <div class="trace-flow-phase" style="margin-top: 0.75rem;">Response Delivered to Client</div>
+
+        <div class="trace-step-item trace-step-egress">
+          <div class="trace-step-connector"></div>
+          <div class="trace-step-node node-response ${respStatus < 400 ? '' : 'node-error'}">RESP</div>
+          <div class="trace-step-card expanded" id="trace-step-resp-card">
+            <div class="trace-step-header" id="trace-step-resp-header" style="cursor: pointer;">
+              <div class="trace-step-left">
+                <span class="step-type-pill ${respStatus < 400 ? 'step-type-status-2xx' : 'step-type-status-4xx'}">${respStatus}</span>
+                <span class="step-name-text">${escapeHtml(respStatusText)}</span>
+              </div>
+              <div class="trace-step-right">
+                ${respDuration ? `<span class="step-duration-badge">${respDuration} ms</span>` : ''}
+                <span class="step-duration-badge">${respHeaderKeys.length} header${respHeaderKeys.length === 1 ? '' : 's'}</span>
+                ${respBody ? `<span class="step-duration-badge">${formatBytes(respBodyBytes)}</span>` : ''}
+                <span class="step-status-pill ${respStatus < 400 ? 'step-status-success' : 'step-status-error'}">Egress</span>
+                <span class="step-expand-icon">▾</span>
+              </div>
+            </div>
+            <div class="trace-step-details-grid" id="trace-step-resp-details">
+              <div class="trace-card-tab-bar">
+                <div class="trace-subtabs">
+                  <button type="button" class="trace-subtab-btn active" data-subtab="resp-headers">Headers (${respHeaderKeys.length})</button>
+                  <button type="button" class="trace-subtab-btn" data-subtab="resp-body">Body ${respBody ? `(${formatBytes(respBodyBytes)})` : '(Empty)'}</button>
+                </div>
+                <div class="trace-card-tab-actions">
+                  <button type="button" class="btn btn-xs btn-outline" id="btn-copy-trace-resp" title="Copy active response tab to clipboard">
+                    <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div class="trace-subtab-pane" id="pane-resp-headers">
+                ${respHeaderKeys.length === 0 ? '<div style="color: var(--text-muted); padding: 0.25rem 0;">No response headers received.</div>' : `
+                  <table class="trace-kv-table">
+                    <thead>
+                      <tr><th>Header</th><th>Value</th></tr>
+                    </thead>
+                    <tbody>
+                      ${respHeaderKeys.sort().map(k => `<tr><td class="header-key">${escapeHtml(k)}</td><td class="header-val">${escapeHtml(respHeaders[k])}</td></tr>`).join('')}
+                    </tbody>
+                  </table>
+                `}
+              </div>
+              <div class="trace-subtab-pane hidden" id="pane-resp-body">
+                <pre class="trace-body-pre">${escapeHtml(formatPayload(respBody))}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     `;
 
     el.tracePipelineContainer.innerHTML = html;
+
+    // Attach Request card expand/collapse & tab switching handlers
+    const reqCard = document.getElementById('trace-step-req-card');
+    const reqHeader = document.getElementById('trace-step-req-header');
+    const reqDetails = document.getElementById('trace-step-req-details');
+    if (reqHeader && reqDetails && reqCard) {
+      reqHeader.addEventListener('click', (e) => {
+        if (e.target.closest('.trace-subtab-btn') || e.target.closest('.btn')) return;
+        reqCard.classList.toggle('expanded');
+        reqDetails.classList.toggle('hidden');
+      });
+
+      reqCard.querySelectorAll('.trace-subtab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const targetSubtab = btn.getAttribute('data-subtab');
+          reqCard.querySelectorAll('.trace-subtab-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          const paneHeaders = document.getElementById('pane-req-headers');
+          const paneBody = document.getElementById('pane-req-body');
+          if (targetSubtab === 'req-headers') {
+            paneHeaders?.classList.remove('hidden');
+            paneBody?.classList.add('hidden');
+          } else {
+            paneHeaders?.classList.add('hidden');
+            paneBody?.classList.remove('hidden');
+          }
+        });
+      });
+
+      const btnCopyReq = document.getElementById('btn-copy-trace-req');
+      if (btnCopyReq) {
+        btnCopyReq.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isBodyActive = !document.getElementById('pane-req-body')?.classList.contains('hidden');
+          if (isBodyActive) {
+            navigator.clipboard.writeText(reqBody);
+            showToast('Request body copied');
+          } else {
+            navigator.clipboard.writeText(JSON.stringify(reqHeaders, null, 2));
+            showToast('Request headers copied');
+          }
+        });
+      }
+    }
+
+    // Attach Response card expand/collapse & tab switching handlers
+    const respCard = document.getElementById('trace-step-resp-card');
+    const respHeader = document.getElementById('trace-step-resp-header');
+    const respDetails = document.getElementById('trace-step-resp-details');
+    if (respHeader && respDetails && respCard) {
+      respHeader.addEventListener('click', (e) => {
+        if (e.target.closest('.trace-subtab-btn') || e.target.closest('.btn')) return;
+        respCard.classList.toggle('expanded');
+        respDetails.classList.toggle('hidden');
+      });
+
+      respCard.querySelectorAll('.trace-subtab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const targetSubtab = btn.getAttribute('data-subtab');
+          respCard.querySelectorAll('.trace-subtab-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          const paneHeaders = document.getElementById('pane-resp-headers');
+          const paneBody = document.getElementById('pane-resp-body');
+          if (targetSubtab === 'resp-headers') {
+            paneHeaders?.classList.remove('hidden');
+            paneBody?.classList.add('hidden');
+          } else {
+            paneHeaders?.classList.add('hidden');
+            paneBody?.classList.remove('hidden');
+          }
+        });
+      });
+
+      const btnCopyResp = document.getElementById('btn-copy-trace-resp');
+      if (btnCopyResp) {
+        btnCopyResp.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isBodyActive = !document.getElementById('pane-resp-body')?.classList.contains('hidden');
+          if (isBodyActive) {
+            navigator.clipboard.writeText(respBody);
+            showToast('Response body copied');
+          } else {
+            navigator.clipboard.writeText(JSON.stringify(respHeaders, null, 2));
+            showToast('Response headers copied');
+          }
+        });
+      }
+    }
 
     // Attach step expansion handlers
     el.tracePipelineContainer.querySelectorAll('.trace-step-card[data-step-idx]').forEach(card => {

@@ -248,6 +248,36 @@ for proxy_file in glob.glob(f'{td}/proxies/*.xml'):
 }
 
 # ------------------------------------------------------------------------------
+# Extract Parameters from Deployment or Proxy YAML for aft (-p)
+# ------------------------------------------------------------------------------
+extract_aft_parameters() {
+  local yaml_file="$1"
+  python3 -c "
+import yaml
+try:
+    with open('$yaml_file') as f:
+        data = yaml.safe_load(f)
+    if isinstance(data, dict):
+        # 1. Top-level parameters (deployment or proxy)
+        for p in data.get('parameters', []) or []:
+            if isinstance(p, dict) and 'name' in p:
+                val = p.get('default') if p.get('default') is not None else p.get('value')
+                if val is not None and str(val) != '':
+                    print(f\"{p['name']}={val}\")
+        # 2. Nested proxies parameters in a deployment
+        for proxy in data.get('proxies', []) or []:
+            if isinstance(proxy, dict):
+                for p in proxy.get('parameters', []) or []:
+                    if isinstance(p, dict) and 'name' in p:
+                        val = p.get('default') if p.get('default') is not None else p.get('value')
+                        if val is not None and str(val) != '':
+                            print(f\"{p['name']}={val}\")
+except Exception:
+    pass
+"
+}
+
+# ------------------------------------------------------------------------------
 # Convert Deployments to Local Assets Helper (aft)
 # ------------------------------------------------------------------------------
 convert_deployments_to_assets() {
@@ -298,10 +328,25 @@ convert_deployments_to_assets() {
     fi
 
     echo -e "\n${BLUE}Converting deployment: ${BOLD}$dep_file${NC}..."
+    local -a params=()
+    while IFS= read -r param_line; do
+      if [ -n "$param_line" ]; then
+        params+=("$param_line")
+      fi
+    done < <(extract_aft_parameters "$dep_file")
+
+    local -a param_args=()
+    if [ ${#params[@]} -gt 0 ]; then
+      local param_str
+      param_str=$(IFS=,; echo "${params[*]}")
+      param_args=("-p" "$param_str")
+      echo -e "  • Parameters (-p): ${CYAN}$param_str${NC}"
+    fi
+
     local tmp_dep_dir
     tmp_dep_dir=$(mktemp -d /tmp/aft-convert-XXXXXX)
 
-    if aft -i "$dep_file" -f zip -o "$tmp_dep_dir" --no-animation; then
+    if aft -i "$dep_file" -f zip -o "$tmp_dep_dir" "${param_args[@]}" --no-animation; then
       echo -e "${GREEN}✓ Converted $dep_file with aft${NC}"
 
       # 1. Process generated proxy bundles (*.zip)
@@ -581,8 +626,23 @@ except:
 
   if [ "$IS_DEPLOYMENT" = "true" ]; then
     echo -e "\n${BLUE}Compiling deployment from '$YAML_FILE' with aft...${NC}"
+    local -a params=()
+    while IFS= read -r param_line; do
+      if [ -n "$param_line" ]; then
+        params+=("$param_line")
+      fi
+    done < <(extract_aft_parameters "$YAML_FILE")
+
+    local -a param_args=()
+    if [ ${#params[@]} -gt 0 ]; then
+      local param_str
+      param_str=$(IFS=,; echo "${params[*]}")
+      param_args=("-p" "$param_str")
+      echo -e "  • Parameters (-p): ${CYAN}$param_str${NC}"
+    fi
+
     TMP_DEP_DIR=$(mktemp -d /tmp/aft-dep-XXXXXX)
-    if aft -i "$YAML_FILE" -f zip -o "$TMP_DEP_DIR" --no-animation; then
+    if aft -i "$YAML_FILE" -f zip -o "$TMP_DEP_DIR" "${param_args[@]}" --no-animation; then
       for PZIP in "$TMP_DEP_DIR"/*.zip; do
         if [ -f "$PZIP" ]; then
           PNAME="$(basename "$PZIP" .zip)"
@@ -671,8 +731,23 @@ print(data.get('name', '') if isinstance(data, dict) else '')
     fi
 
     echo -e "\n${BLUE}Compiling proxy '${BOLD}$PROXY_NAME${NC}${BLUE}' from '$YAML_FILE'...${NC}"
+    local -a params=()
+    while IFS= read -r param_line; do
+      if [ -n "$param_line" ]; then
+        params+=("$param_line")
+      fi
+    done < <(extract_aft_parameters "$YAML_FILE")
+
+    local -a param_args=()
+    if [ ${#params[@]} -gt 0 ]; then
+      local param_str
+      param_str=$(IFS=,; echo "${params[*]}")
+      param_args=("-p" "$param_str")
+      echo -e "  • Parameters (-p): ${CYAN}$param_str${NC}"
+    fi
+
     ZIP_PATH="$DIST_DIR/$PROXY_NAME.zip"
-    aft -i "$YAML_FILE" -o "$ZIP_PATH" --no-animation
+    aft -i "$YAML_FILE" -o "$ZIP_PATH" "${param_args[@]}" --no-animation
 
     TARGET_DIR="$PROXIES_DIR/$PROXY_NAME"
     mkdir -p "$TARGET_DIR"

@@ -348,6 +348,7 @@ http://localhost:8085/tester/
 - **Automatic Startup Deployment**: Automatically deploys all bundles in `data/bundles/*.zip` on startup and displays a waiting overlay while deployment completes.
 - **Deep Linking**: Share and bookmark URLs like `http://localhost:8085/tester/?proxy=TestProxy`.
 - **Vertical Trace Visualizer**: Step-by-step transaction inspector (Request &rarr; Target Request &rarr; Target Response &rarr; Response). Click any policy step to inspect flow variables and execution timing.
+- **Google Access Token Injection (Cloud Run Workaround)**: Automatically obtains a Google Cloud access token (with `https://www.googleapis.com/auth/cloud-platform` scope) from the Cloud Run deployment's service account (or local ADC / gcloud) and injects it as `Authorization: Bearer <token>` into test requests whenever no authorization bearer token is present in the request headers.
 - **Test Runner & History**: Run tests, evaluate assertions, and review historical test runs with downloadable results and traces.
 
 ---

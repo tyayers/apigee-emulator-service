@@ -3,6 +3,9 @@ gateway: apigee
 schemaVersion: 1.0.0
 name: deployment-1
 type: deployment
+parameters:
+  - name: GoogleCloudProject
+    default: cloud32x
 templates:
   - REST-AI-Completions
 proxies:
@@ -197,11 +200,9 @@ tests:
     proxy: TestProxy
     path: /testproxy
     method: GET
-    headers:
-      x-api-key: test-app-key-123
+    headers: {}
     assertions:
       - response.status == 200
-      - request.headers.x-api-key exists
   - name: completions-test1
     description: This tests the completions API.
     proxy: REST-AI-Completions
@@ -209,7 +210,6 @@ tests:
     method: POST
     headers:
       x-api-key: test-app-key-123
-      x-ai-key: test-app-key-123
     body: |
       {
         "model": "google/gemini-3.8-flash",

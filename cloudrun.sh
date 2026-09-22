@@ -260,6 +260,34 @@ build_and_push_manager_image() {
 }
 
 # ------------------------------------------------------------------------------
+# Extract Parameters from Deployment or Proxy YAML for aft (-p)
+# ------------------------------------------------------------------------------
+extract_aft_parameters() {
+  local yaml_file="$1"
+  python3 -c "
+import yaml
+try:
+    with open('$yaml_file') as f:
+        data = yaml.safe_load(f)
+    if isinstance(data, dict):
+        for p in data.get('parameters', []) or []:
+            if isinstance(p, dict) and 'name' in p:
+                val = p.get('default') if p.get('default') is not None else p.get('value')
+                if val is not None and str(val) != '':
+                    print(f\"{p['name']}={val}\")
+        for proxy in data.get('proxies', []) or []:
+            if isinstance(proxy, dict):
+                for p in proxy.get('parameters', []) or []:
+                    if isinstance(p, dict) and 'name' in p:
+                        val = p.get('default') if p.get('default') is not None else p.get('value')
+                        if val is not None and str(val) != '':
+                            print(f\"{p['name']}={val}\")
+except Exception:
+    pass
+"
+}
+
+# ------------------------------------------------------------------------------
 # 2. Service Deployment to Cloud Run
 # ------------------------------------------------------------------------------
 deploy_cloudrun_service() {
@@ -298,10 +326,24 @@ deploy_cloudrun_service() {
       if [ -f "$dep_yaml" ]; then
         local dep_base
         dep_base="$(basename "$dep_yaml")"
-        echo -e "  Compiling deployment: $dep_base"
+        local -a params=()
+        while IFS= read -r param_line; do
+          if [ -n "$param_line" ]; then
+            params+=("$param_line")
+          fi
+        done < <(extract_aft_parameters "$dep_yaml")
+
+        local -a param_args=()
+        if [ ${#params[@]} -gt 0 ]; then
+          local param_str
+          param_str=$(IFS=,; echo "${params[*]}")
+          param_args=("-p" "$param_str")
+          echo -e "  • Parameters (-p): ${CYAN}$param_str${NC}"
+        fi
+
         local tmp_dep_dir
         tmp_dep_dir=$(mktemp -d /tmp/aft-cr-dep-XXXXXX)
-        if aft -i "$dep_yaml" -f zip -o "$tmp_dep_dir" --no-animation; then
+        if aft -i "$dep_yaml" -f zip -o "$tmp_dep_dir" "${param_args[@]}" --no-animation; then
           for pzip in "$tmp_dep_dir"/*.zip; do
             if [ -f "$pzip" ]; then
               cp "$pzip" "$ROOT_DIR/data/bundles/"
@@ -679,9 +721,24 @@ except:
 ")
       if [ "$is_deployment" = "true" ]; then
         echo -e "\n${BLUE}Compiling deployment from '$target' with aft...${NC}"
+        local -a params=()
+        while IFS= read -r param_line; do
+          if [ -n "$param_line" ]; then
+            params+=("$param_line")
+          fi
+        done < <(extract_aft_parameters "$target")
+
+        local -a param_args=()
+        if [ ${#params[@]} -gt 0 ]; then
+          local param_str
+          param_str=$(IFS=,; echo "${params[*]}")
+          param_args=("-p" "$param_str")
+          echo -e "  • Parameters (-p): ${CYAN}$param_str${NC}"
+        fi
+
         local tmp_dep_dir
         tmp_dep_dir=$(mktemp -d /tmp/aft-cr-dep-XXXXXX)
-        if aft -i "$target" -f zip -o "$tmp_dep_dir" --no-animation; then
+        if aft -i "$target" -f zip -o "$tmp_dep_dir" "${param_args[@]}" --no-animation; then
           for pzip in "$tmp_dep_dir"/*.zip; do
             if [ -f "$pzip" ]; then
               local pname
@@ -766,8 +823,23 @@ print(data.get('name', '') if isinstance(data, dict) else '')
         fi
 
         echo -e "\n${BLUE}Compiling proxy '${BOLD}$proxy_name${NC}${BLUE}' from '$target'...${NC}"
+        local -a params=()
+        while IFS= read -r param_line; do
+          if [ -n "$param_line" ]; then
+            params+=("$param_line")
+          fi
+        done < <(extract_aft_parameters "$target")
+
+        local -a param_args=()
+        if [ ${#params[@]} -gt 0 ]; then
+          local param_str
+          param_str=$(IFS=,; echo "${params[*]}")
+          param_args=("-p" "$param_str")
+          echo -e "  • Parameters (-p): ${CYAN}$param_str${NC}"
+        fi
+
         local zip_path="$dist_dir/$proxy_name.zip"
-        aft -i "$target" -o "$zip_path" --no-animation
+        aft -i "$target" -o "$zip_path" "${param_args[@]}" --no-animation
 
         local target_proxy_dir="$proxies_dir/$proxy_name"
         mkdir -p "$target_proxy_dir"

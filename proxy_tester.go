@@ -10,8 +10,9 @@ import (
 
 // ProxyTester executes test HTTP requests against Apigee runtime and captures traces.
 type ProxyTester struct {
-	Emulator *EmulatorClient
-	Client   *http.Client
+	Emulator      *EmulatorClient
+	Client        *http.Client
+	TokenProvider GoogleTokenProvider
 }
 
 // NewProxyTester creates a new ProxyTester instance.
@@ -21,6 +22,7 @@ func NewProxyTester(emulator *EmulatorClient) *ProxyTester {
 		Client: &http.Client{
 			Timeout: 120 * time.Second, // Support long LLM generation
 		},
+		TokenProvider: NewCloudRunTokenProvider(),
 	}
 }
 
@@ -61,6 +63,17 @@ func (pt *ProxyTester) Execute(req TestRequest) (*TestResponse, error) {
 		return nil, fmt.Errorf("failed to create http request: %w", err)
 	}
 
+	// 2a. Inject Google access token if no Authorization bearer token is present in test request headers
+	if !hasAuthorizationBearerToken(req.Headers) && pt.TokenProvider != nil {
+		token, tokenErr := pt.TokenProvider.GetAccessToken(httpReq.Context())
+		if tokenErr == nil && token != "" {
+			req.Headers = injectGoogleAccessToken(req.Headers, token)
+		} else if tokenErr != nil {
+			// Log informative notice; continue without token so offline/unauthenticated proxies still run
+			fmt.Printf("Notice: could not acquire Google access token: %v\n", tokenErr)
+		}
+	}
+
 	// Apply headers
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
@@ -76,6 +89,14 @@ func (pt *ProxyTester) Execute(req TestRequest) (*TestResponse, error) {
 		httpReq.Header.Set("x-ai-key", apiKey)
 	} else if aiKey != "" && apiKey == "" {
 		httpReq.Header.Set("x-api-key", aiKey)
+	}
+
+	// Record effective headers dispatched
+	if req.Headers == nil {
+		req.Headers = make(map[string]string)
+	}
+	for k := range httpReq.Header {
+		req.Headers[k] = httpReq.Header.Get(k)
 	}
 
 	// 3. Measure execution latency
@@ -103,6 +124,8 @@ func (pt *ProxyTester) Execute(req TestRequest) (*TestResponse, error) {
 					}
 					retryReq.Header.Set("x-api-key", activeKey)
 					retryReq.Header.Set("x-ai-key", activeKey)
+					req.Headers["x-api-key"] = activeKey
+					req.Headers["x-ai-key"] = activeKey
 					if retryReq.Header.Get("User-Agent") == "" {
 						retryReq.Header.Set("User-Agent", "Apigee-Emulator-Manager/1.0")
 					}
