@@ -1,9 +1,15 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -443,5 +449,263 @@ func TestEmulatorStateAndSetupTestDataEndpoints(t *testing.T) {
 	}
 }
 
+func TestProxyYamlEndpoints(t *testing.T) {
+	bm := NewBundleManager("data", ".")
+	s := &Server{
+		BundleManager:     bm,
+		DeploymentManager: NewDeploymentManager("data"),
+		RootDir:           ".",
+	}
+
+	// 1. Valid proxy with root YAML file: TestProxy
+	req1 := httptest.NewRequest("GET", "/tester/api/proxies/yaml?name=TestProxy", nil)
+	w1 := httptest.NewRecorder()
+	s.handleProxyYaml(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("handleProxyYaml TestProxy expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+	var resp1 ProxyYamlResponse
+	if err := json.Unmarshal(w1.Body.Bytes(), &resp1); err != nil {
+		t.Fatalf("Failed to parse TestProxy response: %v", err)
+	}
+	if !resp1.Success || resp1.YAML == "" || resp1.Proxy != "TestProxy" {
+		t.Errorf("Unexpected TestProxy response: %+v", resp1)
+	}
+
+	// 2. Valid proxy with template YAML file: REST-AI-Completions
+	req2 := httptest.NewRequest("GET", "/tester/api/proxies/yaml?proxy=REST-AI-Completions", nil)
+	w2 := httptest.NewRecorder()
+	s.handleProxyYaml(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("handleProxyYaml REST-AI-Completions expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	var resp2 ProxyYamlResponse
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("Failed to parse REST-AI-Completions response: %v", err)
+	}
+	if !resp2.Success || resp2.YAML == "" {
+		t.Errorf("Unexpected REST-AI-Completions response: %+v", resp2)
+	}
+
+	// 3. Missing query parameter
+	req3 := httptest.NewRequest("GET", "/tester/api/proxies/yaml", nil)
+	w3 := httptest.NewRecorder()
+	s.handleProxyYaml(w3, req3)
+	if w3.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for missing name, got %d", w3.Code)
+	}
+
+	// 4. Non-existent proxy
+	req4 := httptest.NewRequest("GET", "/tester/api/proxies/yaml?name=NonExistentProxy123", nil)
+	w4 := httptest.NewRecorder()
+	s.handleProxyYaml(w4, req4)
+	if w4.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 for non-existent proxy, got %d", w4.Code)
+	}
+}
+
+func TestKVMEnvResolution(t *testing.T) {
+	tmpDir := t.TempDir()
+	mapsDir := filepath.Join(tmpDir, "maps")
+	if err := os.MkdirAll(mapsDir, 0755); err != nil {
+		t.Fatalf("Failed to create temp maps dir: %v", err)
+	}
+	productsDir := filepath.Join(tmpDir, "products")
+	if err := os.MkdirAll(productsDir, 0755); err != nil {
+		t.Fatalf("Failed to create temp products dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(productsDir, "products.json"), []byte("[]"), 0644); err != nil {
+		t.Fatalf("Failed to write dummy products.json: %v", err)
+	}
+
+	// Set test environment variables
+	t.Setenv("CLOUD_RUN_OPENAI_KEY", "sk-proj-test123456789")
+	t.Setenv("CLOUD_RUN_ANTHROPIC_KEY", "sk-ant-test987654321")
+	t.Setenv("CLOUD_RUN_MODEL_TOKEN", "bearer-token-xyz")
+	t.Setenv("CLOUD_RUN_ARRAY_VAR", "array-replacement-value")
+
+	initialKVM := `[
+  {
+    "name": "AI-Config",
+    "scope": "environment",
+    "environment": "test",
+    "entries": {
+      "OpenAIKey": "env.{CLOUD_RUN_OPENAI_KEY}",
+      "AnthropicKey": "env.CLOUD_RUN_ANTHROPIC_KEY",
+      "ModelRouting": "{\"token\": \"env.{CLOUD_RUN_MODEL_TOKEN}\"}",
+      "UnsetKey": "env.{NOT_SET_VAR_123}",
+      "StaticKey": "static-value-123"
+    }
+  },
+  {
+    "name": "ArrayMap",
+    "scope": "environment",
+    "entries": [
+      {
+        "name": "SecretKey",
+        "value": "env.{CLOUD_RUN_ARRAY_VAR}"
+      }
+    ]
+  }
+]`
+
+	mapsFilePath := filepath.Join(mapsDir, "maps.json")
+	if err := os.WriteFile(mapsFilePath, []byte(initialKVM), 0644); err != nil {
+		t.Fatalf("Failed to write initial maps.json: %v", err)
+	}
+
+	bm := NewBundleManager(tmpDir, tmpDir)
+
+	// 1. Test ResolveKVMEnvVars
+	resolvedBytes, err := bm.ResolveKVMEnvVars()
+	if err != nil {
+		t.Fatalf("ResolveKVMEnvVars failed: %v", err)
+	}
+
+	resolvedStr := string(resolvedBytes)
+
+	// Check that values are replaced and NO "{}" remains around the replaced values
+	if !strings.Contains(resolvedStr, "sk-proj-test123456789") {
+		t.Errorf("Expected resolved string to contain OpenAI key, got: %s", resolvedStr)
+	}
+	if strings.Contains(resolvedStr, "env.{CLOUD_RUN_OPENAI_KEY}") {
+		t.Errorf("Resolved string still contains env.{CLOUD_RUN_OPENAI_KEY}")
+	}
+	if strings.Contains(resolvedStr, "{sk-proj-test123456789}") {
+		t.Errorf("Resolved string contains brackets around replaced value: %s", resolvedStr)
+	}
+
+	if !strings.Contains(resolvedStr, "sk-ant-test987654321") {
+		t.Errorf("Expected resolved string to contain Anthropic key, got: %s", resolvedStr)
+	}
+	if strings.Contains(resolvedStr, "env.CLOUD_RUN_ANTHROPIC_KEY") {
+		t.Errorf("Resolved string still contains env.CLOUD_RUN_ANTHROPIC_KEY")
+	}
+
+	if !strings.Contains(resolvedStr, "bearer-token-xyz") {
+		t.Errorf("Expected resolved string to contain embedded model token, got: %s", resolvedStr)
+	}
+
+	if !strings.Contains(resolvedStr, "array-replacement-value") {
+		t.Errorf("Expected array entry to contain resolved value, got: %s", resolvedStr)
+	}
+
+	if !strings.Contains(resolvedStr, "static-value-123") {
+		t.Errorf("Expected static value to be preserved, got: %s", resolvedStr)
+	}
+
+	// 2. Check that the KVM JSON file ON DISK was updated
+	diskBytes, err := os.ReadFile(mapsFilePath)
+	if err != nil {
+		t.Fatalf("Failed to read updated maps.json from disk: %v", err)
+	}
+	if string(diskBytes) != resolvedStr {
+		t.Errorf("Disk file content does not match resolved output")
+	}
+
+	// 3. Test GetMaps returns resolved entries
+	maps, err := bm.GetMaps()
+	if err != nil {
+		t.Fatalf("GetMaps failed: %v", err)
+	}
+	if len(maps) != 2 {
+		t.Fatalf("Expected 2 maps, got %d", len(maps))
+	}
+	aiConfigEntries, ok := maps[0]["entries"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected entries map in first map, got: %+v", maps[0])
+	}
+	if aiConfigEntries["OpenAIKey"] != "sk-proj-test123456789" {
+		t.Errorf("Expected OpenAIKey to be resolved in GetMaps, got: %v", aiConfigEntries["OpenAIKey"])
+	}
+	if aiConfigEntries["UnsetKey"] != "" {
+		t.Errorf("Expected UnsetKey to resolve to empty string, got: %v", aiConfigEntries["UnsetKey"])
+	}
+
+	// 4. Test BuildTestDataBundle packages the resolved maps.json
+	testDataZip, err := bm.BuildTestDataBundle([]string{})
+	if err != nil {
+		t.Fatalf("BuildTestDataBundle failed: %v", err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(testDataZip), int64(len(testDataZip)))
+	if err != nil {
+		t.Fatalf("Failed to open testdata.zip: %v", err)
+	}
+	var mapsZipContent string
+	for _, zf := range zr.File {
+		if zf.Name == "maps.json" {
+			rc, err := zf.Open()
+			if err != nil {
+				t.Fatalf("Failed to open maps.json in zip: %v", err)
+			}
+			b, _ := io.ReadAll(rc)
+			rc.Close()
+			mapsZipContent = string(b)
+			break
+		}
+	}
+	if mapsZipContent == "" {
+		t.Fatalf("maps.json not found in testdata.zip")
+	}
+	if !strings.Contains(mapsZipContent, "sk-proj-test123456789") {
+		t.Errorf("Expected testdata.zip maps.json to contain resolved OpenAI key, got: %s", mapsZipContent)
+	}
+}
+
+func TestDeploymentParameterResolution(t *testing.T) {
+	t.Setenv("PROJECT_ID", "test-gcp-project-123")
+	t.Setenv("CUSTOM_ENV_VAR", "custom-value-xyz")
+
+	rawYAML := `name: deployment-test
+parameters:
+  - name: GoogleCloudProject
+    default: "{project}"
+  - name: ExtraParam
+    default: "{CUSTOM_ENV_VAR}"
+proxies:
+  - name: TestProxy
+    description: "Running in {project}"
+`
+
+	resolved := SubstituteDeploymentEnvPlaceholders(rawYAML)
+	if !strings.Contains(resolved, `default: "test-gcp-project-123"`) {
+		t.Errorf("Expected GoogleCloudProject default to resolve to test-gcp-project-123, got: %s", resolved)
+	}
+	if !strings.Contains(resolved, `default: "custom-value-xyz"`) {
+		t.Errorf("Expected ExtraParam default to resolve to custom-value-xyz, got: %s", resolved)
+	}
+	if !strings.Contains(resolved, `description: "Running in test-gcp-project-123"`) {
+		t.Errorf("Expected description to resolve to test-gcp-project-123, got: %s", resolved)
+	}
+
+	// Test ListDeployments file reading and auto-update
+	tmpDir := t.TempDir()
+	depDir := filepath.Join(tmpDir, "deployments")
+	if err := os.MkdirAll(depDir, 0755); err != nil {
+		t.Fatalf("Failed to create deployments dir: %v", err)
+	}
+	depFile := filepath.Join(depDir, "test-dep.yaml")
+	if err := os.WriteFile(depFile, []byte(rawYAML), 0644); err != nil {
+		t.Fatalf("Failed to write dep file: %v", err)
+	}
+
+	dm := NewDeploymentManager(tmpDir)
+	deps, err := dm.ListDeployments()
+	if err != nil {
+		t.Fatalf("ListDeployments failed: %v", err)
+	}
+	if len(deps) != 1 {
+		t.Fatalf("Expected 1 deployment, got %d", len(deps))
+	}
+
+	// Verify file on disk remained clean (unmodified)
+	diskBytes, err := os.ReadFile(depFile)
+	if err != nil {
+		t.Fatalf("Failed to read dep file: %v", err)
+	}
+	if string(diskBytes) != rawYAML {
+		t.Errorf("Expected deployment file on disk to remain clean and unmodified, but it was changed:\n%s", string(diskBytes))
+	}
+}
 
 

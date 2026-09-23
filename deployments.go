@@ -20,6 +20,35 @@ func NewDeploymentManager(dataDir string) *DeploymentManager {
 	return &DeploymentManager{DataDir: dataDir}
 }
 
+// SubstituteDeploymentEnvPlaceholders replaces {project} and other {env_var} placeholders
+// with values from the environment (e.g. PROJECT_ID, GoogleCloudProject).
+func SubstituteDeploymentEnvPlaceholders(content string) string {
+	projectVal := os.Getenv("PROJECT_ID")
+	if projectVal == "" {
+		projectVal = os.Getenv("GoogleCloudProject")
+	}
+	if projectVal == "" {
+		projectVal = os.Getenv("GCP_PROJECT")
+	}
+	if projectVal != "" {
+		content = strings.ReplaceAll(content, "{project}", projectVal)
+		content = strings.ReplaceAll(content, "{PROJECT}", projectVal)
+		content = strings.ReplaceAll(content, "{PROJECT_ID}", projectVal)
+		content = strings.ReplaceAll(content, "{GoogleCloudProject}", projectVal)
+	}
+
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			placeholder := "{" + parts[0] + "}"
+			if strings.Contains(content, placeholder) {
+				content = strings.ReplaceAll(content, placeholder, parts[1])
+			}
+		}
+	}
+	return content
+}
+
 // ListDeployments loads all *.yaml files from data/deployments/.
 func (dm *DeploymentManager) ListDeployments() ([]DeploymentConfig, error) {
 	depDir := filepath.Join(dm.DataDir, "deployments")
@@ -43,8 +72,9 @@ func (dm *DeploymentManager) ListDeployments() ([]DeploymentConfig, error) {
 			continue
 		}
 
+		substituted := SubstituteDeploymentEnvPlaceholders(string(data))
 		var raw map[string]interface{}
-		if err := yaml.Unmarshal(data, &raw); err != nil {
+		if err := yaml.Unmarshal([]byte(substituted), &raw); err != nil {
 			continue
 		}
 

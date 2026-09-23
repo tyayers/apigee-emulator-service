@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -124,8 +125,161 @@ func (bm *BundleManager) GetApps() ([]map[string]interface{}, error) {
 	return apps, nil
 }
 
-// GetMaps loads key-value maps from data/maps/maps.json or fallbacks.
+var (
+	kvmEnvBracesRegex = regexp.MustCompile(`env\.\{([^{}]+)\}`)
+	kvmEnvPlainRegex  = regexp.MustCompile(`^env\.([A-Za-z0-9_]+)$`)
+)
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
+}
+
+// replaceEnvVarPlaceholders inspects a string and replaces any env.{name} or env.name
+// references with the value of the environment variable name from the environment.
+// If the variable is not set, an empty string is substituted and a warning is logged.
+func replaceEnvVarPlaceholders(s string) (string, bool) {
+	changed := false
+
+	// Case 1: Exact match with plain "env.VAR_NAME"
+	if matches := kvmEnvPlainRegex.FindStringSubmatch(s); len(matches) > 1 {
+		varName := matches[1]
+		val, exists := os.LookupEnv(varName)
+		if !exists {
+			log.Printf("[KVM] Warning: environment variable %q referenced as %q is not set in environment (using empty string)", varName, s)
+			val = ""
+		} else {
+			log.Printf("[KVM] Resolved KVM value for %q from environment variable %q", s, varName)
+		}
+		return val, true
+	}
+
+	// Case 2: Contains "env.{VAR_NAME}" (either exact match or embedded within string/JSON)
+	if kvmEnvBracesRegex.MatchString(s) {
+		res := kvmEnvBracesRegex.ReplaceAllStringFunc(s, func(match string) string {
+			sub := kvmEnvBracesRegex.FindStringSubmatch(match)
+			if len(sub) > 1 {
+				varName := strings.TrimSpace(sub[1])
+				val, exists := os.LookupEnv(varName)
+				if !exists {
+					log.Printf("[KVM] Warning: environment variable %q referenced as %q is not set in environment (using empty string)", varName, match)
+					val = ""
+				} else {
+					log.Printf("[KVM] Resolved KVM value for %q from environment variable %q", match, varName)
+				}
+				changed = true
+				return val
+			}
+			return match
+		})
+		return res, changed
+	}
+
+	return s, false
+}
+
+// resolveKVMValue recursively navigates a parsed JSON structure and replaces any string
+// values containing env.{name} placeholders with their corresponding environment variable values.
+func resolveKVMValue(v interface{}) (interface{}, bool) {
+	switch val := v.(type) {
+	case string:
+		newVal, changed := replaceEnvVarPlaceholders(val)
+		return newVal, changed
+	case map[string]interface{}:
+		changedAny := false
+		if scope, ok := val["scope"].(string); ok && strings.EqualFold(scope, "environment") {
+			if _, hasEnv := val["environment"]; !hasEnv {
+				val["environment"] = "test"
+				val["environments"] = []interface{}{"test"}
+				val["env"] = "test"
+				changedAny = true
+			}
+		}
+		for k, item := range val {
+			newItem, changed := resolveKVMValue(item)
+			if changed {
+				val[k] = newItem
+				changedAny = true
+			}
+		}
+		return val, changedAny
+	case []interface{}:
+		changedAny := false
+		for i, item := range val {
+			newItem, changed := resolveKVMValue(item)
+			if changed {
+				val[i] = newItem
+				changedAny = true
+			}
+		}
+		return val, changedAny
+	default:
+		return v, false
+	}
+}
+
+// ResolveKVMEnvVars discovers maps.json, parses the KVM entries, resolves any env.{name}
+// references using the current environment variables, writes the updated JSON back to the
+// KVM JSON file on disk, and returns the modified data bytes.
+func (bm *BundleManager) ResolveKVMEnvVars() ([]byte, error) {
+	p := bm.FindDataFile("maps", "maps.json")
+	if p == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+
+	var parsed interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return data, fmt.Errorf("invalid json in %s: %w", p, err)
+	}
+
+	updated, changed := resolveKVMValue(parsed)
+	if !changed {
+		return data, nil
+	}
+
+	modifiedBytes, err := json.MarshalIndent(updated, "", "  ")
+	if err != nil {
+		return data, err
+	}
+	modifiedBytes = append(modifiedBytes, '\n')
+
+	// Write back to the discovered KVM JSON file on disk
+	if err := os.WriteFile(p, modifiedBytes, 0644); err != nil {
+		log.Printf("[KVM] Warning writing resolved KVMs back to %s: %v", p, err)
+	} else {
+		log.Printf("[KVM] Successfully updated KVM JSON file %s with resolved environment variables", p)
+	}
+
+	// Also update any other known maps.json copies in project directories if they exist
+	var otherLocations []string
+	if bm.DataDir != "" {
+		otherLocations = append(otherLocations,
+			filepath.Join(bm.DataDir, "maps", "maps.json"),
+			filepath.Join(bm.DataDir, "maps.json"),
+		)
+	}
+	if bm.RootDir != "" && bm.RootDir != bm.DataDir {
+		otherLocations = append(otherLocations,
+			filepath.Join(bm.RootDir, "data", "maps", "maps.json"),
+			filepath.Join(bm.RootDir, "dist", "maps.json"),
+		)
+	}
+	for _, loc := range otherLocations {
+		if loc != "" && loc != p && fileExists(loc) {
+			_ = os.WriteFile(loc, modifiedBytes, 0644)
+		}
+	}
+
+	return modifiedBytes, nil
+}
+
+// GetMaps loads key-value maps from data/maps/maps.json or fallbacks, resolving any env.{name} references.
 func (bm *BundleManager) GetMaps() ([]map[string]interface{}, error) {
+	_, _ = bm.ResolveKVMEnvVars()
 	p := bm.FindDataFile("maps", "maps.json")
 	if p == "" {
 		return []map[string]interface{}{}, nil
@@ -434,8 +588,51 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 
 	// Ensure each deployed proxy is authorized in products
 	for _, prod := range products {
-		delete(prod, "proxies")
-		delete(prod, "apiResources")
+		// Ensure all deployed proxies are in proxies list
+		var prodProxies []string
+		if rawP, ok := prod["proxies"].([]interface{}); ok {
+			for _, p := range rawP {
+				if s, ok := p.(string); ok && s != "" {
+					prodProxies = append(prodProxies, s)
+				}
+			}
+		}
+		for _, p := range proxyNames {
+			found := false
+			for _, ep := range prodProxies {
+				if ep == p {
+					found = true
+					break
+				}
+			}
+			if !found {
+				prodProxies = append(prodProxies, p)
+			}
+		}
+		prod["proxies"] = prodProxies
+
+		// Ensure apiResources has default open paths
+		var apiRes []string
+		if rawR, ok := prod["apiResources"].([]interface{}); ok {
+			for _, r := range rawR {
+				if s, ok := r.(string); ok && s != "" {
+					apiRes = append(apiRes, s)
+				}
+			}
+		}
+		for _, defRes := range []string{"/", "/*", "/**"} {
+			found := false
+			for _, er := range apiRes {
+				if er == defRes {
+					found = true
+					break
+				}
+			}
+			if !found {
+				apiRes = append(apiRes, defRes)
+			}
+		}
+		prod["apiResources"] = apiRes
 
 		envs, _ := prod["environments"].([]interface{})
 		hasTest := false
@@ -457,7 +654,6 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 			}
 			prod["operationGroup"] = opGroup
 		}
-		// Identify LLM proxies first so they are not placed into standard operationGroup
 		llmGroup, _ := prod["llmOperationGroup"].(map[string]interface{})
 		if llmGroup == nil {
 			llmGroup = map[string]interface{}{
@@ -491,18 +687,9 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 			}
 		}
 
-		// Filter out any LLM proxies mistakenly in operationGroup
-		var filteredOps []interface{}
-		for _, cfg := range opConfigs {
-			if cfgMap, ok := cfg.(map[string]interface{}); ok {
-				src, _ := cfgMap["apiSource"].(string)
-				if !existingLLMs[src] {
-					filteredOps = append(filteredOps, cfg)
-				}
-			}
-		}
+		// Keep all operations and split multi-operation configs if needed
 		var splitOps []interface{}
-		for _, cfg := range filteredOps {
+		for _, cfg := range opConfigs {
 			if cfgMap, ok := cfg.(map[string]interface{}); ok {
 				src, _ := cfgMap["apiSource"].(string)
 				quota := cfgMap["quota"]
@@ -535,7 +722,7 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 		opConfigs = splitOps
 
 		for _, p := range proxyNames {
-			if !existingLLMs[p] && !existingOps[p] {
+			if !existingOps[p] {
 				opConfigs = append(opConfigs,
 					map[string]interface{}{
 						"apiSource": p,
@@ -544,21 +731,13 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 						},
 						"quota": map[string]interface{}{},
 					},
-					map[string]interface{}{
-						"apiSource": p,
-						"operations": []map[string]interface{}{
-							{"resource": "/*"},
-						},
-						"quota": map[string]interface{}{},
-					},
 				)
+				existingOps[p] = true
 			}
 		}
 		opGroup["operationConfigs"] = opConfigs
 
 		// Configure LLM operations: Apigee requires exactly ONE entity per operationConfig
-		targetLLMModels := []string{"gemini-3.8-flash", "google/gemini-3.8-flash", "gemini-3.7-flash", "claude-sonnet-5"}
-		targetLLMResources := []string{"/", "/*", "/**", "/v1/chat/completions", "/v1/chat/completions/*"}
 
 		var normalizedLLMConfigs []interface{}
 		seenLLMOps := make(map[string]bool)
@@ -593,34 +772,42 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 			}
 		}
 
-		for _, p := range proxyNames {
-			if existingLLMs[p] {
-				for _, m := range targetLLMModels {
-					for _, r := range targetLLMResources {
-						k := fmt.Sprintf("%s:%s:%s", p, m, r)
-						if !seenLLMOps[k] {
+		// Ensure that for each (apiSource, model) configured, root resource "/" is authorized
+		for _, cfg := range normalizedLLMConfigs {
+			if cfgMap, ok := cfg.(map[string]interface{}); ok {
+				src, _ := cfgMap["apiSource"].(string)
+				quota := cfgMap["llmTokenQuota"]
+				if ops, ok := cfgMap["llmOperations"].([]interface{}); ok && len(ops) > 0 {
+					if opMap, ok := ops[0].(map[string]interface{}); ok {
+						m, _ := opMap["model"].(string)
+						kRoot := fmt.Sprintf("%s:%s:/", src, m)
+						if !seenLLMOps[kRoot] {
 							normalizedLLMConfigs = append(normalizedLLMConfigs, map[string]interface{}{
-								"apiSource": p,
+								"apiSource": src,
 								"llmOperations": []interface{}{
 									map[string]interface{}{
-										"resource": r,
+										"resource": "/",
 										"methods":  []string{"POST"},
 										"model":    m,
 									},
 								},
-								"llmTokenQuota": map[string]interface{}{
-									"limit":    "50000",
-									"interval": "1",
-									"timeUnit": "minute",
-								},
+								"llmTokenQuota": quota,
 							})
-							seenLLMOps[k] = true
+							seenLLMOps[kRoot] = true
 						}
 					}
 				}
 			}
 		}
 		llmGroup["operationConfigs"] = normalizedLLMConfigs
+
+		// In Apigee Emulator, if operationGroup or llmOperationGroup is present,
+		// proxies and apiResources must NOT be set, otherwise it throws:
+		// "Invalid Operation Group: API resources or proxies should not be set"
+		if len(opConfigs) > 0 || len(normalizedLLMConfigs) > 0 {
+			delete(prod, "proxies")
+			delete(prod, "apiResources")
+		}
 	}
 
 	// Ensure all products referenced in developerapps.json exist
@@ -741,6 +928,11 @@ func (bm *BundleManager) BuildTestDataBundle(proxyNames []string) ([]byte, error
 						if modifiedData, err := json.MarshalIndent(appsList, "", "  "); err == nil {
 							data = modifiedData
 						}
+					}
+				}
+				if f.name == "maps.json" {
+					if resolved, err := bm.ResolveKVMEnvVars(); err == nil && len(resolved) > 0 {
+						data = resolved
 					}
 				}
 				if err := writeZipFile(zw, f.name, data); err != nil {

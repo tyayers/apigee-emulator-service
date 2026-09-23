@@ -6,11 +6,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Server struct {
@@ -132,6 +135,8 @@ func main() {
 		mux.HandleFunc(prefix+"/analytics/seed", s.handleAnalyticsSeed)
 		mux.HandleFunc(prefix+"/emulator/state", s.handleEmulatorState)
 		mux.HandleFunc(prefix+"/emulator/setup-testdata", s.handleSetupTestData)
+		mux.HandleFunc(prefix+"/proxies/yaml", s.handleProxyYaml)
+		mux.HandleFunc(prefix+"/proxy/yaml", s.handleProxyYaml)
 	}
 	registerAPI("/tester/api")
 	registerAPI("/manage/api")
@@ -272,6 +277,221 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, apps)
 }
+
+func (s *Server) handleProxyYaml(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		name = strings.TrimSpace(r.URL.Query().Get("proxy"))
+	}
+	if name == "" {
+		jsonResponse(w, http.StatusBadRequest, ProxyYamlResponse{
+			Success: false,
+			Error:   "Query parameter 'name' or 'proxy' is required",
+		})
+		return
+	}
+
+	yamlContent, source, err := s.findProxyYaml(name)
+	if err != nil {
+		jsonResponse(w, http.StatusNotFound, ProxyYamlResponse{
+			Success: false,
+			Proxy:   name,
+			Error:   err.Error(),
+		})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, ProxyYamlResponse{
+		Success: true,
+		Proxy:   name,
+		YAML:    yamlContent,
+		Source:  source,
+	})
+}
+
+func (s *Server) findProxyYaml(name string) (string, string, error) {
+	// 1. Direct candidate paths - PRIORITIZE generated/compiled proxy YAML
+	proxyCandidates := []struct {
+		path  string
+		label string
+	}{
+		{filepath.Join(s.BundleManager.DataDir, "proxies", name+".yaml"), filepath.Join("data", "proxies", name+".yaml")},
+		{filepath.Join(s.BundleManager.DataDir, "proxies", name+".yml"), filepath.Join("data", "proxies", name+".yml")},
+		{filepath.Join(s.RootDir, "data", "proxies", name+".yaml"), filepath.Join("data", "proxies", name+".yaml")},
+		{filepath.Join(s.RootDir, "data", "proxies", name+".yml"), filepath.Join("data", "proxies", name+".yml")},
+		{filepath.Join(s.RootDir, "dist", "proxies", name+".yaml"), filepath.Join("dist", "proxies", name+".yaml")},
+		{filepath.Join(s.RootDir, "dist", "proxies", name+".yml"), filepath.Join("dist", "proxies", name+".yml")},
+		{filepath.Join(s.RootDir, "proxies", name+".yaml"), filepath.Join("proxies", name+".yaml")},
+		{filepath.Join(s.RootDir, name+".yaml"), name + ".yaml"},
+		{filepath.Join(s.RootDir, name+".yml"), name + ".yml"},
+	}
+
+	for _, c := range proxyCandidates {
+		if data, err := os.ReadFile(c.path); err == nil && len(data) > 0 {
+			return string(data), c.label, nil
+		}
+	}
+
+	// 2. If bundle zip exists and aft is available, dynamically generate proxy YAML
+	bundleCandidates := []string{
+		filepath.Join(s.RootDir, "data", "bundles", name+".zip"),
+		filepath.Join(s.BundleManager.DataDir, "bundles", name+".zip"),
+		filepath.Join(s.RootDir, "dist", name+".zip"),
+	}
+	for _, bundleZip := range bundleCandidates {
+		if _, err := os.Stat(bundleZip); err == nil {
+			if _, aftErr := exec.LookPath("aft"); aftErr == nil {
+				targetYaml := filepath.Join(s.BundleManager.DataDir, "proxies", name+".yaml")
+				_ = os.MkdirAll(filepath.Dir(targetYaml), 0755)
+				cmd := exec.Command("aft", "-i", bundleZip, "-f", "proxy", "-n", name, "-o", targetYaml, "--no-animation")
+				if cmd.Run() == nil {
+					if data, err := os.ReadFile(targetYaml); err == nil && len(data) > 0 {
+						return string(data), filepath.Join("data", "proxies", name+".yaml"), nil
+					}
+				}
+			}
+			break
+		}
+	}
+
+	// 3. Fallback to templates ONLY if no proxy YAML could be found or generated
+	templateCandidates := []struct {
+		path  string
+		label string
+	}{
+		{filepath.Join(s.BundleManager.DataDir, "templates", name+".yaml"), filepath.Join("data", "templates", name+".yaml")},
+		{filepath.Join(s.BundleManager.DataDir, "templates", name+".yml"), filepath.Join("data", "templates", name+".yml")},
+		{filepath.Join(s.RootDir, "data", "templates", name+".yaml"), filepath.Join("data", "templates", name+".yaml")},
+		{filepath.Join(s.RootDir, "data", "templates", name+".yml"), filepath.Join("data", "templates", name+".yml")},
+	}
+
+	for _, c := range templateCandidates {
+		if data, err := os.ReadFile(c.path); err == nil && len(data) > 0 {
+			return string(data), c.label, nil
+		}
+	}
+
+	// 4. Case-insensitive search across directories
+	dirsToScan := []string{
+		filepath.Join(s.BundleManager.DataDir, "proxies"),
+		filepath.Join(s.RootDir, "data", "proxies"),
+		filepath.Join(s.RootDir, "dist", "proxies"),
+		filepath.Join(s.BundleManager.DataDir, "templates"),
+		filepath.Join(s.RootDir, "data", "templates"),
+		s.BundleManager.DataDir,
+		s.RootDir,
+	}
+
+	for _, d := range dirsToScan {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			ext := filepath.Ext(e.Name())
+			if ext == ".yaml" || ext == ".yml" {
+				base := strings.TrimSuffix(e.Name(), ext)
+				if strings.EqualFold(base, name) {
+					p := filepath.Join(d, e.Name())
+					if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
+						rel, _ := filepath.Rel(s.RootDir, p)
+						if rel == "" {
+							rel = e.Name()
+						}
+						return SubstituteDeploymentEnvPlaceholders(string(data)), rel, nil
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Search embedded proxies in data/deployments/*.yaml
+	depDir := filepath.Join(s.BundleManager.DataDir, "deployments")
+	if depEntries, err := os.ReadDir(depDir); err == nil {
+		for _, de := range depEntries {
+			if de.IsDir() || (!strings.HasSuffix(de.Name(), ".yaml") && !strings.HasSuffix(de.Name(), ".yml")) {
+				continue
+			}
+			depPath := filepath.Join(depDir, de.Name())
+			depData, err := os.ReadFile(depPath)
+			if err != nil {
+				continue
+			}
+			depSubstituted := SubstituteDeploymentEnvPlaceholders(string(depData))
+			var depMap map[string]interface{}
+			if err := yaml.Unmarshal([]byte(depSubstituted), &depMap); err != nil {
+				continue
+			}
+			if proxiesList, ok := depMap["proxies"].([]interface{}); ok {
+				for _, pItem := range proxiesList {
+					if pMap, ok := pItem.(map[string]interface{}); ok {
+						if pName, ok := pMap["name"].(string); ok && strings.EqualFold(pName, name) {
+							if yBytes, err := yaml.Marshal(pMap); err == nil {
+								return SubstituteDeploymentEnvPlaceholders(string(yBytes)), fmt.Sprintf("%s (embedded proxy)", de.Name()), nil
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 4. Fallback: inspect zip bundle from data/bundles/<name>.zip
+	zipPath := filepath.Join(s.BundleManager.DataDir, "bundles", name+".zip")
+	if _, err := os.Stat(zipPath); err == nil {
+		bInfo, err := s.BundleManager.InspectBundle(zipPath)
+		if err == nil && bInfo != nil {
+			var sb strings.Builder
+			sb.WriteString("# yaml-language-server: $schema=https://raw.githubusercontent.com/apigee/apigee-templater/main/schema/gateway.schema.1.0.json\n")
+			sb.WriteString(fmt.Sprintf("name: %s\n", bInfo.ProxyName))
+			sb.WriteString(fmt.Sprintf("displayName: %s\n", bInfo.ProxyName))
+			sb.WriteString("type: proxy\n")
+			sb.WriteString("gateway: apigee\n")
+			sb.WriteString("schemaVersion: 1.0.0\n")
+			sb.WriteString("description: Proxy bundle inspected from " + bInfo.FileName + "\n")
+			sb.WriteString("endpoints:\n")
+			for i, bp := range bInfo.BasePaths {
+				epName := "default"
+				if i > 0 {
+					epName = fmt.Sprintf("endpoint-%d", i+1)
+				}
+				sb.WriteString(fmt.Sprintf("  - name: %s\n", epName))
+				sb.WriteString(fmt.Sprintf("    basePath: %s\n", bp))
+				if len(bInfo.TargetRoutes) > 0 {
+					sb.WriteString("    routes:\n")
+					for _, tr := range bInfo.TargetRoutes {
+						sb.WriteString(fmt.Sprintf("      - name: route-%s\n", strings.ToLower(tr)))
+						sb.WriteString(fmt.Sprintf("        target: %s\n", tr))
+					}
+				}
+			}
+			if len(bInfo.TargetRoutes) > 0 {
+				sb.WriteString("targets:\n")
+				for _, tr := range bInfo.TargetRoutes {
+					sb.WriteString(fmt.Sprintf("  - name: %s\n", tr))
+					sb.WriteString(fmt.Sprintf("    url: https://%s.service.internal\n", strings.ToLower(tr)))
+				}
+			}
+			if len(bInfo.Policies) > 0 {
+				sb.WriteString("policies:\n")
+				for _, pol := range bInfo.Policies {
+					sb.WriteString(fmt.Sprintf("  - name: %s\n", pol))
+				}
+			}
+			return sb.String(), fmt.Sprintf("%s (bundle inspection)", bInfo.FileName), nil
+		}
+	}
+
+	return "", "", fmt.Errorf("proxy YAML definition not found for %q", name)
+}
+
 
 func (s *Server) handleEmulatorState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -524,6 +744,15 @@ func (s *Server) handleSetupTestData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordTestDataStatus("Loaded successfully into Apigee emulator datastore")
+
+	// Sync Cassandra developer app credentials (e.g. test-app-key-123)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if err := SyncCassandraDeveloperAppKeys(s.BundleManager.DataDir, filepath.Join(s.BundleManager.RootDir, "dist")); err != nil {
+			log.Printf("Cassandra credential sync notice: %v", err)
+		}
+	}()
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"message": "Test data bundle (products, developers, apps, credentials) re-uploaded and initialized in emulator",
@@ -626,6 +855,12 @@ func (s *Server) executeDeploy(req DeployRequest) (*DeployResponse, error) {
 			s.recordTestDataStatus(fmt.Sprintf("Upload failed: %v", err))
 		} else {
 			s.recordTestDataStatus("Loaded successfully into Apigee emulator datastore")
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				if err := SyncCassandraDeveloperAppKeys(s.BundleManager.DataDir, filepath.Join(s.BundleManager.RootDir, "dist")); err != nil {
+					log.Printf("Cassandra credential sync notice: %v", err)
+				}
+			}()
 		}
 	}
 

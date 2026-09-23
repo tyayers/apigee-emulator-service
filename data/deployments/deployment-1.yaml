@@ -5,9 +5,13 @@ name: deployment-1
 type: deployment
 parameters:
   - name: GoogleCloudProject
-    default: cloud32x
+    default: "{project}"
 templates:
+  - REST-AI-Interactions
+  - REST-AI-GenerateContent
+  - REST-AI-Messages
   - REST-AI-Completions
+  - REST-AI-Embeddings
 proxies:
   - name: TestProxy
     displayName: Hello World Proxy
@@ -129,6 +133,7 @@ products:
   proxies:
     - TestProxy
     - REST-AI-Completions
+    - REST-AI-Interactions
   apiResources: []
   quota: "50000"
   quotaInterval: "1"
@@ -143,6 +148,22 @@ products:
         limit: "5"
         interval: "1"
         timeUnit: minute
+    - apiSource: REST-AI-Completions
+      operations:
+        - name: /
+          methods:
+            - POST
+        - name: /v1/chat/completions
+          methods:
+            - POST
+    - apiSource: REST-AI-Interactions
+      operations:
+        - name: /
+          methods:
+            - POST
+        - name: /v1beta/interactions
+          methods:
+            - POST
   llmOperations:
     - apiSource: REST-AI-Completions
       operations:
@@ -153,15 +174,25 @@ products:
         - name: /v1/chat/completions
           methods:
             - POST
-          model: google/gemini-3.8-flash
+          model: gemini-3.8-flash
+    - apiSource: REST-AI-Interactions
+      operations:
         - name: /
           methods:
             - POST
-          model: google/gemini-3.8-flash
-      llmTokenQuota: {}
+          model: gemini-3.8-flash
+        - name: /v1beta/interactions
+          methods:
+            - POST
+          model: gemini-3.8-flash
   payloadOperations: []
   graphqlOperations: []
   grpcOperations: []
+kvms:
+  - name: AI-Config
+    type: environment
+    values:
+      GeminiApiKey: "{GEMINI_API_KEY}"
 users:
 - name: test@example.com
   displayName: ""
@@ -201,6 +232,20 @@ tests:
     path: /testproxy
     method: GET
     headers: {}
+    assertions:
+      - response.status == 200
+  - name: interactions-test1
+    description: Tests the Gemini Interactions API
+    proxy: REST-AI-Interactions
+    path: /v1beta/interactions
+    method: POST
+    headers:
+      x-api-key: test-app-key-123
+    body: |
+      {
+        "model": "gemini-3.8-flash",
+        "input": "What is the capital of France?"
+      }
     assertions:
       - response.status == 200
   - name: completions-test1

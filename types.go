@@ -203,3 +203,12 @@ type EmulatorStateResponse struct {
 	TotalUsers         int                      `json:"totalUsers"`
 	TotalApps          int                      `json:"totalApps"`
 }
+
+// ProxyYamlResponse represents the response containing a proxy's YAML definition.
+type ProxyYamlResponse struct {
+	Success bool   `json:"success"`
+	Proxy   string `json:"proxy"`
+	YAML    string `json:"yaml,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Error   string `json:"error,omitempty"`
+}

@@ -4,12 +4,20 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Apigee Emulator Tester</title>
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="stylesheet" href="style.css?v=4">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2394a3b8%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><polyline points=%2216 18 22 12 16 6%22/><polyline points=%228 6 2 12 8 18%22/></svg>">
 </head>
 <body>
   <header class="app-header">
     <div class="header-left">
+      <button id="btn-toggle-sidebar" class="btn btn-outline mobile-menu-btn" title="Toggle Proxies &amp; Resources Menu" aria-label="Toggle navigation menu">
+        <svg class="btn-icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+        <span>Proxies</span>
+      </button>
       <div class="logo">
         <span class="logo-icon">
           <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -55,14 +63,6 @@
       </div>
     </div>
     <div class="header-right">
-      <button id="btn-emulator-state" class="btn btn-outline" title="Inspect Apigee Emulator State, Loaded Products, Apps & Validation">
-        <svg class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="16" x2="12" y2="12"/>
-          <line x1="12" y1="8" x2="12.01" y2="8"/>
-        </svg>
-        Emulator State
-      </button>
       <button id="btn-deploy-all" class="btn btn-primary" title="Deploy all packaged bundles to the Apigee emulator">
         <svg class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -90,9 +90,16 @@
     </div>
   </header>
 
+  <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
   <main id="view-tester" class="app-container">
-    <!-- Left Column: Bundles & Deployed Proxies (Fixed Width Sidebar) -->
-    <aside class="sidebar">
+    <!-- Left Column: Deployed Proxies & Resources (Sidebar / Mobile Flyout) -->
+    <aside id="app-sidebar" class="sidebar">
+      <div class="sidebar-mobile-header">
+        <span class="sidebar-mobile-title">Proxies &amp; Resources</span>
+        <button id="btn-close-sidebar" class="btn-close" aria-label="Close menu">&times;</button>
+      </div>
+
       <!-- Active Proxies Section -->
       <section class="card collapsible-card" id="card-active-proxies">
         <div class="card-header collapsible-header" data-target="card-active-proxies" title="Toggle section">
@@ -108,29 +115,6 @@
           <ul id="active-proxies-list" class="proxy-list">
             <li class="empty-state">No proxies currently deployed.</li>
           </ul>
-        </div>
-      </section>
-
-      <!-- Packaged Bundles Section -->
-      <section class="card collapsible-card" id="card-packaged-bundles">
-        <div class="card-header collapsible-header" data-target="card-packaged-bundles" title="Toggle section">
-          <div class="header-title-group">
-            <svg class="collapse-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-            <h2>Packaged Bundles</h2>
-          </div>
-          <span id="bundles-count" class="badge">0</span>
-        </div>
-        <div class="card-body">
-          <ul id="bundles-list" class="bundle-list">
-            <li class="empty-state">Loading bundles...</li>
-          </ul>
-        </div>
-        <div class="card-footer">
-          <button id="btn-deploy-selected" class="btn btn-secondary btn-sm" disabled>
-            Deploy Selected
-          </button>
         </div>
       </section>
 
@@ -205,9 +189,38 @@
 
     <!-- Right Column: Postman Tester & Live Trace Inspector -->
     <section class="content">
-      <div id="tester-cards-wrap" class="tester-cards-wrap">
-        <!-- Tester Card -->
-        <div class="card tester-card">
+      <!-- Proxy Main Section (Tester & YAML Tabs) -->
+      <div id="proxy-view-container" class="proxy-view-container">
+        <!-- Top Tab Bar for Selected Proxy -->
+        <div class="proxy-nav-tabs-bar">
+          <div class="proxy-nav-tabs">
+            <button id="tab-btn-proxy-tester" class="proxy-nav-tab-btn active" data-proxy-tab="tester" title="Test proxy endpoints and inspect live trace">
+              <svg class="tab-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+              <span>Proxy API Tester</span>
+            </button>
+            <button id="tab-btn-proxy-yaml" class="proxy-nav-tab-btn" data-proxy-tab="yaml" title="Inspect proxy YAML Templater definition">
+              <svg class="tab-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+                <polyline points="10 9 9 9 8 9"/>
+              </svg>
+              <span>Proxy YAML Definition</span>
+              <span class="badge-mini badge-yaml-tag">YAML</span>
+            </button>
+          </div>
+          <div class="proxy-nav-context">
+            <span class="proxy-nav-label">Proxy:</span>
+            <span id="proxy-nav-selected-name" class="tag tag-proxy">TestProxy</span>
+          </div>
+        </div>
+
+        <div id="tester-cards-wrap" class="tester-cards-wrap proxy-tab-panel active">
+          <!-- Tester Card -->
+          <div class="card tester-card">
         <div class="card-header">
           <div class="tester-title">
             <h2>Proxy API Tester</h2>
@@ -543,6 +556,67 @@
       </div>
       </div> <!-- /#tester-cards-wrap -->
 
+        <!-- Tab 2: Proxy YAML Definition -->
+        <div id="proxy-yaml-wrap" class="proxy-yaml-wrap proxy-tab-panel hidden">
+          <div class="card proxy-yaml-card">
+            <div class="card-header yaml-view-header">
+              <div class="yaml-header-left">
+                <div class="yaml-title-group">
+                  <svg class="yaml-icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                    <polyline points="10 9 9 9 8 9"/>
+                  </svg>
+                  <h2 id="proxy-yaml-title">Proxy YAML Definition</h2>
+                </div>
+                <div class="yaml-meta-badges">
+                  <span id="proxy-yaml-source-badge" class="tag tag-dim" title="Source file on server">-</span>
+                  <span class="tag tag-readonly">Read-Only</span>
+                  <span id="proxy-yaml-lines-badge" class="badge-mini">0 lines</span>
+                </div>
+              </div>
+              <div class="yaml-header-actions">
+                <button id="btn-copy-proxy-yaml" class="btn btn-sm btn-outline" title="Copy YAML to clipboard">
+                  <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                  <span>Copy YAML</span>
+                </button>
+                <button id="btn-download-proxy-yaml" class="btn btn-sm btn-outline" title="Download YAML file">
+                  <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  <span>Download</span>
+                </button>
+                <button id="btn-refresh-proxy-yaml" class="btn btn-sm btn-outline" title="Reload YAML from disk">
+                  <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6"/>
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                  </svg>
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="card-body yaml-code-container">
+              <div id="proxy-yaml-loading" class="yaml-loading hidden">
+                <div class="spinner-sm"></div>
+                <span>Loading proxy YAML definition...</span>
+              </div>
+              <div id="proxy-yaml-error" class="yaml-error-alert hidden"></div>
+              <div id="proxy-yaml-code-wrapper" class="code-editor-readonly">
+                <div id="proxy-yaml-code" class="yaml-code-display"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div> <!-- /#proxy-view-container -->
+
       <!-- Resource Detail Inspection Card -->
       <div id="resource-detail-card" class="card resource-detail-card hidden">
         <div class="card-header resource-detail-header">
@@ -644,24 +718,15 @@
             </div>
           </div>
 
-          <!-- Verification Health Checklist -->
-          <div class="state-section">
-            <div class="state-section-header">
-              <h3>Deployment &amp; Configuration Health Checklist</h3>
-              <p>Validation of emulator connectivity, bundle routing, product authorization, LLM quotas, and test credentials.</p>
-            </div>
-            <div id="state-validation-checklist" class="validation-checklist">
-              <div class="empty-state">Running validation checks...</div>
-            </div>
-          </div>
-
-          <!-- Tabbed Inspector for Deployed Proxies, Products, Users, Apps, Raw Tree -->
+          <!-- Tabbed Inspector for Deployed Proxies, Products, Users, Apps, Maps, Data Collectors, Raw Tree -->
           <div class="state-tabs-section">
             <div class="tabs state-tabs">
               <button class="tab-btn active" data-state-tab="tab-state-proxies">Active Proxies</button>
               <button class="tab-btn" data-state-tab="tab-state-products">API Products</button>
               <button class="tab-btn" data-state-tab="tab-state-users">Developers</button>
               <button class="tab-btn" data-state-tab="tab-state-apps">Developer Apps &amp; Keys</button>
+              <button class="tab-btn" data-state-tab="tab-state-maps">KVM Maps</button>
+              <button class="tab-btn" data-state-tab="tab-state-datacollectors">Data Collectors</button>
               <button class="tab-btn" data-state-tab="tab-state-tree">Raw Emulator Tree</button>
             </div>
 
@@ -675,17 +740,18 @@
                       <th>Revision</th>
                       <th>Base Path</th>
                       <th>Runtime URL</th>
+                      <th>Policies &amp; Targets</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody id="state-table-proxies-body">
-                    <tr><td colspan="6" class="empty-state">Loading deployed proxies...</td></tr>
+                    <tr><td colspan="7" class="empty-state">Loading deployed proxies...</td></tr>
                   </tbody>
                 </table>
               </div>
 
               <div id="tab-state-products" class="state-tab-panel hidden">
-                <div id="state-products-cards" class="state-cards-grid"></div>
+                <div id="state-products-cards" class="state-products-detailed-list"></div>
               </div>
 
               <div id="tab-state-users" class="state-tab-panel hidden">
@@ -696,27 +762,34 @@
                       <th>Email</th>
                       <th>Username</th>
                       <th>Status</th>
+                      <th>Developer ID</th>
                     </tr>
                   </thead>
                   <tbody id="state-table-users-body">
-                    <tr><td colspan="4" class="empty-state">Loading users...</td></tr>
+                    <tr><td colspan="5" class="empty-state">Loading developers...</td></tr>
                   </tbody>
                 </table>
               </div>
 
               <div id="tab-state-apps" class="state-tab-panel hidden">
+                <div id="state-apps-container" class="state-apps-detailed-list"></div>
+              </div>
+
+              <div id="tab-state-maps" class="state-tab-panel hidden">
+                <div id="state-maps-container" class="state-maps-detailed-list"></div>
+              </div>
+
+              <div id="tab-state-datacollectors" class="state-tab-panel hidden">
                 <table class="key-value-table state-table">
                   <thead>
                     <tr>
-                      <th>App Name</th>
-                      <th>Developer Email</th>
-                      <th>Consumer Key</th>
-                      <th>Associated Products</th>
-                      <th>Action</th>
+                      <th>Data Collector Name</th>
+                      <th>Type</th>
+                      <th>Description / Purpose</th>
                     </tr>
                   </thead>
-                  <tbody id="state-table-apps-body">
-                    <tr><td colspan="5" class="empty-state">Loading developer apps...</td></tr>
+                  <tbody id="state-table-datacollectors-body">
+                    <tr><td colspan="3" class="empty-state">Loading data collectors...</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -1002,6 +1075,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

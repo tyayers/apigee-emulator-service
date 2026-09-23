@@ -187,6 +187,7 @@ show_help() {
   echo "  --project PROJECT_ID   Override GCP Project ID"
   echo "  --region REGION        Override Cloud Run region (default: europe-west1)"
   echo "  --service SERVICE_NAME Override Cloud Run service name (default: apigee-emulator)"
+  echo "  -p, --parameters P     Pass additional parameters (comma-separated key=val, e.g. -p par1=val1,par2=val2)"
   echo "  --url URL              Directly target an existing Cloud Run or custom URL"
   echo "  --auth                 Send gcloud identity token with all requests"
   echo "  -h, --help             Show this help message"
@@ -260,6 +261,236 @@ build_and_push_manager_image() {
 }
 
 # ------------------------------------------------------------------------------
+# Parameter Collection, YAML Substitution & Cloud Run Env Injection
+# ------------------------------------------------------------------------------
+declare -A ALL_PARAMS_MAP=()
+declare -a CLI_PARAMETERS=()
+
+collect_parameters() {
+  resolve_gcp_context
+
+  if [ -n "$PROJECT_ID" ]; then
+    ALL_PARAMS_MAP["project"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["PROJECT"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["PROJECT_ID"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["GoogleCloudProject"]="$PROJECT_ID"
+    export PROJECT_ID="$PROJECT_ID"
+    export GoogleCloudProject="$PROJECT_ID"
+    export GCP_PROJECT="$PROJECT_ID"
+  fi
+  if [ -n "$REGION" ]; then
+    ALL_PARAMS_MAP["region"]="$REGION"
+    ALL_PARAMS_MAP["REGION"]="$REGION"
+    export REGION="$REGION"
+    export GCP_REGION="$REGION"
+  fi
+  if [ -n "$SERVICE_NAME" ]; then
+    ALL_PARAMS_MAP["service"]="$SERVICE_NAME"
+    ALL_PARAMS_MAP["SERVICE_NAME"]="$SERVICE_NAME"
+    export SERVICE_NAME="$SERVICE_NAME"
+  fi
+
+  for param_entry in "${CLI_PARAMETERS[@]}"; do
+    IFS=',' read -ra pairs <<< "$param_entry"
+    for pair in "${pairs[@]}"; do
+      if [[ "$pair" == *=* ]]; then
+        local k="${pair%%=*}"
+        local v="${pair#*=}"
+        k="$(echo "$k" | tr -d '[:space:]')"
+        v="$(echo "$v" | tr -d '[:space:]')"
+        if [ -n "$k" ]; then
+          ALL_PARAMS_MAP["$k"]="$v"
+          export "$k=$v"
+        fi
+      fi
+    done
+  done
+}
+
+replace_parameters_in_deployment_yaml() {
+  local yaml_file="$1"
+  if [ ! -f "$yaml_file" ]; then
+    return 0
+  fi
+
+  local -a py_args=()
+  for k in "${!ALL_PARAMS_MAP[@]}"; do
+    py_args+=("$k=${ALL_PARAMS_MAP[$k]}")
+  done
+
+  python3 - "${yaml_file}" "${py_args[@]}" <<'PYEOF'
+import sys, re
+
+yaml_file = sys.argv[1]
+params = {}
+for arg in sys.argv[2:]:
+    if '=' in arg:
+        k, v = arg.split('=', 1)
+        params[k] = v
+
+try:
+    with open(yaml_file, 'r') as f:
+        content = f.read()
+
+    modified = content
+    # 1. Replace placeholders like {param_name} or ${param_name}
+    for k, v in params.items():
+        modified = modified.replace('{' + k + '}', str(v))
+        modified = modified.replace('${' + k + '}', str(v))
+        modified = modified.replace('{' + k.lower() + '}', str(v))
+        modified = modified.replace('{' + k.upper() + '}', str(v))
+
+    # 2. Update default: in parameters list if matching parameter name
+    for k, v in params.items():
+        pattern = re.compile(
+            r'(- name:\s*[\'"]?' + re.escape(k) + r'[\'"]?\s*\n(?:\s*displayName:[^\n]*\n)?(?:\s*description:[^\n]*\n)?\s*default:\s*)([^\n]+)',
+            re.IGNORECASE
+        )
+        modified = pattern.sub(r'\1"' + str(v).replace('"', '\\"') + r'"', modified)
+
+    if modified != content:
+        with open(yaml_file, 'w') as f:
+            f.write(modified)
+except Exception:
+    pass
+PYEOF
+}
+
+prepare_substituted_deployment_yaml() {
+  local src_yaml="$1"
+  if [ ! -f "$src_yaml" ]; then
+    echo "$src_yaml"
+    return 0
+  fi
+  local tmp_yaml
+  tmp_yaml=$(mktemp /tmp/sub-dep-XXXXXX.yaml)
+  cp "$src_yaml" "$tmp_yaml"
+  replace_parameters_in_deployment_yaml "$tmp_yaml"
+  # Also resolve local templates in data/templates/ so aft uses local files instead of remote repo
+  python3 - "${tmp_yaml}" "${ROOT_DIR}" <<'PYEOF'
+import sys, os, re
+
+tmp_yaml = sys.argv[1]
+root_dir = sys.argv[2]
+try:
+    with open(tmp_yaml, 'r') as f:
+        lines = f.readlines()
+    in_templates = False
+    modified_lines = []
+    for line in lines:
+        if re.match(r'^\s*templates:\s*$', line):
+            in_templates = True
+            modified_lines.append(line)
+        elif in_templates:
+            m = re.match(r'^(\s*-\s*)([a-zA-Z0-9_\-\.]+)\s*$', line)
+            if m:
+                indent = m.group(1)
+                tname = m.group(2).strip()
+                stem = tname[:-5] if tname.endswith('.yaml') else (tname[:-4] if tname.endswith('.yml') else tname)
+                candidate = os.path.join(root_dir, 'data', 'templates', f"{stem}.yaml")
+                if os.path.exists(candidate):
+                    modified_lines.append(f"{indent}data/templates/{stem}.yaml\n")
+                else:
+                    modified_lines.append(line)
+            else:
+                if re.match(r'^\S', line):
+                    in_templates = False
+                modified_lines.append(line)
+        else:
+            modified_lines.append(line)
+    with open(tmp_yaml, 'w') as f:
+        f.writelines(modified_lines)
+except Exception:
+    pass
+PYEOF
+  echo "$tmp_yaml"
+}
+
+apply_parameters_to_all_deployments() {
+  collect_parameters
+}
+
+inject_env_vars_into_cloudrun_manifest() {
+  local manifest_file="$1"
+  if [ ! -f "$manifest_file" ]; then
+    return 0
+  fi
+
+  local -a py_args=()
+  for k in "${!ALL_PARAMS_MAP[@]}"; do
+    if [ "$k" != "project" ] && [ "$k" != "region" ] && [ "$k" != "service" ]; then
+      py_args+=("$k=${ALL_PARAMS_MAP[$k]}")
+    fi
+  done
+
+  python3 - "${manifest_file}" "${py_args[@]}" <<'PYEOF'
+import sys, re
+
+manifest_file = sys.argv[1]
+env_vars = {}
+for arg in sys.argv[2:]:
+    if '=' in arg:
+        k, v = arg.split('=', 1)
+        env_vars[k] = v
+
+try:
+    with open(manifest_file, 'r') as f:
+        content = f.read()
+
+    lines_to_add = []
+    for k, v in env_vars.items():
+        v_escaped = str(v).replace('\\', '\\\\').replace('"', '\\"')
+        pattern = re.compile(r'(- name:\s*[\'"]?' + re.escape(k) + r'[\'"]?\s*\n\s*value:\s*)([^\n]+)')
+        if pattern.search(content):
+            content = pattern.sub(r'\1"' + v_escaped + '"', content)
+        else:
+            lines_to_add.append(f'        - name: {k}\n          value: "{v_escaped}"')
+
+    if lines_to_add:
+        inject_str = "\n".join(lines_to_add)
+        if 'value: "/app/data"' in content:
+            content = content.replace('value: "/app/data"', f'value: "/app/data"\n{inject_str}', 1)
+        else:
+            content = re.sub(r'(name:\s*manager[\s\S]*?env:\s*\n)', r'\1' + inject_str + '\n', content, count=1)
+
+    with open(manifest_file, 'w') as f:
+        f.write(content)
+except Exception:
+    pass
+PYEOF
+}
+
+update_cloudrun_service_env_vars() {
+  if [ -z "$PROJECT_ID" ] || ! command -v gcloud &>/dev/null; then
+    return 0
+  fi
+
+  local env_pairs=()
+  for k in "${!ALL_PARAMS_MAP[@]}"; do
+    if [ "$k" != "project" ] && [ "$k" != "region" ] && [ "$k" != "service" ]; then
+      env_pairs+=("$k=${ALL_PARAMS_MAP[$k]}")
+    fi
+  done
+
+  if [ ${#env_pairs[@]} -eq 0 ]; then
+    return 0
+  fi
+
+  local env_str
+  env_str=$(IFS=,; echo "${env_pairs[*]}")
+
+  if gcloud run services describe "$SERVICE_NAME" --project "$PROJECT_ID" --region "$REGION" >/dev/null 2>&1; then
+    echo -e "  ${BLUE}Updating Cloud Run manager container environment variables...${NC}"
+    gcloud run services update "$SERVICE_NAME" \
+      --project "$PROJECT_ID" \
+      --region "$REGION" \
+      --container manager \
+      --update-env-vars "$env_str" --quiet >/dev/null 2>&1 || true
+    echo -e "  ${GREEN}✓ Cloud Run environment variables updated.${NC}"
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # Extract Parameters from Deployment or Proxy YAML for aft (-p)
 # ------------------------------------------------------------------------------
 extract_aft_parameters() {
@@ -285,6 +516,36 @@ try:
 except Exception:
     pass
 "
+}
+
+merge_aft_parameters() {
+  local yaml_file="$1"
+  local -a extracted=()
+  while IFS= read -r param_line; do
+    if [ -n "$param_line" ]; then
+      extracted+=("$param_line")
+    fi
+  done < <(extract_aft_parameters "$yaml_file")
+
+  local -A merged_map=()
+  for p in "${extracted[@]}"; do
+    if [[ "$p" == *=* ]]; then
+      merged_map["${p%%=*}"]="${p#*=}"
+    fi
+  done
+
+  for k in "${!ALL_PARAMS_MAP[@]}"; do
+    if [ "$k" != "project" ] && [ "$k" != "PROJECT" ] && [ "$k" != "PROJECT_ID" ] && [ "$k" != "region" ] && [ "$k" != "REGION" ] && [ "$k" != "service" ] && [ "$k" != "SERVICE_NAME" ]; then
+      merged_map["$k"]="${ALL_PARAMS_MAP[$k]}"
+    fi
+  done
+  if [ -n "${ALL_PARAMS_MAP["GoogleCloudProject"]}" ]; then
+    merged_map["GoogleCloudProject"]="${ALL_PARAMS_MAP["GoogleCloudProject"]}"
+  fi
+
+  for k in "${!merged_map[@]}"; do
+    echo "$k=${merged_map[$k]}"
+  done
 }
 
 # ------------------------------------------------------------------------------
@@ -326,12 +587,14 @@ deploy_cloudrun_service() {
       if [ -f "$dep_yaml" ]; then
         local dep_base
         dep_base="$(basename "$dep_yaml")"
+        local sub_yaml
+        sub_yaml=$(prepare_substituted_deployment_yaml "$dep_yaml")
         local -a params=()
         while IFS= read -r param_line; do
           if [ -n "$param_line" ]; then
             params+=("$param_line")
           fi
-        done < <(extract_aft_parameters "$dep_yaml")
+        done < <(merge_aft_parameters "$sub_yaml")
 
         local -a param_args=()
         if [ ${#params[@]} -gt 0 ]; then
@@ -343,11 +606,18 @@ deploy_cloudrun_service() {
 
         local tmp_dep_dir
         tmp_dep_dir=$(mktemp -d /tmp/aft-cr-dep-XXXXXX)
-        if aft -i "$dep_yaml" -f zip -o "$tmp_dep_dir" "${param_args[@]}" --no-animation; then
+        local aft_ok=0
+        aft -i "$sub_yaml" -f zip -o "$tmp_dep_dir" "${param_args[@]}" --no-animation || aft_ok=$?
+        rm -f "$sub_yaml"
+        if [ "$aft_ok" -eq 0 ]; then
           for pzip in "$tmp_dep_dir"/*.zip; do
             if [ -f "$pzip" ]; then
               cp "$pzip" "$ROOT_DIR/data/bundles/"
               echo -e "  • Bundle created: $(basename "$pzip")"
+              mkdir -p "$ROOT_DIR/data/proxies"
+              local pname
+              pname="$(basename "$pzip" .zip)"
+              aft -i "$pzip" -f proxy -n "$pname" -o "$ROOT_DIR/data/proxies/$pname.yaml" --no-animation 2>/dev/null || true
             fi
           done
 
@@ -377,9 +647,12 @@ for fname, subdir in [('products.json', 'products'), ('developers.json', 'develo
                         if 'test' not in envs: envs.append('test')
                     else: envs = ['test']
                     prod['environments'] = envs
-                    if 'operationGroup' in prod or 'llmOperationGroup' in prod:
-                        prod.pop('proxies', None)
-                        prod.pop('apiResources', None)
+                    api_res = prod.get('apiResources', [])
+                    if not isinstance(api_res, list) or len(api_res) == 0:
+                        prod['apiResources'] = ['/', '/*', '/**']
+                    else:
+                        for r in ['/', '/*', '/**']:
+                            if r not in api_res: api_res.append(r)
 
             os.makedirs(os.path.dirname(dst_data), exist_ok=True)
             with open(dst_data, 'w') as f:
@@ -409,10 +682,11 @@ for fname, subdir in [('products.json', 'products'), ('developers.json', 'develo
     docker push "gcr.io/$PROJECT_ID/apigee-emulator-manager:latest" 2>/dev/null || true
   fi
 
-  # 3. Render service manifest with manager image
+  # 3. Render service manifest with manager image and parameters as environment variables
   local tmp_manifest
   tmp_manifest=$(mktemp /tmp/cloudrun-manifest-XXXXXX.yaml)
   sed "s|MANAGER_IMAGE_PLACEHOLDER|$manager_image|g" "$SERVICE_YAML" > "$tmp_manifest"
+  inject_env_vars_into_cloudrun_manifest "$tmp_manifest"
 
   # 4. Apply service manifest using gcloud
   echo -e "\n${BLUE}Submitting Cloud Run service configuration...${NC}"
@@ -721,12 +995,14 @@ except:
 ")
       if [ "$is_deployment" = "true" ]; then
         echo -e "\n${BLUE}Compiling deployment from '$target' with aft...${NC}"
+        local sub_yaml
+        sub_yaml=$(prepare_substituted_deployment_yaml "$target")
         local -a params=()
         while IFS= read -r param_line; do
           if [ -n "$param_line" ]; then
             params+=("$param_line")
           fi
-        done < <(extract_aft_parameters "$target")
+        done < <(merge_aft_parameters "$sub_yaml")
 
         local -a param_args=()
         if [ ${#params[@]} -gt 0 ]; then
@@ -738,7 +1014,10 @@ except:
 
         local tmp_dep_dir
         tmp_dep_dir=$(mktemp -d /tmp/aft-cr-dep-XXXXXX)
-        if aft -i "$target" -f zip -o "$tmp_dep_dir" "${param_args[@]}" --no-animation; then
+        local aft_ok=0
+        aft -i "$sub_yaml" -f zip -o "$tmp_dep_dir" "${param_args[@]}" --no-animation || aft_ok=$?
+        rm -f "$sub_yaml"
+        if [ "$aft_ok" -eq 0 ]; then
           for pzip in "$tmp_dep_dir"/*.zip; do
             if [ -f "$pzip" ]; then
               local pname
@@ -781,9 +1060,12 @@ for fname, subdir in [('products.json', 'products'), ('developers.json', 'develo
                         if 'test' not in envs: envs.append('test')
                     else: envs = ['test']
                     prod['environments'] = envs
-                    if 'operationGroup' in prod or 'llmOperationGroup' in prod:
-                        prod.pop('proxies', None)
-                        prod.pop('apiResources', None)
+                    api_res = prod.get('apiResources', [])
+                    if not isinstance(api_res, list) or len(api_res) == 0:
+                        prod['apiResources'] = ['/', '/*', '/**']
+                    else:
+                        for r in ['/', '/*', '/**']:
+                            if r not in api_res: api_res.append(r)
 
             os.makedirs(os.path.dirname(dst_data), exist_ok=True)
             with open(dst_data, 'w') as f:
@@ -823,12 +1105,14 @@ print(data.get('name', '') if isinstance(data, dict) else '')
         fi
 
         echo -e "\n${BLUE}Compiling proxy '${BOLD}$proxy_name${NC}${BLUE}' from '$target'...${NC}"
+        local sub_yaml
+        sub_yaml=$(prepare_substituted_deployment_yaml "$target")
         local -a params=()
         while IFS= read -r param_line; do
           if [ -n "$param_line" ]; then
             params+=("$param_line")
           fi
-        done < <(extract_aft_parameters "$target")
+        done < <(merge_aft_parameters "$sub_yaml")
 
         local -a param_args=()
         if [ ${#params[@]} -gt 0 ]; then
@@ -839,7 +1123,8 @@ print(data.get('name', '') if isinstance(data, dict) else '')
         fi
 
         local zip_path="$dist_dir/$proxy_name.zip"
-        aft -i "$target" -o "$zip_path" "${param_args[@]}" --no-animation
+        aft -i "$sub_yaml" -o "$zip_path" "${param_args[@]}" --no-animation
+        rm -f "$sub_yaml"
 
         local target_proxy_dir="$proxies_dir/$proxy_name"
         mkdir -p "$target_proxy_dir"
@@ -904,10 +1189,18 @@ for prod in products:
     else: envs = ['test']
     prod['environments'] = envs
 
-    # In Apigee, if operationGroup or llmOperationGroup is set,
-    # proxies and apiResources MUST NOT be set
-    prod.pop('proxies', None)
-    prod.pop('apiResources', None)
+    prod_proxies = prod.get('proxies', [])
+    if not isinstance(prod_proxies, list): prod_proxies = []
+    for p in proxies:
+        if p not in prod_proxies: prod_proxies.append(p)
+    prod['proxies'] = prod_proxies
+
+    api_res = prod.get('apiResources', [])
+    if not isinstance(api_res, list) or len(api_res) == 0:
+        prod['apiResources'] = ['/', '/*', '/**']
+    else:
+        for r in ['/', '/*', '/**']:
+            if r not in api_res: api_res.append(r)
 
     op_group = prod.get('operationGroup')
     if not isinstance(op_group, dict):
@@ -917,6 +1210,8 @@ for prod in products:
     if not isinstance(existing_ops, list):
         existing_ops = []
         op_group['operationConfigs'] = existing_ops
+    existing_sources = {c.get('apiSource') for c in existing_ops if isinstance(c, dict)}
+
     llm_proxies = {p for p in proxies if 'ai' in p.lower() or 'completions' in p.lower()}
 
     # Standard proxies in operationGroup (split so each config has exactly 1 operation)
@@ -933,19 +1228,11 @@ for prod in products:
                 split_ops.append(c)
     existing_ops = split_ops
 
-    existing_ops[:] = [c for c in existing_ops if isinstance(c, dict) and c.get('apiSource') not in llm_proxies]
     for p in proxies:
-        if p in llm_proxies:
-            continue
         if p not in existing_sources:
             existing_ops.append({
                 'apiSource': p,
                 'operations': [{'resource': '/'}],
-                'quota': {}
-            })
-            existing_ops.append({
-                'apiSource': p,
-                'operations': [{'resource': '/*'}],
                 'quota': {}
             })
             existing_sources.add(p)
@@ -977,18 +1264,25 @@ for prod in products:
                     })
                     seen_llm.add(key)
 
-    for p in llm_proxies:
-        for m in ['gemini-3.8-flash', 'google/gemini-3.8-flash', 'gemini-3.7-flash', 'claude-sonnet-5']:
-            for r in ['/', '/*', '/**', '/v1/chat/completions', '/v1/chat/completions/*']:
-                key = (p, m, r)
-                if key not in seen_llm:
-                    new_llm_configs.append({
-                        'apiSource': p,
-                        'llmOperations': [{'resource': r, 'methods': ['POST'], 'model': m}],
-                        'llmTokenQuota': {'limit': '50000', 'interval': '1', 'timeUnit': 'minute'}
-                    })
-                    seen_llm.add(key)
+    # For any configured LLM operation, ensure root resource "/" is authorized
+    for c in list(new_llm_configs):
+        src = c.get('apiSource')
+        quota = c.get('llmTokenQuota', {'limit': '50000', 'interval': '1', 'timeUnit': 'minute'})
+        for op in c.get('llmOperations', []):
+            m = op.get('model')
+            key = (src, m, '/')
+            if key not in seen_llm:
+                new_llm_configs.append({
+                    'apiSource': src,
+                    'llmOperations': [{'resource': '/', 'methods': ['POST'], 'model': m}],
+                    'llmTokenQuota': quota
+                })
+                seen_llm.add(key)
     llm_group['operationConfigs'] = new_llm_configs
+
+    if op_group.get('operationConfigs') or llm_group.get('operationConfigs'):
+        prod.pop('proxies', None)
+        prod.pop('apiResources', None)
 
 # Ensure all products referenced by developer apps exist in products
 app_path = '$dist_dir/developerapps.json' if os.path.exists('$dist_dir/developerapps.json') else '$ROOT_DIR/data/developerapps/developerapps.json' if os.path.exists('$ROOT_DIR/data/developerapps/developerapps.json') else '$ROOT_DIR/developerapps.json'
@@ -1039,6 +1333,47 @@ with open('$dist_dir/products.json', 'w') as f:
     elif [ ! -f "$src_file" ] && [ -f "$ROOT_DIR/$td" ]; then
       src_file="$ROOT_DIR/$td"
     fi
+    if [ "$td" = "maps.json" ] && [ -f "$src_file" ]; then
+      if [ "$src_file" != "$dist_dir/maps.json" ]; then
+        cp "$src_file" "$dist_dir/maps.json"
+      fi
+      src_file="$dist_dir/maps.json"
+      python3 -c "
+import json, os, re
+
+def replace_env(val):
+    if isinstance(val, str):
+        def sub_braces(m):
+            vname = m.group(1).strip()
+            return os.environ.get(vname, '')
+        new_val = re.sub(r'env\.{([^{}]+)}', sub_braces, val)
+        m_plain = re.match(r'^env\.([A-Za-z0-9_]+)$', new_val)
+        if m_plain:
+            return os.environ.get(m_plain.group(1), '')
+        return new_val
+    elif isinstance(val, dict):
+        return {k: replace_env(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [replace_env(item) for item in val]
+    return val
+
+try:
+    with open('$src_file', 'r') as f:
+        data = json.load(f)
+    resolved = replace_env(data)
+    if isinstance(resolved, list):
+        for item in resolved:
+            if isinstance(item, dict) and str(item.get('scope', '')).lower() == 'environment':
+                if not item.get('environment') and not item.get('env'):
+                    item['environment'] = 'test'
+                    item['environments'] = ['test']
+                    item['env'] = 'test'
+    with open('$src_file', 'w') as f:
+        json.dump(resolved, f, indent=2)
+except Exception:
+    pass
+" 2>/dev/null || true
+    fi
     if [ -f "$src_file" ]; then
       (cd "$(dirname "$src_file")" && zip -q -u "$testdata_zip" "$td")
     fi
@@ -1058,6 +1393,9 @@ with open('$dist_dir/products.json', 'w') as f:
   fi
   echo -e "${GREEN}✓ Test data deployed successfully.${NC}"
 
+  # Also trigger the Cloud Run manager to resolve KVMs with Cloud Run environment variables and sync Cassandra
+  curl_cr -s -X POST "$cr_url/tester/api/emulator/setup-testdata" >/dev/null 2>&1 || true
+
   # Deploy proxy bundle to Cloud Run
   echo -e "${BLUE}Deploying proxy bundle to Cloud Run environment 'test'...${NC}"
   local deploy_status
@@ -1073,8 +1411,10 @@ with open('$dist_dir/products.json', 'w') as f:
   fi
 
   echo -e "${GREEN}✓ Proxies successfully deployed to Apigee Emulator on Cloud Run!${NC}"
-  cat /tmp/cr_deploy_resp.txt
   echo ""
+
+  # Update Cloud Run environment variables if parameters were specified
+  update_cloudrun_service_env_vars
 
   # Display Summary
   echo -e "\n${BOLD}================================================================${NC}"
@@ -1399,23 +1739,44 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -l|--list)
-      echo -e "${BOLD}Available Deployments in data/deployments/:${NC}"
-      get_available_deployments
-      echo -e "\n${BOLD}Available Bundles in data/bundles/:${NC}"
-      get_available_zips
-      exit 0
+      COMMAND="list"
+      shift
+      ;;
+    -p|--parameters)
+      CLI_PARAMETERS+=("$2")
+      shift 2
+      ;;
+    --parameters=*)
+      CLI_PARAMETERS+=("${1#*=}")
+      shift
+      ;;
+    -p=*)
+      CLI_PARAMETERS+=("${1#*=}")
+      shift
       ;;
     --project)
       PROJECT_ID="$2"
       shift 2
       ;;
+    --project=*)
+      PROJECT_ID="${1#*=}"
+      shift
+      ;;
     --region)
       REGION="$2"
       shift 2
       ;;
+    --region=*)
+      REGION="${1#*=}"
+      shift
+      ;;
     --service)
       SERVICE_NAME="$2"
       shift 2
+      ;;
+    --service=*)
+      SERVICE_NAME="${1#*=}"
+      shift
       ;;
     --url)
       CLOUDRUN_URL="$2"
@@ -1437,9 +1798,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Initialize parameters, substitute in deployments, and export
+apply_parameters_to_all_deployments
+
 # Dispatch based on command
 if [ -n "$COMMAND" ]; then
   case "$COMMAND" in
+    list)
+      echo -e "${BOLD}Available Deployments in data/deployments/:${NC}"
+      get_available_deployments
+      echo -e "\n${BOLD}Available Bundles in data/bundles/:${NC}"
+      get_available_zips
+      exit 0
+      ;;
     deploy-service)
       deploy_cloudrun_service
       ;;

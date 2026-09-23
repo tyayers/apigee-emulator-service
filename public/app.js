@@ -21,6 +21,8 @@
     lastResponse: null,
     lastTraceData: null,
     activeTraceView: 'timeline', // 'timeline' or 'json'
+    activeProxyTab: 'tester', // 'tester' or 'yaml'
+    proxyYamlCache: {},
   };
 
   // SVG Icons (Monochromatic)
@@ -36,6 +38,10 @@
 
   // DOM Elements
   const el = {
+    btnToggleSidebar: document.getElementById('btn-toggle-sidebar'),
+    btnCloseSidebar: document.getElementById('btn-close-sidebar'),
+    sidebarOverlay: document.getElementById('sidebar-overlay'),
+    appSidebar: document.getElementById('app-sidebar'),
     statusBadge: document.getElementById('emulator-status-badge'),
     statusText: document.getElementById('emulator-status-text'),
     btnDeployAll: document.getElementById('btn-deploy-all'),
@@ -72,7 +78,10 @@
     assertionsCountBadge: document.getElementById('assertions-count-badge'),
     btnAddAssertion: document.getElementById('btn-add-assertion'),
     assertionsListContainer: document.getElementById('assertions-list-container'),
+    tabBtnRespBody: document.querySelector('[data-tab="tab-resp-body"]'),
+    tabBtnRespHeaders: document.querySelector('[data-tab="tab-resp-headers"]'),
     tabBtnRespAssertions: document.querySelector('[data-tab="tab-resp-assertions"]'),
+    tabBtnRespTrace: document.querySelector('[data-tab="tab-resp-trace"]'),
     respAssertBadge: document.getElementById('resp-assert-badge'),
     respAssertionsSummary: document.getElementById('resp-assertions-summary'),
     testOverallStatus: document.getElementById('test-overall-status'),
@@ -160,8 +169,28 @@
     stateProductsCards: document.getElementById('state-products-cards'),
     stateTableUsersBody: document.getElementById('state-table-users-body'),
     stateTableAppsBody: document.getElementById('state-table-apps-body'),
+    stateAppsContainer: document.getElementById('state-apps-container'),
+    stateMapsContainer: document.getElementById('state-maps-container'),
+    stateTableDataCollectorsBody: document.getElementById('state-table-datacollectors-body'),
     stateRawTreeJson: document.getElementById('state-raw-tree-json'),
     btnCopyStateTree: document.getElementById('btn-copy-state-tree'),
+
+    // Proxy Navigation Tabs & YAML Viewer
+    proxyViewContainer: document.getElementById('proxy-view-container'),
+    tabBtnProxyTester: document.getElementById('tab-btn-proxy-tester'),
+    tabBtnProxyYaml: document.getElementById('tab-btn-proxy-yaml'),
+    proxyNavSelectedName: document.getElementById('proxy-nav-selected-name'),
+    testerCardsWrap: document.getElementById('tester-cards-wrap'),
+    proxyYamlWrap: document.getElementById('proxy-yaml-wrap'),
+    proxyYamlTitle: document.getElementById('proxy-yaml-title'),
+    proxyYamlSourceBadge: document.getElementById('proxy-yaml-source-badge'),
+    proxyYamlLinesBadge: document.getElementById('proxy-yaml-lines-badge'),
+    proxyYamlCode: document.getElementById('proxy-yaml-code'),
+    proxyYamlLoading: document.getElementById('proxy-yaml-loading'),
+    proxyYamlError: document.getElementById('proxy-yaml-error'),
+    btnCopyProxyYaml: document.getElementById('btn-copy-proxy-yaml'),
+    btnDownloadProxyYaml: document.getElementById('btn-download-proxy-yaml'),
+    btnRefreshProxyYaml: document.getElementById('btn-refresh-proxy-yaml'),
 
     // Analytics Header & Toolbar
     btnRefreshAnalytics: document.getElementById('btn-refresh-analytics'),
@@ -338,14 +367,99 @@
     setupTabHandlers();
     setupEventListeners();
     setupAnalyticsEventListeners();
+    setupMobileDrawer();
     initDefaultHeaders();
     await loadInitialData();
     fetchAnalyticsSummary();
 
-    if (window.location.hash === '#analytics' || new URLSearchParams(window.location.search).get('view') === 'analytics') {
+    const urlParams = new URLSearchParams(window.location.search);
+    const proxyFromUrl = urlParams.get('proxy');
+    const viewFromUrl = urlParams.get('view');
+    const hash = window.location.hash;
+
+    if (proxyFromUrl) {
+      switchView('tester');
+      selectProxy(proxyFromUrl, false);
+      if (urlParams.get('tab') === 'yaml') {
+        switchProxyTab('yaml');
+      }
+    } else if (hash === '#analytics' || viewFromUrl === 'analytics') {
       switchView('analytics');
-    } else if (window.location.hash === '#emulator-state' || new URLSearchParams(window.location.search).get('view') === 'emulator-state') {
+    } else if (hash === '#emulator-state' || viewFromUrl === 'emulator-state') {
       switchView('emulator-state');
+    } else {
+      switchView('tester');
+      if (urlParams.get('tab') === 'yaml') {
+        switchProxyTab('yaml');
+      }
+    }
+  }
+
+  // Mobile Fly-out Navigation Drawer
+  function setupMobileDrawer() {
+    function openSidebar() {
+      if (el.appSidebar) el.appSidebar.classList.add('open');
+      if (el.sidebarOverlay) el.sidebarOverlay.classList.add('active');
+    }
+
+    function closeSidebar() {
+      if (el.appSidebar) el.appSidebar.classList.remove('open');
+      if (el.sidebarOverlay) el.sidebarOverlay.classList.remove('active');
+    }
+
+    if (el.btnToggleSidebar) {
+      el.btnToggleSidebar.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (el.appSidebar && el.appSidebar.classList.contains('open')) {
+          closeSidebar();
+        } else {
+          openSidebar();
+        }
+      });
+    }
+
+    if (el.btnCloseSidebar) {
+      el.btnCloseSidebar.addEventListener('click', closeSidebar);
+    }
+
+    if (el.sidebarOverlay) {
+      el.sidebarOverlay.addEventListener('click', closeSidebar);
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && el.appSidebar && el.appSidebar.classList.contains('open')) {
+        closeSidebar();
+      }
+    });
+
+    // Auto-close sidebar when selecting a proxy or resource on mobile
+    if (el.activeProxiesList) {
+      el.activeProxiesList.addEventListener('click', (e) => {
+        if (window.innerWidth <= 1024 && e.target.closest('.proxy-item')) {
+          closeSidebar();
+        }
+      });
+    }
+    if (el.productsList) {
+      el.productsList.addEventListener('click', (e) => {
+        if (window.innerWidth <= 1024 && e.target.closest('.resource-item')) {
+          closeSidebar();
+        }
+      });
+    }
+    if (el.usersList) {
+      el.usersList.addEventListener('click', (e) => {
+        if (window.innerWidth <= 1024 && e.target.closest('.resource-item')) {
+          closeSidebar();
+        }
+      });
+    }
+    if (el.appsList) {
+      el.appsList.addEventListener('click', (e) => {
+        if (window.innerWidth <= 1024 && e.target.closest('.resource-item')) {
+          closeSidebar();
+        }
+      });
     }
   }
 
@@ -415,9 +529,10 @@
   function setProxyInUrl(proxyName) {
     if (!proxyName) return;
     const url = new URL(window.location.href);
-    if (url.searchParams.get('proxy') === proxyName) return;
     url.searchParams.set('proxy', proxyName);
-    window.history.replaceState({}, '', url.toString());
+    url.searchParams.delete('view');
+    url.hash = ''; // Clear hash so stale #emulator-state is never retained
+    window.history.replaceState({}, '', url.pathname + url.search);
   }
 
   // Setup generic tab switching
@@ -429,11 +544,9 @@
         const targetId = btn.getAttribute('data-tab');
         if (!targetId) return;
 
-        // Deactivate siblings in this container
         container.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
 
-        // Find parent card and switch tab-content
         const card = container.closest('.card');
         if (card) {
           card.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -446,11 +559,11 @@
 
   // Event Listeners
   function setupEventListeners() {
-    el.btnRefresh.addEventListener('click', () => fetchStatus(true));
-    el.btnDeployAll.addEventListener('click', deployAll);
-    el.btnDeploySelected.addEventListener('click', deploySelected);
-    el.btnReset.addEventListener('click', resetEmulator);
-    el.btnSendReq.addEventListener('click', sendTestRequest);
+    if (el.btnRefresh) el.btnRefresh.addEventListener('click', () => fetchStatus(true));
+    if (el.btnDeployAll) el.btnDeployAll.addEventListener('click', deployAll);
+    if (el.btnDeploySelected) el.btnDeploySelected.addEventListener('click', deploySelected);
+    if (el.btnReset) el.btnReset.addEventListener('click', resetEmulator);
+    if (el.btnSendReq) el.btnSendReq.addEventListener('click', sendTestRequest);
     if (el.btnDeployModalDismiss) {
       el.btnDeployModalDismiss.addEventListener('click', hideDeployWaitDialog);
     }
@@ -481,7 +594,11 @@
     if (el.btnCopyReqHeaders) {
       el.btnCopyReqHeaders.addEventListener('click', () => {
         const headers = state.lastResponse?.request?.headers || {};
-        navigator.clipboard.writeText(JSON.stringify(headers, null, 2));
+        const masked = {};
+        for (const [k, v] of Object.entries(headers)) {
+          masked[k] = maskHeaderValue(k, v);
+        }
+        navigator.clipboard.writeText(JSON.stringify(masked, null, 2));
         showToast('Request headers copied as JSON');
       });
     }
@@ -540,10 +657,37 @@
       selectProxy(el.reqProxyName.value, true);
     });
 
+    // Proxy Navigation Tabs (API Tester vs YAML Definition)
+    if (el.tabBtnProxyTester) {
+      el.tabBtnProxyTester.addEventListener('click', () => switchProxyTab('tester'));
+    }
+    if (el.tabBtnProxyYaml) {
+      el.tabBtnProxyYaml.addEventListener('click', () => switchProxyTab('yaml'));
+    }
+    if (el.btnCopyProxyYaml) {
+      el.btnCopyProxyYaml.addEventListener('click', copyProxyYamlToClipboard);
+    }
+    if (el.btnDownloadProxyYaml) {
+      el.btnDownloadProxyYaml.addEventListener('click', downloadProxyYaml);
+    }
+    if (el.btnRefreshProxyYaml) {
+      el.btnRefreshProxyYaml.addEventListener('click', () => {
+        if (state.selectedProxyName) {
+          loadProxyYaml(state.selectedProxyName, true);
+        }
+      });
+    }
+
     // Browser navigation (back/forward)
     window.addEventListener('popstate', () => {
       const p = getSelectedProxyFromUrl();
       if (p) selectProxy(p, false);
+      const tab = new URLSearchParams(window.location.search).get('tab');
+      if (tab === 'yaml') {
+        switchProxyTab('yaml');
+      } else {
+        switchProxyTab('tester');
+      }
     });
 
     // View Navigation (API Tester vs Analytics)
@@ -854,12 +998,13 @@
       state.selectedTest = null;
       state.selectedPreset = null;
       if (el.activeTestBanner) el.activeTestBanner.classList.add('hidden');
+      clearTestResults();
       return;
     }
     const test = state.tests[idx];
     if (!test) return;
 
-    applyTestDefinition(test);
+    applyTestDefinition(test, true);
     if (el.presetSelect) {
       el.presetSelect.value = String(idx);
     }
@@ -875,8 +1020,11 @@
     return '/' + lower;
   }
 
-  function applyTestDefinition(test) {
+  function applyTestDefinition(test, clearResults = true) {
     if (!test) return;
+    if (clearResults) {
+      clearTestResults();
+    }
     state.selectedPreset = test;
     state.selectedTest = test;
 
@@ -886,7 +1034,7 @@
 
     if (test.proxy) {
       el.reqProxyName.value = test.proxy;
-      selectProxy(test.proxy, true, false);
+      selectProxy(test.proxy, true, false, false);
     }
 
     // Populate Headers
@@ -1007,10 +1155,21 @@
   }
 
   // Select Proxy & Deep Link
-  function selectProxy(proxyName, updateUrl = true, autoPopulateTest = true) {
+  function selectProxy(proxyName, updateUrl = true, autoPopulateTest = true, clearResults = true) {
     if (!proxyName) return;
+    if (clearResults) {
+      clearTestResults();
+    }
     showTesterView();
     state.selectedProxyName = proxyName;
+
+    // Update proxy nav label & badges
+    if (el.proxyNavSelectedName) {
+      el.proxyNavSelectedName.textContent = proxyName;
+    }
+    if (el.proxyYamlTitle) {
+      el.proxyYamlTitle.textContent = `${proxyName} Definition`;
+    }
 
     // Update target dropdown if exists
     if (el.reqProxyName) {
@@ -1025,6 +1184,13 @@
 
     // Refresh history card proxy badge and history records
     fetchTestHistory(proxyName);
+
+    // If active tab is YAML, load the YAML immediately; otherwise prefetch in background
+    if (state.activeProxyTab === 'yaml') {
+      loadProxyYaml(proxyName);
+    } else {
+      prefetchProxyYaml(proxyName);
+    }
 
     // If autoPopulateTest is enabled, find proxy info or matching test
     if (autoPopulateTest) {
@@ -1045,7 +1211,7 @@
       if (matchingTestIdx !== -1) {
         const test = state.tests[matchingTestIdx];
         if (test) {
-          applyTestDefinition(test);
+          applyTestDefinition(test, false);
         }
       } else {
         // No tests for this proxy: reset test selection and populate empty dropdown
@@ -1076,6 +1242,216 @@
       }
     });
   }
+
+  // ==========================================================================
+  // Proxy Tabs (Tester vs YAML Definition) & YAML Highlighting
+  // ==========================================================================
+  function switchProxyTab(tabName) {
+    state.activeProxyTab = tabName;
+    const url = new URL(window.location.href);
+
+    if (tabName === 'yaml') {
+      url.searchParams.set('tab', 'yaml');
+      if (el.tabBtnProxyTester) el.tabBtnProxyTester.classList.remove('active');
+      if (el.tabBtnProxyYaml) el.tabBtnProxyYaml.classList.add('active');
+      if (el.testerCardsWrap) el.testerCardsWrap.classList.add('hidden');
+      if (el.proxyYamlWrap) el.proxyYamlWrap.classList.remove('hidden');
+
+      if (state.selectedProxyName) {
+        loadProxyYaml(state.selectedProxyName);
+      }
+    } else {
+      url.searchParams.delete('tab');
+      if (el.tabBtnProxyTester) el.tabBtnProxyTester.classList.add('active');
+      if (el.tabBtnProxyYaml) el.tabBtnProxyYaml.classList.remove('active');
+      if (el.testerCardsWrap) el.testerCardsWrap.classList.remove('hidden');
+      if (el.proxyYamlWrap) el.proxyYamlWrap.classList.add('hidden');
+    }
+
+    if (!url.hash) {
+      window.history.replaceState(null, '', url.pathname + (url.search ? url.search : ''));
+    }
+  }
+
+  async function prefetchProxyYaml(proxyName) {
+    if (!proxyName || state.proxyYamlCache[proxyName]) return;
+    try {
+      const res = await fetch(`${API_BASE}/proxies/yaml?name=${encodeURIComponent(proxyName)}`);
+      const data = await res.json();
+      if (res.ok && data.success) {
+        state.proxyYamlCache[proxyName] = data;
+      }
+    } catch (_) {
+      // Silent prefetch failure
+    }
+  }
+
+  async function loadProxyYaml(proxyName, forceReload = false) {
+    if (!proxyName) return;
+
+    if (el.proxyYamlTitle) {
+      el.proxyYamlTitle.textContent = `${proxyName} Definition`;
+    }
+    if (el.proxyNavSelectedName) {
+      el.proxyNavSelectedName.textContent = proxyName;
+    }
+
+    // Check cache
+    if (!forceReload && state.proxyYamlCache[proxyName]) {
+      renderProxyYaml(state.proxyYamlCache[proxyName]);
+      return;
+    }
+
+    if (el.proxyYamlLoading) el.proxyYamlLoading.classList.remove('hidden');
+    if (el.proxyYamlError) el.proxyYamlError.classList.add('hidden');
+    if (el.proxyYamlCode) el.proxyYamlCode.innerHTML = '';
+
+    try {
+      const res = await fetch(`${API_BASE}/proxies/yaml?name=${encodeURIComponent(proxyName)}`);
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Failed to fetch YAML for proxy ${proxyName} (HTTP ${res.status})`);
+      }
+      state.proxyYamlCache[proxyName] = data;
+      renderProxyYaml(data);
+    } catch (err) {
+      console.error('Error loading proxy YAML:', err);
+      if (el.proxyYamlError) {
+        el.proxyYamlError.textContent = `Could not load YAML definition: ${err.message}`;
+        el.proxyYamlError.classList.remove('hidden');
+      }
+      if (el.proxyYamlSourceBadge) el.proxyYamlSourceBadge.textContent = 'Unavailable';
+      if (el.proxyYamlLinesBadge) el.proxyYamlLinesBadge.textContent = '0 lines';
+    } finally {
+      if (el.proxyYamlLoading) el.proxyYamlLoading.classList.add('hidden');
+    }
+  }
+
+  function renderProxyYaml(data) {
+    if (!data || !data.yaml) return;
+    if (el.proxyYamlSourceBadge) {
+      el.proxyYamlSourceBadge.textContent = data.source || `${data.proxy || 'proxy'}.yaml`;
+    }
+    const lines = data.yaml.split('\n');
+    if (el.proxyYamlLinesBadge) {
+      el.proxyYamlLinesBadge.textContent = `${lines.length} lines`;
+    }
+    if (el.proxyYamlCode) {
+      el.proxyYamlCode.innerHTML = highlightYaml(data.yaml);
+    }
+  }
+
+  function highlightYaml(yamlText) {
+    if (!yamlText) return '';
+    const lines = yamlText.split('\n');
+    return lines.map((line, idx) => {
+      let comment = '';
+      let code = line;
+      const commentIdx = line.search(/(^|\s)#/);
+      if (commentIdx !== -1) {
+        const actualIdx = line[commentIdx] === '#' ? commentIdx : commentIdx + 1;
+        code = line.substring(0, actualIdx);
+        comment = line.substring(actualIdx);
+      }
+
+      let lineHtml = '';
+      if (code) {
+        // Pattern: indentation, optional bullet dash, key:, rest of value
+        const keyMatch = code.match(/^(\s*)(?:(-)\s+)?([a-zA-Z0-9_\-\.\/]+)(:)(.*)$/);
+        if (keyMatch) {
+          const [, indent, bullet, key, colon, rest] = keyMatch;
+          lineHtml += escapeHtml(indent);
+          if (bullet) {
+            lineHtml += '<span class="yaml-bullet">-</span> ';
+          }
+          lineHtml += `<span class="yaml-key">${escapeHtml(key)}</span><span class="yaml-punct">${colon}</span>`;
+          lineHtml += highlightYamlValue(rest);
+        } else {
+          // Check for bullet item without key: e.g. "  - value"
+          const bulletMatch = code.match(/^(\s*)(-)(\s+)(.*)$/);
+          if (bulletMatch) {
+            const [, indent, bullet, space, rest] = bulletMatch;
+            lineHtml += escapeHtml(indent);
+            lineHtml += `<span class="yaml-bullet">${bullet}</span>${escapeHtml(space)}`;
+            lineHtml += highlightYamlValue(rest);
+          } else {
+            lineHtml += highlightYamlValue(code);
+          }
+        }
+      }
+
+      if (comment) {
+        lineHtml += `<span class="yaml-comment">${escapeHtml(comment)}</span>`;
+      }
+
+      const lineNum = idx + 1;
+      return `<div class="code-line"><span class="line-num">${lineNum}</span><span class="line-content">${lineHtml || ' '}</span></div>`;
+    }).join('');
+  }
+
+  function highlightYamlValue(val) {
+    if (!val) return '';
+    const parts = [];
+    // Tokenize quoted strings vs everything else
+    const regex = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^"']+)/g;
+    let match;
+    while ((match = regex.exec(val)) !== null) {
+      const part = match[0];
+      if ((part.startsWith('"') && part.endsWith('"')) || (part.startsWith("'") && part.endsWith("'"))) {
+        parts.push(`<span class="yaml-string">${escapeHtml(part)}</span>`);
+      } else {
+        let unquoted = escapeHtml(part);
+        unquoted = unquoted.replace(/\b(true|false|null|yes|no)\b/gi, '<span class="yaml-bool">$&</span>');
+        unquoted = unquoted.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="yaml-num">$&</span>');
+        parts.push(unquoted);
+      }
+    }
+    return parts.join('');
+  }
+
+  function copyProxyYamlToClipboard() {
+    const proxyName = state.selectedProxyName;
+    const cached = proxyName && state.proxyYamlCache[proxyName];
+    const textToCopy = cached ? cached.yaml : '';
+    if (!textToCopy) {
+      showToast('No YAML definition to copy');
+      return;
+    }
+    navigator.clipboard.writeText(textToCopy).then(() => {
+      showToast('Proxy YAML copied to clipboard');
+      if (el.btnCopyProxyYaml) {
+        const originalText = el.btnCopyProxyYaml.innerHTML;
+        el.btnCopyProxyYaml.innerHTML = `${ICONS.check} <span>Copied!</span>`;
+        setTimeout(() => {
+          el.btnCopyProxyYaml.innerHTML = originalText;
+        }, 2000);
+      }
+    }).catch(err => {
+      console.error('Failed to copy YAML:', err);
+      showToast('Failed to copy YAML to clipboard');
+    });
+  }
+
+  function downloadProxyYaml() {
+    const proxyName = state.selectedProxyName || 'proxy';
+    const cached = state.proxyYamlCache[proxyName];
+    const text = cached ? cached.yaml : '';
+    if (!text) {
+      showToast('No YAML definition to download');
+      return;
+    }
+    const blob = new Blob([text], { type: 'text/yaml;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${proxyName}.yaml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`Downloaded ${proxyName}.yaml`);
+  }
+
 
   // Render Functions
   function renderActiveProxies() {
@@ -1120,6 +1496,7 @@
   }
 
   function renderBundles() {
+    if (!el.bundlesList || !el.bundlesCount) return;
     el.bundlesCount.textContent = state.bundles.length;
     if (state.bundles.length === 0) {
       el.bundlesList.innerHTML = '<li class="empty-state">No bundles found in data/bundles</li>';
@@ -1168,15 +1545,7 @@
   }
 
   function showTesterView() {
-    if (el.resourceDetailCard) el.resourceDetailCard.classList.add('hidden');
-    if (el.emulatorStateCard) el.emulatorStateCard.classList.add('hidden');
-    if (el.viewAnalytics) el.viewAnalytics.classList.add('hidden');
-    if (el.viewTester) el.viewTester.classList.remove('hidden');
-    if (el.testerCardsWrap) el.testerCardsWrap.classList.remove('hidden');
-
-    if (el.navBtnTester) el.navBtnTester.classList.add('active');
-    if (el.navBtnAnalytics) el.navBtnAnalytics.classList.remove('active');
-    if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.remove('active');
+    switchView('tester');
   }
 
   function showResourceDetail(category, data) {
@@ -1185,7 +1554,9 @@
     // Switch right pane to resource detail
     if (el.viewAnalytics) el.viewAnalytics.classList.add('hidden');
     if (el.viewTester) el.viewTester.classList.remove('hidden');
+    if (el.proxyViewContainer) el.proxyViewContainer.classList.add('hidden');
     if (el.testerCardsWrap) el.testerCardsWrap.classList.add('hidden');
+    if (el.proxyYamlWrap) el.proxyYamlWrap.classList.add('hidden');
     if (el.emulatorStateCard) el.emulatorStateCard.classList.add('hidden');
     el.resourceDetailCard.classList.remove('hidden');
 
@@ -1476,57 +1847,43 @@
       el.stateMetricDatastoreSub.textContent = data.lastTestDataStatus ? `${data.lastTestDataStatus}` : 'Cassandra Datastore';
     }
 
-    // Validation checklist
-    if (el.stateValidationChecklist) {
-      const checks = data.validationChecks || [];
-      if (checks.length === 0) {
-        el.stateValidationChecklist.innerHTML = '<div class="empty-state">No validation checks available.</div>';
-      } else {
-        el.stateValidationChecklist.innerHTML = checks.map(c => {
-          let badgeClass = 'badge-status-approved';
-          let icon = '✓';
-          if (c.status === 'WARN') {
-            badgeClass = 'badge-status-pending';
-            icon = '⚠';
-          } else if (c.status === 'FAIL') {
-            badgeClass = 'badge-status-revoked';
-            icon = '✗';
-          }
-          return `
-            <div class="validation-item validation-status-${(c.status || '').toLowerCase()}">
-              <div class="validation-item-header">
-                <span class="validation-status-icon">${icon}</span>
-                <span class="validation-category">[${escapeHtml(c.category)}]</span>
-                <strong class="validation-title">${escapeHtml(c.title)}</strong>
-                <span class="badge ${badgeClass}">${escapeHtml(c.status)}</span>
-              </div>
-              <div class="validation-message">${escapeHtml(c.message)}</div>
-            </div>
-          `;
-        }).join('');
-      }
-    }
-
     // Tab 1: Deployed proxies table
     if (el.stateTableProxiesBody) {
       const proxies = data.activeProxies || [];
+      const bundles = data.packagedBundles || state.bundles || [];
       if (proxies.length === 0) {
-        el.stateTableProxiesBody.innerHTML = '<tr><td colspan="6" class="empty-state">No active proxies deployed in emulator.</td></tr>';
+        el.stateTableProxiesBody.innerHTML = '<tr><td colspan="7" class="empty-state">No active proxies deployed in emulator.</td></tr>';
       } else {
-        el.stateTableProxiesBody.innerHTML = proxies.map(p => `
-          <tr>
-            <td><strong>${escapeHtml(p.name)}</strong></td>
-            <td><span class="badge badge-dim">${escapeHtml(p.environment || 'test')}</span></td>
-            <td><code>r${escapeHtml(p.revision || '1')}</code></td>
-            <td><code>${escapeHtml(p.basePath || '/')}</code></td>
-            <td><a href="${escapeHtml(p.url)}" target="_blank" class="table-link">${escapeHtml(p.url)}</a></td>
-            <td>
-              <button class="btn btn-sm btn-outline-accent btn-test-deployed-proxy" data-proxy="${escapeHtml(p.name)}">
-                Test in API Tester
-              </button>
-            </td>
-          </tr>
-        `).join('');
+        el.stateTableProxiesBody.innerHTML = proxies.map(p => {
+          const proxyName = p.name || '';
+          const bundle = bundles.find(b => (b.proxyName || '').toLowerCase() === proxyName.toLowerCase());
+
+          let policiesHtml = '<span class="text-muted" style="font-size: 0.75rem;">None</span>';
+          if (bundle && bundle.policies && bundle.policies.length > 0) {
+            policiesHtml = bundle.policies.map(pol => `<span class="badge" style="font-size: 0.68rem; margin: 0.1rem;">${escapeHtml(pol)}</span>`).join('');
+          }
+
+          let targetsHtml = '';
+          if (bundle && bundle.targetRoutes && bundle.targetRoutes.length > 0) {
+            targetsHtml = '<div style="margin-top: 0.25rem;">' + bundle.targetRoutes.map(tr => `<span class="code-pill" style="font-size: 0.68rem;">&rarr; ${escapeHtml(tr)}</span>`).join(' ') + '</div>';
+          }
+
+          return `
+            <tr>
+              <td><strong>${escapeHtml(proxyName)}</strong></td>
+              <td><span class="badge badge-dim">${escapeHtml(p.environment || 'test')}</span></td>
+              <td><code>r${escapeHtml(p.revision || '1')}</code></td>
+              <td><code>${escapeHtml(p.basePath || '/')}</code></td>
+              <td><a href="${escapeHtml(p.url)}" target="_blank" class="table-link">${escapeHtml(p.url)}</a></td>
+              <td>${policiesHtml}${targetsHtml}</td>
+              <td>
+                <button class="btn btn-sm btn-outline-accent btn-test-deployed-proxy" data-proxy="${escapeHtml(proxyName)}">
+                  Test in API Tester
+                </button>
+              </td>
+            </tr>
+          `;
+        }).join('');
 
         el.stateTableProxiesBody.querySelectorAll('.btn-test-deployed-proxy').forEach(btn => {
           btn.addEventListener('click', () => {
@@ -1538,7 +1895,7 @@
       }
     }
 
-    // Tab 2: Products cards
+    // Tab 2: Products detailed cards (all details shown directly)
     if (el.stateProductsCards) {
       const prods = data.products || [];
       if (prods.length === 0) {
@@ -1546,41 +1903,138 @@
       } else {
         el.stateProductsCards.innerHTML = prods.map(p => {
           const name = p.name || 'Product';
+          const displayName = p.displayName || name;
+          const approvalType = p.approvalType || 'auto';
+          const envs = (p.environments || []).join(', ') || 'All';
+          const quota = p.quota ? `${p.quota} / ${p.quotaInterval || 1} ${p.quotaTimeUnit || 'month'}` : 'No limit';
+
+          const standardOps = p.operationGroup?.operationConfigs || [];
           const llmOps = p.llmOperationGroup?.operationConfigs || [];
-          const ops = p.operationGroup?.operationConfigs || [];
+
+          let standardOpsHtml = '';
+          if (standardOps.length === 0) {
+            standardOpsHtml = '<div class="empty-state" style="padding: 0.5rem; font-size: 0.78rem;">No standard operations configured.</div>';
+          } else {
+            standardOpsHtml = `
+              <table class="state-subtable">
+                <thead>
+                  <tr>
+                    <th>API Source</th>
+                    <th>Resource Path</th>
+                    <th>Methods</th>
+                    <th>Quota Override</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${standardOps.map(op => {
+                    const methods = (op.operations || []).flatMap(o => o.methods || ['ALL']);
+                    const methodsBadges = (methods.length > 0 ? methods : ['ALL']).map(m => {
+                      const mUpper = m.toUpperCase();
+                      const cls = mUpper === 'GET' ? 'method-badge-get' : mUpper === 'POST' ? 'method-badge-post' : mUpper === 'PUT' ? 'method-badge-put' : mUpper === 'DELETE' ? 'method-badge-delete' : 'method-badge-all';
+                      return `<span class="method-badge ${cls}">${escapeHtml(mUpper)}</span>`;
+                    }).join(' ');
+                    const quotaOverride = op.quota ? `${op.quota.limit} / ${op.quota.interval} ${op.quota.timeUnit}` : '-';
+                    return `
+                      <tr>
+                        <td><strong>${escapeHtml(op.apiSource || '-')}</strong></td>
+                        <td><code>${escapeHtml(op.maskPath || '/')}</code></td>
+                        <td>${methodsBadges}</td>
+                        <td>${escapeHtml(quotaOverride)}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            `;
+          }
+
+          let llmOpsHtml = '';
+          if (llmOps.length === 0) {
+            llmOpsHtml = '<div class="empty-state" style="padding: 0.5rem; font-size: 0.78rem;">No AI / LLM operations configured.</div>';
+          } else {
+            llmOpsHtml = `
+              <table class="state-subtable">
+                <thead>
+                  <tr>
+                    <th>Proxy / API Source</th>
+                    <th>Resource Path</th>
+                    <th>Authorized AI Models</th>
+                    <th>LLM Token Quota</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${llmOps.flatMap(cfg => {
+                    const opsList = cfg.llmOperations || cfg.operations || [];
+                    const quotaObj = cfg.llmTokenQuota || cfg.tokenQuota || cfg.quota;
+                    const tokenQuota = quotaObj && quotaObj.limit ? `${quotaObj.limit} tokens / ${quotaObj.interval || '1'} ${quotaObj.timeUnit || 'min'}` : '-';
+                    if (opsList.length === 0) {
+                      return [{
+                        apiSource: cfg.apiSource || '-',
+                        resource: cfg.resource || cfg.maskPath || '/',
+                        models: [],
+                        tokenQuota
+                      }];
+                    }
+                    return opsList.map(o => {
+                      const mList = Array.isArray(o.models) ? o.models : (o.model ? [o.model] : []);
+                      return {
+                        apiSource: cfg.apiSource || '-',
+                        resource: o.resource || o.name || cfg.maskPath || '/',
+                        models: mList,
+                        tokenQuota
+                      };
+                    });
+                  }).map(row => {
+                    const modelBadges = row.models.length > 0
+                      ? row.models.map(m => `<span class="model-pill">${escapeHtml(m)}</span>`).join(' ')
+                      : '<span class="text-muted" style="font-size: 0.75rem;">All models</span>';
+                    return `
+                      <tr>
+                        <td><strong>${escapeHtml(row.apiSource)}</strong></td>
+                        <td><code>${escapeHtml(row.resource)}</code></td>
+                        <td><div style="display: flex; flex-wrap: wrap; gap: 0.25rem;">${modelBadges}</div></td>
+                        <td>${escapeHtml(row.tokenQuota)}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            `;
+          }
+
           return `
-            <div class="state-card">
-              <div class="state-card-header">
-                <h4>${escapeHtml(p.displayName || name)}</h4>
-                <span class="badge">${escapeHtml(name)}</span>
+            <div class="state-detail-card">
+              <div class="state-detail-card-header">
+                <div class="state-detail-title-group">
+                  <h4>${escapeHtml(displayName)}</h4>
+                  <span class="badge">${escapeHtml(name)}</span>
+                </div>
+                <div class="state-detail-tags">
+                  <span class="badge badge-dim">Envs: ${escapeHtml(envs)}</span>
+                  <span class="badge badge-status-approved">Approval: ${escapeHtml(approvalType)}</span>
+                  <span class="badge badge-quota">Quota: ${escapeHtml(quota)}</span>
+                </div>
               </div>
-              <div class="state-card-meta">
-                <div><strong>Environments:</strong> ${(p.environments || []).join(', ') || 'All'}</div>
-                <div><strong>Standard Ops:</strong> ${ops.length} proxy source(s)</div>
-                <div><strong>LLM Ops:</strong> ${llmOps.length} AI model config(s)</div>
+              ${p.description ? `<p class="state-detail-desc">${escapeHtml(p.description)}</p>` : ''}
+              <div class="state-subtable-section">
+                <span class="state-subtable-title">Standard Operations &amp; Paths (${standardOps.length})</span>
+                ${standardOpsHtml}
               </div>
-              <button class="btn btn-sm btn-outline btn-inspect-state-prod" data-name="${escapeHtml(name)}">
-                View Full Details
-              </button>
+              <div class="state-subtable-section">
+                <span class="state-subtable-title">AI &amp; LLM Operations (${llmOps.length})</span>
+                ${llmOpsHtml}
+              </div>
             </div>
           `;
         }).join('');
-
-        el.stateProductsCards.querySelectorAll('.btn-inspect-state-prod').forEach(btn => {
-          btn.addEventListener('click', () => {
-            const n = btn.getAttribute('data-name');
-            const targetProd = (data.products || []).find(p => p.name === n);
-            if (targetProd) showResourceDetail('product', targetProd);
-          });
-        });
       }
     }
 
-    // Tab 3: Users table
+    // Tab 3: Users (Developers) table
     if (el.stateTableUsersBody) {
       const users = data.users || [];
       if (users.length === 0) {
-        el.stateTableUsersBody.innerHTML = '<tr><td colspan="4" class="empty-state">No developers loaded.</td></tr>';
+        el.stateTableUsersBody.innerHTML = '<tr><td colspan="5" class="empty-state">No developers loaded.</td></tr>';
       } else {
         el.stateTableUsersBody.innerHTML = users.map(u => `
           <tr>
@@ -1588,45 +2042,171 @@
             <td><code>${escapeHtml(u.email || '-')}</code></td>
             <td><code>${escapeHtml(u.userName || '-')}</code></td>
             <td><span class="badge badge-status-approved">${escapeHtml(u.status || 'active')}</span></td>
+            <td><code>${escapeHtml(u.developerId || '-')}</code></td>
           </tr>
         `).join('');
       }
     }
 
-    // Tab 4: Apps table
-    if (el.stateTableAppsBody) {
+    // Tab 4: Developer Apps & Keys (all details shown directly)
+    if (el.stateAppsContainer) {
       const apps = data.apps || [];
       if (apps.length === 0) {
-        el.stateTableAppsBody.innerHTML = '<tr><td colspan="5" class="empty-state">No developer apps loaded.</td></tr>';
+        el.stateAppsContainer.innerHTML = '<div class="empty-state">No developer apps loaded.</div>';
       } else {
-        el.stateTableAppsBody.innerHTML = apps.map(app => {
+        el.stateAppsContainer.innerHTML = apps.map(app => {
           const creds = app.credentials || [];
-          const keys = creds.map(c => c.consumerKey).filter(Boolean);
-          const firstKey = keys[0] || '';
+          const prods = (app.apiProducts || []).map(p => typeof p === 'string' ? p : (p.apiproduct || p.name || '')).filter(Boolean);
+          const prodBadges = prods.length > 0
+            ? prods.map(p => `<span class="badge badge-dim">${escapeHtml(p)}</span>`).join(' ')
+            : '<span class="text-muted" style="font-size: 0.75rem;">None</span>';
+
+          let credsTableHtml = '';
+          if (creds.length === 0) {
+            credsTableHtml = '<div class="empty-state" style="padding: 0.5rem; font-size: 0.78rem;">No credentials generated.</div>';
+          } else {
+            credsTableHtml = `
+              <table class="state-subtable">
+                <thead>
+                  <tr>
+                    <th>Consumer Key</th>
+                    <th>Consumer Secret</th>
+                    <th>Status</th>
+                    <th>Associated Products</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${creds.map(c => {
+                    const key = c.consumerKey || '';
+                    const secret = c.consumerSecret || '';
+                    const credProds = (c.apiProducts || []).map(p => typeof p === 'string' ? p : (p.apiproduct || p.name || '')).filter(Boolean);
+                    const credProdsStr = credProds.length > 0 ? credProds.join(', ') : (prods.join(', ') || '-');
+                    return `
+                      <tr>
+                        <td><code style="color: #38bdf8;">${escapeHtml(key)}</code></td>
+                        <td><code>${escapeHtml(secret ? secret.substring(0, 6) + '...' : '-')}</code></td>
+                        <td><span class="badge badge-status-approved">${escapeHtml(c.status || 'approved')}</span></td>
+                        <td>${escapeHtml(credProdsStr)}</td>
+                        <td>
+                          <div style="display: flex; gap: 0.35rem; align-items: center;">
+                            <button class="btn btn-sm btn-outline-accent btn-state-use-key" data-key="${escapeHtml(key)}">
+                              Use in Tester
+                            </button>
+                            <button class="btn btn-sm btn-outline btn-copy-raw-key" data-key="${escapeHtml(key)}" title="Copy key">
+                              Copy
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            `;
+          }
+
           return `
-            <tr>
-              <td><strong>${escapeHtml(app.name || '-')}</strong></td>
-              <td><code>${escapeHtml(app.developerEmail || app.developerId || '-')}</code></td>
-              <td><code>${escapeHtml(keys.join(', ') || '-')}</code></td>
-              <td>${escapeHtml((app.apiProducts || []).join(', ') || '-')}</td>
-              <td>
-                ${firstKey ? `<button class="btn btn-sm btn-outline-accent btn-state-use-key" data-key="${escapeHtml(firstKey)}">Use in Tester</button>` : '-'}
-              </td>
-            </tr>
+            <div class="state-detail-card">
+              <div class="state-detail-card-header">
+                <div class="state-detail-title-group">
+                  <h4>${escapeHtml(app.name || 'Developer App')}</h4>
+                  <span class="badge badge-status-approved">${escapeHtml(app.status || 'approved')}</span>
+                </div>
+                <div class="state-detail-tags">
+                  <span class="text-muted" style="font-size: 0.8rem;">Developer:</span>
+                  <code>${escapeHtml(app.developerEmail || app.developerId || '-')}</code>
+                  <span style="margin-left: 0.5rem;" class="text-muted" style="font-size: 0.8rem;">Products:</span>
+                  ${prodBadges}
+                </div>
+              </div>
+              <div class="state-subtable-section">
+                <span class="state-subtable-title">App Credentials &amp; API Keys (${creds.length})</span>
+                ${credsTableHtml}
+              </div>
+            </div>
           `;
         }).join('');
 
-        el.stateTableAppsBody.querySelectorAll('.btn-state-use-key').forEach(btn => {
+        el.stateAppsContainer.querySelectorAll('.btn-state-use-key').forEach(btn => {
           btn.addEventListener('click', () => {
             const k = btn.getAttribute('data-key');
             applyApiKeyToHeaders(k);
             showTesterView();
           });
         });
+
+        el.stateAppsContainer.querySelectorAll('.btn-copy-raw-key').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const k = btn.getAttribute('data-key');
+            navigator.clipboard.writeText(k);
+            showToast('Consumer Key copied to clipboard!');
+          });
+        });
       }
     }
 
-    // Tab 5: Raw tree JSON
+    // Tab 5: KVM Maps
+    if (el.stateMapsContainer) {
+      const maps = data.maps || [];
+      if (maps.length === 0) {
+        el.stateMapsContainer.innerHTML = '<div class="empty-state">No KVM maps deployed in emulator.</div>';
+      } else {
+        el.stateMapsContainer.innerHTML = maps.map(m => {
+          const entries = m.entries || [];
+          return `
+            <div class="state-detail-card">
+              <div class="state-detail-card-header">
+                <div class="state-detail-title-group">
+                  <h4>${escapeHtml(m.name || 'KVM Map')}</h4>
+                  <span class="badge">${escapeHtml(m.scope || 'environment')}</span>
+                </div>
+                <div class="state-detail-tags">
+                  <span class="badge badge-dim">Env: ${escapeHtml(m.environment || 'test')}</span>
+                  <span class="badge">${entries.length} entries</span>
+                </div>
+              </div>
+              <div class="state-subtable-section">
+                <table class="state-subtable">
+                  <thead>
+                    <tr>
+                      <th>Key Name</th>
+                      <th>Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${entries.length > 0 ? entries.map(e => `
+                      <tr>
+                        <td><code>${escapeHtml(e.name || '')}</code></td>
+                        <td><code>${escapeHtml(e.value || '')}</code></td>
+                      </tr>
+                    `).join('') : '<tr><td colspan="2" class="empty-state">No entries in this map.</td></tr>'}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    // Tab 6: Data Collectors
+    if (el.stateTableDataCollectorsBody) {
+      const dcs = data.dataCollectors || [];
+      if (dcs.length === 0) {
+        el.stateTableDataCollectorsBody.innerHTML = '<tr><td colspan="3" class="empty-state">No data collectors configured.</td></tr>';
+      } else {
+        el.stateTableDataCollectorsBody.innerHTML = dcs.map(dc => `
+          <tr>
+            <td><code>${escapeHtml(dc.name || '')}</code></td>
+            <td><span class="badge badge-info">${escapeHtml(dc.type || 'STRING')}</span></td>
+            <td>${escapeHtml(dc.description || '-')}</td>
+          </tr>
+        `).join('');
+      }
+    }
+
+    // Tab 7: Raw tree JSON
     if (el.stateRawTreeJson) {
       el.stateRawTreeJson.textContent = JSON.stringify(data.deploymentTree || data, null, 2);
     }
@@ -1823,6 +2403,7 @@
   }
 
   function updateDeploySelectedState() {
+    if (!el.bundlesList || !el.btnDeploySelected) return;
     const anyChecked = el.bundlesList.querySelectorAll('.bundle-checkbox:checked').length > 0;
     el.btnDeploySelected.disabled = !anyChecked;
   }
@@ -1861,6 +2442,7 @@
   }
 
   async function deploySelected() {
+    if (!el.bundlesList || !el.btnDeploySelected) return;
     const files = [];
     el.bundlesList.querySelectorAll('.bundle-checkbox:checked').forEach(cb => {
       const f = cb.getAttribute('data-file');
@@ -1982,12 +2564,6 @@
       // Render assertions
       renderResponseAssertions(data.assertions, data.passed, data);
 
-      if (data.assertions && data.assertions.length > 0) {
-        if (!data.passed && el.tabBtnRespAssertions) {
-          el.tabBtnRespAssertions.click();
-        }
-      }
-
       // If trace data present, render vertical execution timeline
       if (data.traceData) {
         el.traceIndicator.classList.remove('hidden');
@@ -1997,8 +2573,21 @@
         handleTraceAnalyticsExtraction(data, { method, path, proxy, headers, body });
       } else {
         if (el.btnViewTraceAnalytics) el.btnViewTraceAnalytics.classList.add('hidden');
-        el.tracePipelineContainer.innerHTML = '<div class="empty-state">Trace session was not recorded. Enable "Record & Inspect Trace" to inspect policy execution.</div>';
+        el.tracePipelineContainer.innerHTML = `
+          <div class="trace-vertical-timeline">
+            ${buildTraceTopResponseBodyHtml(data, data.statusCode, data.statusText, data.body, data.body ? new Blob([data.body]).size : 0, data.durationMs || 0)}
+            <div class="empty-state">Trace session was not recorded. Enable "Record & Inspect Trace" to inspect policy execution.</div>
+          </div>
+        `;
+        attachTraceTopResponseBodyListeners(data.body || '');
         el.traceSummaryBar.classList.add('hidden');
+      }
+
+      // Auto-switch tabs: if "Record & Inspect Trace" is checked, switch to Execution Trace view
+      if (recordTrace && el.tabBtnRespTrace) {
+        el.tabBtnRespTrace.click();
+      } else if (data.assertions && data.assertions.length > 0 && !data.passed && el.tabBtnRespAssertions) {
+        el.tabBtnRespAssertions.click();
       }
 
       // Refresh test history for this proxy
@@ -2017,6 +2606,81 @@
         </svg>
         Send
       `;
+    }
+  }
+
+  function clearTestResults() {
+    state.lastResponse = null;
+    state.lastTraceData = null;
+
+    // Reset response status badge and meta badges
+    if (el.respStatusBadge) {
+      el.respStatusBadge.className = 'status-tag status-none';
+      el.respStatusBadge.textContent = 'No Request Sent';
+    }
+    if (el.respTimeBadge) {
+      el.respTimeBadge.textContent = '0 ms';
+      el.respTimeBadge.classList.add('hidden');
+    }
+    if (el.respSizeBadge) {
+      el.respSizeBadge.textContent = '0 B';
+      el.respSizeBadge.classList.add('hidden');
+    }
+
+    // Reset Request Sent tab
+    renderRequestSent(null);
+
+    // Reset Response Body tab
+    if (el.respBodyContent) {
+      el.respBodyContent.textContent = 'Click "Send" above to invoke the proxy.';
+    }
+
+    // Reset Response Headers tab
+    if (el.respHeadersTbody) {
+      el.respHeadersTbody.innerHTML = '<tr><td colspan="2" class="empty-state">No headers to display.</td></tr>';
+    }
+
+    // Reset Test Results / Assertions tab
+    if (el.respAssertBadge) {
+      el.respAssertBadge.classList.add('hidden');
+      el.respAssertBadge.textContent = '0/0';
+    }
+    if (el.respAssertionsSummary) {
+      el.respAssertionsSummary.classList.add('hidden');
+    }
+    if (el.respAssertionsContainer) {
+      el.respAssertionsContainer.innerHTML = '<div class="empty-state">Execute a test or click "Send" to see assertion results.</div>';
+    }
+
+    // Reset Execution Trace tab
+    if (el.traceIndicator) {
+      el.traceIndicator.classList.add('hidden');
+    }
+    if (el.traceSummaryBar) {
+      el.traceSummaryBar.classList.add('hidden');
+    }
+    if (el.traceSessionId) {
+      el.traceSessionId.textContent = '-';
+    }
+    if (el.tracePipelineContainer) {
+      el.tracePipelineContainer.innerHTML = '<div class="empty-state">No execution trace recorded. Send a request with "Record &amp; Inspect Trace" enabled.</div>';
+    }
+    if (el.traceRawContent) {
+      el.traceRawContent.textContent = '';
+    }
+    if (el.btnViewTraceAnalytics) {
+      el.btnViewTraceAnalytics.classList.add('hidden');
+    }
+    if (el.btnTraceViewTimeline && el.btnTraceViewJson) {
+      el.btnTraceViewTimeline.classList.add('active');
+      el.btnTraceViewJson.classList.remove('active');
+      if (el.traceTimelineView) el.traceTimelineView.classList.remove('hidden');
+      if (el.traceJsonView) el.traceJsonView.classList.add('hidden');
+    }
+
+    // Reset active response tab to Response Body (default)
+    if (el.tabBtnRespBody) {
+      el.tabBtnRespBody.click();
     }
   }
 
@@ -2076,14 +2740,27 @@
     });
   }
 
-  function formatPayload(payload) {
-    if (!payload) return '(Empty payload)';
+  function formatPayload(payload, emptyText = '(Empty payload)') {
+    if (!payload) return emptyText;
     try {
       const parsed = JSON.parse(payload);
       return JSON.stringify(parsed, null, 2);
     } catch {
       return payload;
     }
+  }
+
+  function maskHeaderValue(headerKey, value) {
+    if (!value || typeof value !== 'string') return value || '';
+    if (headerKey && headerKey.toLowerCase() === 'authorization') {
+      const trimmed = value.trim();
+      const parts = trimmed.split(/\s+/);
+      if (parts.length > 1) {
+        return `${parts[0]} ••••••••••••`;
+      }
+      return '••••••••••••••••';
+    }
+    return value;
   }
 
   function renderRequestSent(req) {
@@ -2128,9 +2805,11 @@
     } else {
       headerKeys.sort().forEach(k => {
         const tr = document.createElement('tr');
+        const isAuth = k.toLowerCase() === 'authorization';
+        const displayVal = maskHeaderValue(k, headers[k]);
         tr.innerHTML = `
           <td style="font-family: var(--font-mono); color: var(--text-secondary); width: 220px;">${escapeHtml(k)}</td>
-          <td style="font-family: var(--font-mono); word-break: break-all;">${escapeHtml(headers[k])}</td>
+          <td style="font-family: var(--font-mono); word-break: break-all;" ${isAuth ? 'title="Masked for security"' : ''}>${escapeHtml(displayVal)}</td>
         `;
         el.reqHeadersTbody.appendChild(tr);
       });
@@ -2333,7 +3012,7 @@
         el.reqPath.value = (run.request.path || '').replace(/^\//, '');
         if (run.request.proxy) {
           el.reqProxyName.value = run.request.proxy;
-          selectProxy(run.request.proxy, true, false);
+          selectProxy(run.request.proxy, true, false, false);
         }
         el.headersTbody.innerHTML = '';
         const headers = run.request.headers || {};
@@ -2451,12 +3130,104 @@
   // --------------------------------------------------------------------------
   // Rich Vertical Execution Trace Visualizer
   // --------------------------------------------------------------------------
+  function buildTraceTopResponseBodyHtml(respData, respStatus, respStatusText, respBody, respBodyBytes, respDuration) {
+    const sc = respStatus || 200;
+    const stText = respStatusText || (sc < 400 ? 'OK' : 'Error');
+    const statusClass = sc >= 200 && sc < 300 ? 'status-2xx' : (sc >= 400 && sc < 500 ? 'status-4xx' : (sc >= 500 ? 'status-5xx' : 'status-none'));
+    const formattedBody = formatPayload(respBody, '(Empty response body)');
+
+    return `
+      <div class="trace-top-response-card" id="trace-top-response-card">
+        <div class="trace-top-response-header" id="trace-top-response-header" title="Click to collapse / expand">
+          <div class="trace-top-response-left">
+            <span class="trace-top-response-label">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="16 18 22 12 16 6"/>
+                <polyline points="8 6 2 12 8 18"/>
+              </svg>
+              Response Body
+            </span>
+            <span class="status-tag ${statusClass}">
+              ${sc} ${escapeHtml(stText)}
+            </span>
+            ${respBody ? `<span class="meta-tag">${formatBytes(respBodyBytes)}</span>` : ''}
+            ${respDuration ? `<span class="meta-tag">${respDuration} ms</span>` : ''}
+          </div>
+          <div class="trace-top-response-actions">
+            <button type="button" class="btn btn-xs btn-outline" id="btn-copy-trace-top-body" title="Copy response body to clipboard">
+              <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copy Body
+            </button>
+            <button type="button" class="btn btn-xs btn-outline" id="btn-toggle-trace-top-body" title="Toggle response body visibility">
+              <span id="trace-top-toggle-text">Collapse</span>
+              <span id="trace-top-toggle-icon" style="display:inline-block; transition: transform 0.15s ease;">▾</span>
+            </button>
+          </div>
+        </div>
+        <div class="trace-top-response-body-wrapper" id="trace-top-response-body-wrapper">
+          <pre class="trace-body-pre trace-top-body-viewer">${escapeHtml(formattedBody)}</pre>
+        </div>
+      </div>
+    `;
+  }
+
+  function attachTraceTopResponseBodyListeners(respBody) {
+    const topRespHeader = document.getElementById('trace-top-response-header');
+    const topRespWrapper = document.getElementById('trace-top-response-body-wrapper');
+    const btnToggleTopBody = document.getElementById('btn-toggle-trace-top-body');
+    const toggleIcon = document.getElementById('trace-top-toggle-icon');
+    const toggleText = document.getElementById('trace-top-toggle-text');
+    const btnCopyTopBody = document.getElementById('btn-copy-trace-top-body');
+
+    const toggleTopResp = () => {
+      if (!topRespWrapper) return;
+      const isCollapsed = topRespWrapper.classList.toggle('collapsed');
+      if (toggleText) toggleText.textContent = isCollapsed ? 'Expand' : 'Collapse';
+      if (toggleIcon) toggleIcon.style.transform = isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+      if (topRespHeader) {
+        topRespHeader.style.borderBottom = isCollapsed ? 'none' : '1px solid var(--border-color)';
+      }
+    };
+
+    if (topRespHeader) {
+      topRespHeader.addEventListener('click', (e) => {
+        if (e.target.closest('#btn-copy-trace-top-body') || e.target.closest('#btn-toggle-trace-top-body')) return;
+        toggleTopResp();
+      });
+    }
+
+    if (btnToggleTopBody) {
+      btnToggleTopBody.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleTopResp();
+      });
+    }
+
+    if (btnCopyTopBody) {
+      btnCopyTopBody.addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(respBody || '');
+        showToast('Response body copied to clipboard');
+      });
+    }
+  }
+
   function renderTracePipeline(sessionId, traceData, testResponse) {
     el.traceSummaryBar.classList.remove('hidden');
     el.traceSessionId.textContent = sessionId || 'N/A';
 
     // Populate Raw JSON content
     el.traceRawContent.textContent = JSON.stringify(traceData, null, 2);
+
+    // Extract Response information
+    const respData = testResponse || state.lastResponse || {};
+    const respStatus = respData.statusCode || 200;
+    const respStatusText = respData.statusText || (respStatus < 400 ? 'OK' : 'Error');
+    const respHeaders = respData.headers || {};
+    const respBody = respData.body || '';
+    const respBodyBytes = respBody ? new Blob([respBody]).size : 0;
+    const respHeaderKeys = Object.keys(respHeaders);
+    const respDuration = respData.durationMs || 0;
 
     // Parse transactions
     let txs = [];
@@ -2469,7 +3240,13 @@
     }
 
     if (txs.length === 0) {
-      el.tracePipelineContainer.innerHTML = '<div class="empty-state">Trace session was recorded, but transaction buffer was empty.</div>';
+      el.tracePipelineContainer.innerHTML = `
+        <div class="trace-vertical-timeline">
+          ${buildTraceTopResponseBodyHtml(respData, respStatus, respStatusText, respBody, respBodyBytes, respDuration)}
+          <div class="empty-state">Trace session was recorded, but transaction buffer was empty.</div>
+        </div>
+      `;
+      attachTraceTopResponseBodyListeners(respBody);
       return;
     }
 
@@ -2496,7 +3273,7 @@
 
         // Check for policy execution
         const stepName = props['stepDefinition-name'] || props['stepDefinition-displayName'] || props['stepDefinition.name'] || props['policy.name'] || (pt.id === 'Execution' ? props['name'] : '');
-        const stepType = props['stepDefinition-type'] || props['stepDefinition.type'] || props['type'] || props['policy.type'] || '';
+        const stepType = props['stepDefinition-type'] || props['stepDefinition-type'] || props['type'] || props['policy.type'] || '';
         const durStr = props['javascript-executionTime'] || props['duration'] || '0';
         const dur = parseInt(durStr, 10) || 0;
         const result = (props['result'] || props['state'] || '').toLowerCase();
@@ -2531,16 +3308,6 @@
     const reqBodyBytes = reqBody ? new Blob([reqBody]).size : 0;
     const reqHeaderKeys = Object.keys(reqHeaders);
 
-    // Extract Response information
-    const respData = testResponse || state.lastResponse || {};
-    const respStatus = respData.statusCode || 200;
-    const respStatusText = respData.statusText || (respStatus < 400 ? 'OK' : 'Error');
-    const respHeaders = respData.headers || {};
-    const respBody = respData.body || '';
-    const respBodyBytes = respBody ? new Blob([respBody]).size : 0;
-    const respHeaderKeys = Object.keys(respHeaders);
-    const respDuration = respData.durationMs || 0;
-
     // Build Vertical Layout HTML
     let html = `
       <div class="trace-vertical-timeline">
@@ -2567,6 +3334,9 @@
             </div>
           </div>
         </div>
+
+        <!-- Top Response Body Card -->
+        ${buildTraceTopResponseBodyHtml(respData, respStatus, respStatusText, respBody, respBodyBytes, respDuration)}
 
         <!-- Request Ingress -->
         <div class="trace-flow-phase">Client Request &bull; PreFlow</div>
@@ -2607,7 +3377,11 @@
                       <tr><th>Header</th><th>Value</th></tr>
                     </thead>
                     <tbody>
-                      ${reqHeaderKeys.sort().map(k => `<tr><td class="header-key">${escapeHtml(k)}</td><td class="header-val">${escapeHtml(reqHeaders[k])}</td></tr>`).join('')}
+                      ${reqHeaderKeys.sort().map(k => {
+                        const isAuth = k.toLowerCase() === 'authorization';
+                        const displayVal = maskHeaderValue(k, reqHeaders[k]);
+                        return `<tr><td class="header-key">${escapeHtml(k)}</td><td class="header-val"${isAuth ? ' title="Masked for security"' : ''}>${escapeHtml(displayVal)}</td></tr>`;
+                      }).join('')}
                     </tbody>
                   </table>
                 `}
@@ -2777,7 +3551,11 @@
             navigator.clipboard.writeText(reqBody);
             showToast('Request body copied');
           } else {
-            navigator.clipboard.writeText(JSON.stringify(reqHeaders, null, 2));
+            const masked = {};
+            for (const [k, v] of Object.entries(reqHeaders)) {
+              masked[k] = maskHeaderValue(k, v);
+            }
+            navigator.clipboard.writeText(JSON.stringify(masked, null, 2));
             showToast('Request headers copied');
           }
         });
@@ -2850,10 +3628,12 @@
             gridHtml = '<div style="color: var(--text-muted); padding: 0.25rem 0;">No policy properties recorded.</div>';
           } else {
             keys.forEach(k => {
+              const isAuth = k.toLowerCase().includes('authorization') || k.toLowerCase().endsWith('.authorization');
+              const val = isAuth ? maskHeaderValue('authorization', s.rawProps[k]) : s.rawProps[k];
               gridHtml += `
                 <div class="step-prop-row">
                   <div class="step-prop-key">${escapeHtml(k)}</div>
-                  <div class="step-prop-val">${escapeHtml(s.rawProps[k])}</div>
+                  <div class="step-prop-val"${isAuth ? ' title="Masked for security"' : ''}>${escapeHtml(val)}</div>
                 </div>
               `;
             });
@@ -2864,6 +3644,9 @@
         }
       });
     });
+
+    // Attach top response body handlers
+    attachTraceTopResponseBodyListeners(respBody);
   }
 
   function downloadTraceJson() {
@@ -2928,30 +3711,52 @@
     },
   };
 
-  // View Switcher (API Tester <-> Analytics)
+  // View Switcher (API Tester <-> Analytics <-> Emulator State)
   function switchView(viewName) {
     if (viewName === 'tester') {
       if (el.viewTester) el.viewTester.classList.remove('hidden');
       if (el.viewAnalytics) el.viewAnalytics.classList.add('hidden');
-      if (el.testerCardsWrap) el.testerCardsWrap.classList.remove('hidden');
+      if (el.proxyViewContainer) el.proxyViewContainer.classList.remove('hidden');
       if (el.resourceDetailCard) el.resourceDetailCard.classList.add('hidden');
       if (el.emulatorStateCard) el.emulatorStateCard.classList.add('hidden');
+
+      switchProxyTab(state.activeProxyTab || 'tester');
 
       if (el.navBtnTester) el.navBtnTester.classList.add('active');
       if (el.navBtnAnalytics) el.navBtnAnalytics.classList.remove('active');
       if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.remove('active');
-      history.replaceState(null, '', window.location.pathname + (window.location.search || ''));
+
+      const url = new URL(window.location.href);
+      url.hash = '';
+      url.searchParams.delete('view');
+      if (state.selectedProxyName) {
+        url.searchParams.set('proxy', state.selectedProxyName);
+      }
+      if (state.activeProxyTab === 'yaml') {
+        url.searchParams.set('tab', 'yaml');
+      } else {
+        url.searchParams.delete('tab');
+      }
+      window.history.replaceState(null, '', url.pathname + (url.search ? url.search : ''));
     } else if (viewName === 'emulator-state') {
       if (el.viewTester) el.viewTester.classList.remove('hidden');
       if (el.viewAnalytics) el.viewAnalytics.classList.add('hidden');
+      if (el.proxyViewContainer) el.proxyViewContainer.classList.add('hidden');
       if (el.testerCardsWrap) el.testerCardsWrap.classList.add('hidden');
+      if (el.proxyYamlWrap) el.proxyYamlWrap.classList.add('hidden');
       if (el.resourceDetailCard) el.resourceDetailCard.classList.add('hidden');
       if (el.emulatorStateCard) el.emulatorStateCard.classList.remove('hidden');
 
       if (el.navBtnTester) el.navBtnTester.classList.remove('active');
       if (el.navBtnAnalytics) el.navBtnAnalytics.classList.remove('active');
       if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.add('active');
-      history.replaceState(null, '', window.location.pathname + '#emulator-state');
+
+      const url = new URL(window.location.href);
+      url.searchParams.delete('proxy');
+      url.searchParams.delete('view');
+      url.searchParams.delete('tab');
+      url.hash = 'emulator-state';
+      window.history.replaceState(null, '', url.pathname + '#emulator-state');
       fetchEmulatorState();
     } else if (viewName === 'analytics') {
       if (el.viewTester) el.viewTester.classList.add('hidden');
@@ -2959,7 +3764,13 @@
       if (el.navBtnTester) el.navBtnTester.classList.remove('active');
       if (el.navBtnAnalytics) el.navBtnAnalytics.classList.add('active');
       if (el.navBtnEmulatorState) el.navBtnEmulatorState.classList.remove('active');
-      history.replaceState(null, '', window.location.pathname + '#analytics');
+
+      const url = new URL(window.location.href);
+      url.searchParams.delete('proxy');
+      url.searchParams.delete('view');
+      url.searchParams.delete('tab');
+      url.hash = 'analytics';
+      window.history.replaceState(null, '', url.pathname + '#analytics');
       fetchAnalyticsData();
     }
   }

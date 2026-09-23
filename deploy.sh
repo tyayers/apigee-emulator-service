@@ -96,6 +96,8 @@ ${BOLD}Options:${NC}
   -d, --deployments     Choose from deployments in 'data/deployments/'
   -c, --convert         Convert deployment definitions in 'data/deployments/' into
                         local assets (bundles, products, apps) with aft and exit
+  -p, --parameters P    Pass parameters (comma-separated key=val, e.g. -p par1=val1,par2=val2)
+  --project PROJECT_ID  GCP Project ID to replace {project} in deployments
 
 ${BOLD}Examples:${NC}
   # Interactive mode (defaults to data/deployments/deployment-1.yaml on Enter)
@@ -248,6 +250,147 @@ for proxy_file in glob.glob(f'{td}/proxies/*.xml'):
 }
 
 # ------------------------------------------------------------------------------
+# Parameter Collection & YAML Substitution
+# ------------------------------------------------------------------------------
+declare -A ALL_PARAMS_MAP=()
+declare -a CLI_PARAMETERS=()
+
+collect_parameters() {
+  if [ -z "$PROJECT_ID" ] && command -v gcloud &>/dev/null; then
+    PROJECT_ID=$(gcloud config get-value project 2>/dev/null || true)
+  fi
+
+  if [ -n "$PROJECT_ID" ]; then
+    ALL_PARAMS_MAP["project"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["PROJECT"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["PROJECT_ID"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["GoogleCloudProject"]="$PROJECT_ID"
+    export PROJECT_ID="$PROJECT_ID"
+    export GoogleCloudProject="$PROJECT_ID"
+    export GCP_PROJECT="$PROJECT_ID"
+  fi
+
+  for param_entry in "${CLI_PARAMETERS[@]}"; do
+    IFS=',' read -ra pairs <<< "$param_entry"
+    for pair in "${pairs[@]}"; do
+      if [[ "$pair" == *=* ]]; then
+        local k="${pair%%=*}"
+        local v="${pair#*=}"
+        k="$(echo "$k" | tr -d '[:space:]')"
+        v="$(echo "$v" | tr -d '[:space:]')"
+        if [ -n "$k" ]; then
+          ALL_PARAMS_MAP["$k"]="$v"
+          export "$k=$v"
+        fi
+      fi
+    done
+  done
+}
+
+replace_parameters_in_deployment_yaml() {
+  local yaml_file="$1"
+  if [ ! -f "$yaml_file" ]; then
+    return 0
+  fi
+
+  local -a py_args=()
+  for k in "${!ALL_PARAMS_MAP[@]}"; do
+    py_args+=("$k=${ALL_PARAMS_MAP[$k]}")
+  done
+
+  python3 - "${yaml_file}" "${py_args[@]}" <<'PYEOF'
+import sys, re
+
+yaml_file = sys.argv[1]
+params = {}
+for arg in sys.argv[2:]:
+    if '=' in arg:
+        k, v = arg.split('=', 1)
+        params[k] = v
+
+try:
+    with open(yaml_file, 'r') as f:
+        content = f.read()
+
+    modified = content
+    # 1. Replace placeholders like {param_name} or ${param_name}
+    for k, v in params.items():
+        modified = modified.replace('{' + k + '}', str(v))
+        modified = modified.replace('${' + k + '}', str(v))
+        modified = modified.replace('{' + k.lower() + '}', str(v))
+        modified = modified.replace('{' + k.upper() + '}', str(v))
+
+    # 2. Update default: in parameters list if matching parameter name
+    for k, v in params.items():
+        pattern = re.compile(
+            r'(- name:\s*[\'"]?' + re.escape(k) + r'[\'"]?\s*\n(?:\s*displayName:[^\n]*\n)?(?:\s*description:[^\n]*\n)?\s*default:\s*)([^\n]+)',
+            re.IGNORECASE
+        )
+        modified = pattern.sub(r'\1"' + str(v).replace('"', '\\"') + r'"', modified)
+
+    if modified != content:
+        with open(yaml_file, 'w') as f:
+            f.write(modified)
+except Exception:
+    pass
+PYEOF
+}
+
+prepare_substituted_deployment_yaml() {
+  local src_yaml="$1"
+  if [ ! -f "$src_yaml" ]; then
+    echo "$src_yaml"
+    return 0
+  fi
+  local tmp_yaml
+  tmp_yaml=$(mktemp /tmp/sub-dep-XXXXXX.yaml)
+  cp "$src_yaml" "$tmp_yaml"
+  replace_parameters_in_deployment_yaml "$tmp_yaml"
+  # Also resolve local templates in data/templates/ so aft uses local files instead of remote repo
+  python3 - "${tmp_yaml}" "${ROOT_DIR}" <<'PYEOF'
+import sys, os, re
+
+tmp_yaml = sys.argv[1]
+root_dir = sys.argv[2]
+try:
+    with open(tmp_yaml, 'r') as f:
+        lines = f.readlines()
+    in_templates = False
+    modified_lines = []
+    for line in lines:
+        if re.match(r'^\s*templates:\s*$', line):
+            in_templates = True
+            modified_lines.append(line)
+        elif in_templates:
+            m = re.match(r'^(\s*-\s*)([a-zA-Z0-9_\-\.]+)\s*$', line)
+            if m:
+                indent = m.group(1)
+                tname = m.group(2).strip()
+                stem = tname[:-5] if tname.endswith('.yaml') else (tname[:-4] if tname.endswith('.yml') else tname)
+                candidate = os.path.join(root_dir, 'data', 'templates', f"{stem}.yaml")
+                if os.path.exists(candidate):
+                    modified_lines.append(f"{indent}data/templates/{stem}.yaml\n")
+                else:
+                    modified_lines.append(line)
+            else:
+                if re.match(r'^\S', line):
+                    in_templates = False
+                modified_lines.append(line)
+        else:
+            modified_lines.append(line)
+    with open(tmp_yaml, 'w') as f:
+        f.writelines(modified_lines)
+except Exception:
+    pass
+PYEOF
+  echo "$tmp_yaml"
+}
+
+apply_parameters_to_all_deployments() {
+  collect_parameters
+}
+
+# ------------------------------------------------------------------------------
 # Extract Parameters from Deployment or Proxy YAML for aft (-p)
 # ------------------------------------------------------------------------------
 extract_aft_parameters() {
@@ -275,6 +418,36 @@ try:
 except Exception:
     pass
 "
+}
+
+merge_aft_parameters() {
+  local yaml_file="$1"
+  local -a extracted=()
+  while IFS= read -r param_line; do
+    if [ -n "$param_line" ]; then
+      extracted+=("$param_line")
+    fi
+  done < <(extract_aft_parameters "$yaml_file")
+
+  local -A merged_map=()
+  for p in "${extracted[@]}"; do
+    if [[ "$p" == *=* ]]; then
+      merged_map["${p%%=*}"]="${p#*=}"
+    fi
+  done
+
+  for k in "${!ALL_PARAMS_MAP[@]}"; do
+    if [ "$k" != "project" ] && [ "$k" != "PROJECT" ] && [ "$k" != "PROJECT_ID" ]; then
+      merged_map["$k"]="${ALL_PARAMS_MAP[$k]}"
+    fi
+  done
+  if [ -n "${ALL_PARAMS_MAP["GoogleCloudProject"]}" ]; then
+    merged_map["GoogleCloudProject"]="${ALL_PARAMS_MAP["GoogleCloudProject"]}"
+  fi
+
+  for k in "${!merged_map[@]}"; do
+    echo "$k=${merged_map[$k]}"
+  done
 }
 
 # ------------------------------------------------------------------------------
@@ -328,12 +501,14 @@ convert_deployments_to_assets() {
     fi
 
     echo -e "\n${BLUE}Converting deployment: ${BOLD}$dep_file${NC}..."
+    local sub_yaml
+    sub_yaml=$(prepare_substituted_deployment_yaml "$dep_file")
     local -a params=()
     while IFS= read -r param_line; do
       if [ -n "$param_line" ]; then
         params+=("$param_line")
       fi
-    done < <(extract_aft_parameters "$dep_file")
+    done < <(merge_aft_parameters "$sub_yaml")
 
     local -a param_args=()
     if [ ${#params[@]} -gt 0 ]; then
@@ -346,7 +521,11 @@ convert_deployments_to_assets() {
     local tmp_dep_dir
     tmp_dep_dir=$(mktemp -d /tmp/aft-convert-XXXXXX)
 
-    if aft -i "$dep_file" -f zip -o "$tmp_dep_dir" "${param_args[@]}" --no-animation; then
+    local aft_ok=0
+    aft -i "$sub_yaml" -f zip -o "$tmp_dep_dir" "${param_args[@]}" --no-animation || aft_ok=$?
+    rm -f "$sub_yaml"
+
+    if [ "$aft_ok" -eq 0 ]; then
       echo -e "${GREEN}✓ Converted $dep_file with aft${NC}"
 
       # 1. Process generated proxy bundles (*.zip)
@@ -364,6 +543,13 @@ convert_deployments_to_assets() {
           local target_proxy_dir="$PROXIES_DIR/$pname"
           mkdir -p "$target_proxy_dir"
           unzip -q -o "$pzip" -d "$target_proxy_dir"
+
+          # Generate Proxy YAML definition (type: proxy) for frontend & documentation
+          mkdir -p "$ROOT_DIR/data/proxies" "$DIST_DIR/proxies"
+          if command -v aft &>/dev/null; then
+            aft -i "$pzip" -f proxy -n "$pname" -o "$ROOT_DIR/data/proxies/$pname.yaml" --no-animation 2>/dev/null || true
+            cp "$ROOT_DIR/data/proxies/$pname.yaml" "$DIST_DIR/proxies/$pname.yaml" 2>/dev/null || true
+          fi
 
           sanitize_proxy_targets "$target_proxy_dir"
           total_proxies=$((total_proxies + 1))
@@ -402,9 +588,12 @@ for fname, subdir in [('products.json', 'products'), ('developers.json', 'develo
                         if 'test' not in envs: envs.append('test')
                     else: envs = ['test']
                     prod['environments'] = envs
-                    if 'operationGroup' in prod or 'llmOperationGroup' in prod:
-                        prod.pop('proxies', None)
-                        prod.pop('apiResources', None)
+                    api_res = prod.get('apiResources', [])
+                    if not isinstance(api_res, list) or len(api_res) == 0:
+                        prod['apiResources'] = ['/', '/*', '/**']
+                    else:
+                        for r in ['/', '/*', '/**']:
+                            if r not in api_res: api_res.append(r)
 
             os.makedirs(os.path.dirname(dst_data), exist_ok=True)
             with open(dst_data, 'w') as f:
@@ -493,8 +682,8 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     -l|--list)
-      list_all
-      exit 0
+      LIST_ONLY=1
+      shift
       ;;
     -a|--all)
       while IFS= read -r file; do
@@ -510,6 +699,26 @@ while [[ $# -gt 0 ]]; do
       CONVERT_ONLY=1
       shift
       ;;
+    -p|--parameters)
+      CLI_PARAMETERS+=("$2")
+      shift 2
+      ;;
+    --parameters=*)
+      CLI_PARAMETERS+=("${1#*=}")
+      shift
+      ;;
+    -p=*)
+      CLI_PARAMETERS+=("${1#*=}")
+      shift
+      ;;
+    --project)
+      PROJECT_ID="$2"
+      shift 2
+      ;;
+    --project=*)
+      PROJECT_ID="${1#*=}"
+      shift
+      ;;
     *)
       if [[ "$1" == -* ]]; then
         echo -e "${RED}Unknown option: $1${NC}" >&2
@@ -521,6 +730,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Initialize parameters, substitute in deployments, and export
+apply_parameters_to_all_deployments
+
+if [ "${LIST_ONLY:-0}" -eq 1 ]; then
+  list_all
+  exit 0
+fi
 
 if [ "${CONVERT_ONLY:-0}" -ne 1 ] && [ ${#SELECTED_TEMPLATES[@]} -eq 0 ]; then
   # Interactive mode if a terminal is attached
@@ -626,23 +843,26 @@ except:
 
   if [ "$IS_DEPLOYMENT" = "true" ]; then
     echo -e "\n${BLUE}Compiling deployment from '$YAML_FILE' with aft...${NC}"
-    local -a params=()
+    sub_yaml=$(prepare_substituted_deployment_yaml "$YAML_FILE")
+    declare -a params=()
     while IFS= read -r param_line; do
       if [ -n "$param_line" ]; then
         params+=("$param_line")
       fi
-    done < <(extract_aft_parameters "$YAML_FILE")
+    done < <(merge_aft_parameters "$sub_yaml")
 
-    local -a param_args=()
+    param_args=()
     if [ ${#params[@]} -gt 0 ]; then
-      local param_str
       param_str=$(IFS=,; echo "${params[*]}")
       param_args=("-p" "$param_str")
       echo -e "  • Parameters (-p): ${CYAN}$param_str${NC}"
     fi
 
     TMP_DEP_DIR=$(mktemp -d /tmp/aft-dep-XXXXXX)
-    if aft -i "$YAML_FILE" -f zip -o "$TMP_DEP_DIR" "${param_args[@]}" --no-animation; then
+    aft_ok=0
+    aft -i "$sub_yaml" -f zip -o "$TMP_DEP_DIR" "${param_args[@]}" --no-animation || aft_ok=$?
+    rm -f "$sub_yaml"
+    if [ "$aft_ok" -eq 0 ]; then
       for PZIP in "$TMP_DEP_DIR"/*.zip; do
         if [ -f "$PZIP" ]; then
           PNAME="$(basename "$PZIP" .zip)"
@@ -653,6 +873,13 @@ except:
           cp "$PZIP" "$DIST_DIR/$PNAME.zip" 2>/dev/null || true
           mkdir -p "$ROOT_DIR/data/bundles"
           cp "$PZIP" "$ROOT_DIR/data/bundles/$PNAME.zip" 2>/dev/null || true
+
+          # Generate Proxy YAML definition (type: proxy) for frontend & documentation
+          mkdir -p "$ROOT_DIR/data/proxies" "$DIST_DIR/proxies"
+          if command -v aft &>/dev/null; then
+            aft -i "$PZIP" -f proxy -n "$PNAME" -o "$ROOT_DIR/data/proxies/$PNAME.yaml" --no-animation 2>/dev/null || true
+            cp "$ROOT_DIR/data/proxies/$PNAME.yaml" "$DIST_DIR/proxies/$PNAME.yaml" 2>/dev/null || true
+          fi
 
           sanitize_proxy_targets "$TARGET_DIR"
           PROXIES+=("$PNAME")
@@ -731,23 +958,24 @@ print(data.get('name', '') if isinstance(data, dict) else '')
     fi
 
     echo -e "\n${BLUE}Compiling proxy '${BOLD}$PROXY_NAME${NC}${BLUE}' from '$YAML_FILE'...${NC}"
-    local -a params=()
+    sub_yaml=$(prepare_substituted_deployment_yaml "$YAML_FILE")
+    declare -a params=()
     while IFS= read -r param_line; do
       if [ -n "$param_line" ]; then
         params+=("$param_line")
       fi
-    done < <(extract_aft_parameters "$YAML_FILE")
+    done < <(merge_aft_parameters "$sub_yaml")
 
-    local -a param_args=()
+    param_args=()
     if [ ${#params[@]} -gt 0 ]; then
-      local param_str
       param_str=$(IFS=,; echo "${params[*]}")
       param_args=("-p" "$param_str")
       echo -e "  • Parameters (-p): ${CYAN}$param_str${NC}"
     fi
 
     ZIP_PATH="$DIST_DIR/$PROXY_NAME.zip"
-    aft -i "$YAML_FILE" -o "$ZIP_PATH" "${param_args[@]}" --no-animation
+    aft -i "$sub_yaml" -o "$ZIP_PATH" "${param_args[@]}" --no-animation
+    rm -f "$sub_yaml"
 
     TARGET_DIR="$PROXIES_DIR/$PROXY_NAME"
     mkdir -p "$TARGET_DIR"
@@ -816,10 +1044,18 @@ for prod in products:
     else: envs = ['test']
     prod['environments'] = envs
 
-    # In Apigee, if operationGroup or llmOperationGroup is set,
-    # proxies and apiResources MUST NOT be set
-    prod.pop('proxies', None)
-    prod.pop('apiResources', None)
+    prod_proxies = prod.get('proxies', [])
+    if not isinstance(prod_proxies, list): prod_proxies = []
+    for p in proxies:
+        if p not in prod_proxies: prod_proxies.append(p)
+    prod['proxies'] = prod_proxies
+
+    api_res = prod.get('apiResources', [])
+    if not isinstance(api_res, list) or len(api_res) == 0:
+        prod['apiResources'] = ['/', '/*', '/**']
+    else:
+        for r in ['/', '/*', '/**']:
+            if r not in api_res: api_res.append(r)
 
     op_group = prod.get('operationGroup')
     if not isinstance(op_group, dict):
@@ -847,19 +1083,11 @@ for prod in products:
                 split_ops.append(c)
     existing_ops = split_ops
 
-    existing_ops[:] = [c for c in existing_ops if isinstance(c, dict) and c.get('apiSource') not in llm_proxies]
     for p in proxies:
-        if p in llm_proxies:
-            continue
         if p not in existing_sources:
             existing_ops.append({
                 'apiSource': p,
                 'operations': [{'resource': '/'}],
-                'quota': {}
-            })
-            existing_ops.append({
-                'apiSource': p,
-                'operations': [{'resource': '/*'}],
                 'quota': {}
             })
             existing_sources.add(p)
@@ -891,18 +1119,25 @@ for prod in products:
                     })
                     seen_llm.add(key)
 
-    for p in llm_proxies:
-        for m in ['gemini-3.8-flash', 'google/gemini-3.8-flash', 'gemini-3.7-flash', 'claude-sonnet-5']:
-            for r in ['/', '/*', '/**', '/v1/chat/completions', '/v1/chat/completions/*']:
-                key = (p, m, r)
-                if key not in seen_llm:
-                    new_llm_configs.append({
-                        'apiSource': p,
-                        'llmOperations': [{'resource': r, 'methods': ['POST'], 'model': m}],
-                        'llmTokenQuota': {'limit': '50000', 'interval': '1', 'timeUnit': 'minute'}
-                    })
-                    seen_llm.add(key)
+    # For any configured LLM operation, ensure root resource "/" is authorized
+    for c in list(new_llm_configs):
+        src = c.get('apiSource')
+        quota = c.get('llmTokenQuota', {'limit': '50000', 'interval': '1', 'timeUnit': 'minute'})
+        for op in c.get('llmOperations', []):
+            m = op.get('model')
+            key = (src, m, '/')
+            if key not in seen_llm:
+                new_llm_configs.append({
+                    'apiSource': src,
+                    'llmOperations': [{'resource': '/', 'methods': ['POST'], 'model': m}],
+                    'llmTokenQuota': quota
+                })
+                seen_llm.add(key)
     llm_group['operationConfigs'] = new_llm_configs
+
+    if op_group.get('operationConfigs') or llm_group.get('operationConfigs'):
+        prod.pop('proxies', None)
+        prod.pop('apiResources', None)
 
 # Ensure all products referenced by developer apps exist in products
 app_path = '$DIST_DIR/developerapps.json' if os.path.exists('$DIST_DIR/developerapps.json') else '$ROOT_DIR/data/developerapps/developerapps.json' if os.path.exists('$ROOT_DIR/data/developerapps/developerapps.json') else '$SCRIPT_DIR/developerapps.json'
@@ -952,6 +1187,47 @@ for item in "${TESTDATA_MAP[@]}"; do
     src_file="$DIST_DIR/$td"
   elif [ ! -f "$src_file" ] && [ -f "$SCRIPT_DIR/$td" ]; then
     src_file="$SCRIPT_DIR/$td"
+  fi
+  if [ "$td" = "maps.json" ] && [ -f "$src_file" ]; then
+    if [ "$src_file" != "$DIST_DIR/maps.json" ]; then
+      cp "$src_file" "$DIST_DIR/maps.json"
+    fi
+    src_file="$DIST_DIR/maps.json"
+    python3 -c "
+import json, os, re
+
+def replace_env(val):
+    if isinstance(val, str):
+        def sub_braces(m):
+            vname = m.group(1).strip()
+            return os.environ.get(vname, '')
+        new_val = re.sub(r'env\.{([^{}]+)}', sub_braces, val)
+        m_plain = re.match(r'^env\.([A-Za-z0-9_]+)$', new_val)
+        if m_plain:
+            return os.environ.get(m_plain.group(1), '')
+        return new_val
+    elif isinstance(val, dict):
+        return {k: replace_env(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [replace_env(item) for item in val]
+    return val
+
+try:
+    with open('$src_file', 'r') as f:
+        data = json.load(f)
+    resolved = replace_env(data)
+    if isinstance(resolved, list):
+        for item in resolved:
+            if isinstance(item, dict) and str(item.get('scope', '')).lower() == 'environment':
+                if not item.get('environment') and not item.get('env'):
+                    item['environment'] = 'test'
+                    item['environments'] = ['test']
+                    item['env'] = 'test'
+    with open('$src_file', 'w') as f:
+        json.dump(resolved, f, indent=2)
+except Exception:
+    pass
+" 2>/dev/null || true
   fi
   if [ -f "$src_file" ]; then
     (cd "$(dirname "$src_file")" && zip -q -u "$TESTDATA_ZIP" "$td")
