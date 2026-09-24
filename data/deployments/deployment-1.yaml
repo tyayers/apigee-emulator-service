@@ -134,6 +134,8 @@ products:
     - TestProxy
     - REST-AI-Completions
     - REST-AI-Interactions
+    - REST-AI-GenerateContent
+    - REST-AI-Messages
   apiResources: []
   quota: "50000"
   quotaInterval: "1"
@@ -171,20 +173,40 @@ products:
           methods:
             - POST
           model: gemini-3.8-flash
-        - name: /v1/chat/completions
+        - name: /
           methods:
             - POST
-          model: gemini-3.8-flash
+          model: gemini-3.5-flash-lite
     - apiSource: REST-AI-Interactions
       operations:
         - name: /
           methods:
             - POST
           model: gemini-3.8-flash
-        - name: /v1beta/interactions
+        - name: /
+          methods:
+            - POST
+          model: gemini-3.5-flash-lite
+    - apiSource: REST-AI-GenerateContent
+      operations:
+        - name: /
           methods:
             - POST
           model: gemini-3.8-flash
+        - name: /
+          methods:
+            - POST
+          model: gemini-3.5-flash-lite
+    - apiSource: REST-AI-Messages
+      operations:
+        - name: /
+          methods:
+            - POST
+          model: claude-sonnet-5
+        - name: /
+          methods:
+            - POST
+          model: gemini-3.5-flash-lite
   payloadOperations: []
   graphqlOperations: []
   grpcOperations: []
@@ -243,7 +265,7 @@ tests:
       x-api-key: test-app-key-123
     body: |
       {
-        "model": "gemini-3.8-flash",
+        "model": "gemini-3.5-flash-lite",
         "input": "What is the capital of France?"
       }
     assertions:
@@ -257,13 +279,35 @@ tests:
       x-api-key: test-app-key-123
     body: |
       {
-        "model": "google/gemini-3.8-flash",
+        "model": "google/gemini-3.5-flash-lite",
         "stream": true,
         "max_tokens": 100,
         "messages": [{
           "role": "user",
           "content": "Why is the sky blue?"
         }]
+      }
+    assertions:
+      - response.status == 200
+  - name: generatecontent-test1
+    description: This tests the GenerateContent API.
+    proxy: REST-AI-GenerateContent
+    path: /v1/projects/{project}/locations/global/publishers/google/models/gemini-3.5-flash-lite:generateContent
+    method: POST
+    headers:
+      x-api-key: test-app-key-123
+    body: |
+      {
+        "contents": [
+          {
+            "role": "USER",
+            "parts": [
+              {
+                "text": "why is the sky blue?"
+              }
+            ]
+          }
+        ]
       }
     assertions:
       - response.status == 200

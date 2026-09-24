@@ -142,18 +142,19 @@ type TestRequest struct {
 
 // TestResponse represents the outcome of a test invocation including optional trace.
 type TestResponse struct {
-	StatusCode     int                    `json:"statusCode"`
-	StatusText     string                 `json:"statusText"`
-	DurationMs     int64                  `json:"durationMs"`
-	Headers        map[string]string      `json:"headers"`
-	Body           string                 `json:"body"`
-	TraceSessionID string                 `json:"traceSessionId,omitempty"`
-	TraceData      map[string]interface{} `json:"traceData,omitempty"`
-	Assertions     []AssertionResult      `json:"assertions,omitempty"`
-	Passed         bool                   `json:"passed"`
-	TestRunID      string                 `json:"testRunId,omitempty"`
-	Error          string                 `json:"error,omitempty"`
-	Request        *TestRequest           `json:"request,omitempty"`
+	StatusCode      int                    `json:"statusCode"`
+	StatusText      string                 `json:"statusText"`
+	DurationMs      int64                  `json:"durationMs"`
+	TargetLatencyMs *int64                 `json:"targetLatencyMs,omitempty"`
+	Headers         map[string]string      `json:"headers"`
+	Body            string                 `json:"body"`
+	TraceSessionID  string                 `json:"traceSessionId,omitempty"`
+	TraceData       map[string]interface{} `json:"traceData,omitempty"`
+	Assertions      []AssertionResult      `json:"assertions,omitempty"`
+	Passed          bool                   `json:"passed"`
+	TestRunID       string                 `json:"testRunId,omitempty"`
+	Error           string                 `json:"error,omitempty"`
+	Request         *TestRequest           `json:"request,omitempty"`
 }
 
 // AnalyticsSaveResponse represents the response from saving analytics.

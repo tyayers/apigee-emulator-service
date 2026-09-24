@@ -111,11 +111,22 @@
     traceIndicator: document.getElementById('trace-indicator'),
     traceSummaryBar: document.getElementById('trace-summary-bar'),
     traceSessionId: document.getElementById('trace-session-id'),
+    traceSummaryTotalLatency: document.getElementById('trace-summary-total-latency'),
+    traceSummaryTargetLatency: document.getElementById('trace-summary-target-latency'),
+    traceSummaryProxyLatency: document.getElementById('trace-summary-proxy-latency'),
     btnCopySession: document.getElementById('btn-copy-session'),
     btnTraceViewTimeline: document.getElementById('btn-trace-view-timeline'),
+    btnTraceViewVars: document.getElementById('btn-trace-view-vars'),
+    traceVarsTotalBadge: document.getElementById('trace-vars-total-badge'),
     btnTraceViewJson: document.getElementById('btn-trace-view-json'),
     btnDownloadTrace: document.getElementById('btn-download-trace'),
     traceTimelineView: document.getElementById('trace-timeline-view'),
+    traceVarsView: document.getElementById('trace-vars-view'),
+    traceVarsSearch: document.getElementById('trace-vars-search'),
+    traceVarsContainer: document.getElementById('trace-vars-container'),
+    btnCopyAllVars: document.getElementById('btn-copy-all-vars'),
+    traceErrorBanner: document.getElementById('trace-error-banner'),
+    traceFilterBar: document.getElementById('trace-filter-bar'),
     tracePipelineContainer: document.getElementById('trace-pipeline-container'),
     traceJsonView: document.getElementById('trace-json-view'),
     traceRawContent: document.getElementById('trace-raw-content'),
@@ -627,22 +638,25 @@
       });
     }
 
-    if (el.btnTraceViewTimeline && el.btnTraceViewJson) {
-      el.btnTraceViewTimeline.addEventListener('click', () => {
-        el.btnTraceViewTimeline.classList.add('active');
-        el.btnTraceViewJson.classList.remove('active');
-        el.traceTimelineView.classList.remove('hidden');
-        el.traceJsonView.classList.add('hidden');
-        state.activeTraceView = 'timeline';
-      });
+    function switchTraceView(viewName) {
+      state.activeTraceView = viewName;
+      if (el.btnTraceViewTimeline) el.btnTraceViewTimeline.classList.toggle('active', viewName === 'timeline');
+      if (el.btnTraceViewVars) el.btnTraceViewVars.classList.toggle('active', viewName === 'vars');
+      if (el.btnTraceViewJson) el.btnTraceViewJson.classList.toggle('active', viewName === 'json');
 
-      el.btnTraceViewJson.addEventListener('click', () => {
-        el.btnTraceViewJson.classList.add('active');
-        el.btnTraceViewTimeline.classList.remove('active');
-        el.traceTimelineView.classList.add('hidden');
-        el.traceJsonView.classList.remove('hidden');
-        state.activeTraceView = 'json';
-      });
+      if (el.traceTimelineView) el.traceTimelineView.classList.toggle('hidden', viewName !== 'timeline');
+      if (el.traceVarsView) el.traceVarsView.classList.toggle('hidden', viewName !== 'vars');
+      if (el.traceJsonView) el.traceJsonView.classList.toggle('hidden', viewName !== 'json');
+    }
+
+    if (el.btnTraceViewTimeline) {
+      el.btnTraceViewTimeline.addEventListener('click', () => switchTraceView('timeline'));
+    }
+    if (el.btnTraceViewVars) {
+      el.btnTraceViewVars.addEventListener('click', () => switchTraceView('vars'));
+    }
+    if (el.btnTraceViewJson) {
+      el.btnTraceViewJson.addEventListener('click', () => switchTraceView('json'));
     }
 
     el.btnDownloadTrace.addEventListener('click', downloadTraceJson);
@@ -2573,9 +2587,11 @@
         handleTraceAnalyticsExtraction(data, { method, path, proxy, headers, body });
       } else {
         if (el.btnViewTraceAnalytics) el.btnViewTraceAnalytics.classList.add('hidden');
+        const totalLat = data.durationMs || 0;
+        const targetLat = extractTargetLatency(null, data.headers, data);
         el.tracePipelineContainer.innerHTML = `
           <div class="trace-vertical-timeline">
-            ${buildTraceTopResponseBodyHtml(data, data.statusCode, data.statusText, data.body, data.body ? new Blob([data.body]).size : 0, data.durationMs || 0)}
+            ${buildTraceTopResponseBodyHtml(data, data.statusCode, data.statusText, data.body, data.body ? new Blob([data.body]).size : 0, totalLat, targetLat, null)}
             <div class="empty-state">Trace session was not recorded. Enable "Record & Inspect Trace" to inspect policy execution.</div>
           </div>
         `;
@@ -2662,6 +2678,15 @@
     if (el.traceSessionId) {
       el.traceSessionId.textContent = '-';
     }
+    if (el.traceSummaryTotalLatency) {
+      el.traceSummaryTotalLatency.textContent = '-';
+    }
+    if (el.traceSummaryTargetLatency) {
+      el.traceSummaryTargetLatency.textContent = '-';
+    }
+    if (el.traceSummaryProxyLatency) {
+      el.traceSummaryProxyLatency.textContent = '-';
+    }
     if (el.tracePipelineContainer) {
       el.tracePipelineContainer.innerHTML = '<div class="empty-state">No execution trace recorded. Send a request with "Record &amp; Inspect Trace" enabled.</div>';
     }
@@ -2671,10 +2696,16 @@
     if (el.btnViewTraceAnalytics) {
       el.btnViewTraceAnalytics.classList.add('hidden');
     }
-    if (el.btnTraceViewTimeline && el.btnTraceViewJson) {
+    if (el.traceErrorBanner) el.traceErrorBanner.classList.add('hidden');
+    if (el.traceFilterBar) el.traceFilterBar.classList.add('hidden');
+    if (el.traceVarsContainer) el.traceVarsContainer.innerHTML = '';
+    if (el.traceVarsTotalBadge) el.traceVarsTotalBadge.textContent = '0';
+    if (el.btnTraceViewTimeline) {
       el.btnTraceViewTimeline.classList.add('active');
-      el.btnTraceViewJson.classList.remove('active');
+      el.btnTraceViewVars?.classList.remove('active');
+      el.btnTraceViewJson?.classList.remove('active');
       if (el.traceTimelineView) el.traceTimelineView.classList.remove('hidden');
+      if (el.traceVarsView) el.traceVarsView.classList.add('hidden');
       if (el.traceJsonView) el.traceJsonView.classList.add('hidden');
     }
 
@@ -3130,7 +3161,120 @@
   // --------------------------------------------------------------------------
   // Rich Vertical Execution Trace Visualizer
   // --------------------------------------------------------------------------
-  function buildTraceTopResponseBodyHtml(respData, respStatus, respStatusText, respBody, respBodyBytes, respDuration) {
+
+  // Extract backend target latency from trace or response
+  function extractTargetLatency(traceData, respHeaders, testResponse) {
+    if (testResponse && testResponse.targetLatencyMs !== undefined && testResponse.targetLatencyMs !== null) {
+      return Number(testResponse.targetLatencyMs);
+    }
+    if (respHeaders) {
+      for (const [k, v] of Object.entries(respHeaders)) {
+        if (k.toLowerCase() === 'x-apigee-target-latency') {
+          const val = parseInt(v, 10);
+          if (!isNaN(val)) return val;
+        }
+      }
+    }
+    if (!traceData) return null;
+
+    let targetLat = null;
+    let targetSentStart = null;
+    let targetRecvEnd = null;
+
+    function walk(obj) {
+      if (!obj || targetLat !== null) return;
+      if (Array.isArray(obj)) {
+        for (let i = 0; i < obj.length; i++) {
+          walk(obj[i]);
+          if (targetLat !== null) return;
+        }
+        return;
+      }
+      if (typeof obj === 'object') {
+        if (obj.name && String(obj.name).toLowerCase() === 'x-apigee-target-latency' && obj.value !== undefined) {
+          const parsed = parseInt(obj.value, 10);
+          if (!isNaN(parsed)) {
+            targetLat = parsed;
+            return;
+          }
+        }
+        if (obj.name === 'target.sent.start.timestamp' && obj.value) targetSentStart = parseInt(obj.value, 10);
+        if (obj.name === 'target.received.end.timestamp' && obj.value) targetRecvEnd = parseInt(obj.value, 10);
+
+        if (Array.isArray(obj.headers)) {
+          for (const h of obj.headers) {
+            if (h && h.name && String(h.name).toLowerCase() === 'x-apigee-target-latency' && h.value !== undefined) {
+              const parsed = parseInt(h.value, 10);
+              if (!isNaN(parsed)) {
+                targetLat = parsed;
+                return;
+              }
+            }
+          }
+        }
+        if (Array.isArray(obj.property)) {
+          for (const p of obj.property) {
+            if (p && p.name && String(p.name).toLowerCase() === 'x-apigee-target-latency' && p.value !== undefined) {
+              const parsed = parseInt(p.value, 10);
+              if (!isNaN(parsed)) {
+                targetLat = parsed;
+                return;
+              }
+            }
+          }
+        }
+        for (const val of Object.values(obj)) {
+          if (typeof val === 'object' && val !== null) {
+            walk(val);
+            if (targetLat !== null) return;
+          }
+        }
+      }
+    }
+
+    walk(traceData);
+    if (targetLat !== null) return targetLat;
+    if (targetRecvEnd !== null && targetSentStart !== null && targetRecvEnd >= targetSentStart) {
+      return targetRecvEnd - targetSentStart;
+    }
+    return null;
+  }
+
+  // Extract total client round-trip latency
+  function extractTotalLatency(testResponse, traceData) {
+    if (testResponse && typeof testResponse.durationMs === 'number' && testResponse.durationMs > 0) {
+      return testResponse.durationMs;
+    }
+    let clientStart = null;
+    let clientEnd = null;
+    function walk(obj) {
+      if (!obj || (clientStart && clientEnd)) return;
+      if (Array.isArray(obj)) {
+        for (let i = 0; i < obj.length; i++) {
+          walk(obj[i]);
+          if (clientStart && clientEnd) return;
+        }
+        return;
+      }
+      if (typeof obj === 'object') {
+        if (obj.name === 'client.received.start.timestamp' && obj.value) clientStart = parseInt(obj.value, 10);
+        if (obj.name === 'client.sent.end.timestamp' && obj.value) clientEnd = parseInt(obj.value, 10);
+        for (const val of Object.values(obj)) {
+          if (typeof val === 'object' && val !== null) {
+            walk(val);
+            if (clientStart && clientEnd) return;
+          }
+        }
+      }
+    }
+    if (traceData) walk(traceData);
+    if (clientStart && clientEnd && clientEnd >= clientStart) {
+      return clientEnd - clientStart;
+    }
+    return testResponse?.durationMs || 0;
+  }
+
+  function buildTraceTopResponseBodyHtml(respData, respStatus, respStatusText, respBody, respBodyBytes, respDuration, targetLatency, proxyLatency) {
     const sc = respStatus || 200;
     const stText = respStatusText || (sc < 400 ? 'OK' : 'Error');
     const statusClass = sc >= 200 && sc < 300 ? 'status-2xx' : (sc >= 400 && sc < 500 ? 'status-4xx' : (sc >= 500 ? 'status-5xx' : 'status-none'));
@@ -3151,7 +3295,9 @@
               ${sc} ${escapeHtml(stText)}
             </span>
             ${respBody ? `<span class="meta-tag">${formatBytes(respBodyBytes)}</span>` : ''}
-            ${respDuration ? `<span class="meta-tag">${respDuration} ms</span>` : ''}
+            ${respDuration ? `<span class="meta-tag" title="Total Round-Trip Latency">Total: ${respDuration} ms</span>` : ''}
+            ${targetLatency !== null && targetLatency !== undefined ? `<span class="meta-tag" title="Target Latency">Target: ${targetLatency} ms</span>` : ''}
+            ${proxyLatency !== null && proxyLatency !== undefined ? `<span class="meta-tag" title="Proxy Latency (Policy Execution Time)">Proxy: ${proxyLatency} ms</span>` : ''}
           </div>
           <div class="trace-top-response-actions">
             <button type="button" class="btn btn-xs btn-outline" id="btn-copy-trace-top-body" title="Copy response body to clipboard">
@@ -3212,6 +3358,54 @@
     }
   }
 
+  // Extract variable access from result item (supports both Apigee emulator and cloud formats)
+  function extractVarAccess(res) {
+    const varAccess = [];
+    if (!res) return varAccess;
+
+    if (Array.isArray(res.accessList)) {
+      for (const item of res.accessList) {
+        if (!item || typeof item !== 'object') continue;
+        for (const [key, val] of Object.entries(item)) {
+          if (val && typeof val === 'object' && val.name) {
+            varAccess.push({
+              action: key.toUpperCase(),
+              name: String(val.name),
+              value: val.value !== undefined ? String(val.value) : ''
+            });
+          }
+        }
+      }
+    }
+
+    const list = res.variableAccessList || res.VariableAccessMap;
+    if (Array.isArray(list)) {
+      list.forEach(v => {
+        if (v && v.name) {
+          varAccess.push({
+            action: (v.accessType || v.action || 'ACCESS').toUpperCase(),
+            name: String(v.name),
+            value: v.value !== undefined ? String(v.value) : ''
+          });
+        }
+      });
+    }
+
+    return varAccess;
+  }
+
+  // Categorize variable by name prefix
+  function getVarCategory(name) {
+    if (!name) return 'General';
+    const lower = name.toLowerCase();
+    if (lower.startsWith('ai.')) return 'AI';
+    if (lower.startsWith('target.') || lower.includes('route')) return 'Target';
+    if (lower.startsWith('error.') || lower.startsWith('fault.') || lower.includes('fault')) return 'Error';
+    if (lower.startsWith('request.header.') || lower.startsWith('response.header.') || lower.includes('header')) return 'Headers';
+    if (lower.startsWith('propertyset.') || lower.startsWith('kvm.')) return 'Config';
+    return 'General';
+  }
+
   function renderTracePipeline(sessionId, traceData, testResponse) {
     el.traceSummaryBar.classList.remove('hidden');
     el.traceSessionId.textContent = sessionId || 'N/A';
@@ -3227,7 +3421,15 @@
     const respBody = respData.body || '';
     const respBodyBytes = respBody ? new Blob([respBody]).size : 0;
     const respHeaderKeys = Object.keys(respHeaders);
-    const respDuration = respData.durationMs || 0;
+
+    // Extract latencies
+    const totalLatency = extractTotalLatency(respData, traceData);
+    const targetLatency = extractTargetLatency(traceData, respHeaders, respData);
+    const targetLatencyDisplay = targetLatency !== null ? `${targetLatency} ms` : 'N/A';
+
+    // Update summary bar latencies
+    if (el.traceSummaryTotalLatency) el.traceSummaryTotalLatency.textContent = `${totalLatency} ms`;
+    if (el.traceSummaryTargetLatency) el.traceSummaryTargetLatency.textContent = targetLatencyDisplay;
 
     // Parse transactions
     let txs = [];
@@ -3240,9 +3442,13 @@
     }
 
     if (txs.length === 0) {
+      if (el.traceSummaryProxyLatency) el.traceSummaryProxyLatency.textContent = '0 ms';
+      if (el.traceErrorBanner) el.traceErrorBanner.classList.add('hidden');
+      if (el.traceFilterBar) el.traceFilterBar.classList.add('hidden');
+      if (el.traceVarsContainer) el.traceVarsContainer.innerHTML = '<div class="empty-state">No variables recorded in this trace.</div>';
       el.tracePipelineContainer.innerHTML = `
         <div class="trace-vertical-timeline">
-          ${buildTraceTopResponseBodyHtml(respData, respStatus, respStatusText, respBody, respBodyBytes, respDuration)}
+          ${buildTraceTopResponseBodyHtml(respData, respStatus, respStatusText, respBody, respBodyBytes, totalLatency, targetLatency, 0)}
           <div class="empty-state">Trace session was recorded, but transaction buffer was empty.</div>
         </div>
       `;
@@ -3253,46 +3459,259 @@
     const tx = txs[0];
     const pointList = tx.point || tx.points || [];
 
-    // Extract policy steps and flow metadata
+    // Extract policy steps, target execution, fault rules, and session variables
     const steps = [];
+    const allSessionVars = {};
     let proxyName = testResponse?.proxy || '';
     let targetName = 'Target Runtime';
     let targetUrl = '';
     let totalPolicyDuration = 0;
 
-    pointList.forEach(pt => {
+    pointList.forEach((pt, ptIdx) => {
       const results = pt.results || [];
+      const ptId = pt.id || 'Point';
+
+      let combinedProps = {};
+      let varAccess = [];
+      let headers = [];
+      let content = '';
+      let pointIsError = false;
+      let pointTimestamp = '';
+      let errorInfo = { error: '', reason: '', statusCode: '', faultName: '', faultRule: '' };
+
       results.forEach(res => {
-        const props = extractProperties(res.properties);
-        const action = res.action || res.ActionResult || pt.id || '';
+        if (!pointTimestamp && res.timestamp) pointTimestamp = res.timestamp;
 
-        // Check for flow/target info
-        if (props['apiproxy.name']) proxyName = props['apiproxy.name'];
-        if (props['target.name']) targetName = props['target.name'];
-        if (props['target.url']) targetUrl = props['target.url'];
+        // Merge properties
+        const pMap = extractProperties(res.properties);
+        Object.assign(combinedProps, pMap);
 
-        // Check for policy execution
-        const stepName = props['stepDefinition-name'] || props['stepDefinition-displayName'] || props['stepDefinition.name'] || props['policy.name'] || (pt.id === 'Execution' ? props['name'] : '');
-        const stepType = props['stepDefinition-type'] || props['stepDefinition-type'] || props['type'] || props['policy.type'] || '';
-        const durStr = props['javascript-executionTime'] || props['duration'] || '0';
-        const dur = parseInt(durStr, 10) || 0;
-        const result = (props['result'] || props['state'] || '').toLowerCase();
-        const enforcement = props['enforcement'] || (props['flow'] ? props['flow'] : 'flow');
+        // Extract variable accesses
+        const vList = extractVarAccess(res);
+        if (vList.length > 0) {
+          varAccess.push(...vList);
+        }
 
-        if (stepName && stepName !== 'Null' && stepName !== 'None') {
-          totalPolicyDuration += dur;
-          const isError = result.includes('fail') || result.includes('false') || result.includes('error');
-          steps.push({
-            name: stepName,
-            type: stepType || 'Policy',
-            enforcement: enforcement,
-            duration: dur,
-            isError: isError,
-            rawProps: props,
-          });
+        // Headers
+        if (Array.isArray(res.headers)) {
+          headers.push(...res.headers);
+        }
+
+        // Content
+        if (res.content) {
+          content = res.content;
+        }
+
+        // Flow / Target info
+        if (pMap['apiproxy.name']) proxyName = pMap['apiproxy.name'];
+        if (pMap['target.name']) targetName = pMap['target.name'];
+        if (pMap['target.url']) targetUrl = pMap['target.url'];
+
+        // Error detection
+        const resStatusCode = res.statusCode || pMap['response.status.code'] || pMap['target.response.status.code'];
+        const resError = res.error || pMap['error'] || pMap['error.message'] || pMap['error.cause'];
+        const resReason = res.reasonPhrase || pMap['error.reason'] || pMap['reasonPhrase'];
+        const faultName = pMap['fault.name'] || pMap['faultstring'] || '';
+        const resultVal = (pMap['result'] || pMap['state'] || '').toLowerCase();
+
+        if (resError || (resReason && !String(resStatusCode || '').startsWith('2')) || (resStatusCode && parseInt(resStatusCode, 10) >= 400) || resultVal.includes('fail') || resultVal.includes('error') || ptId.includes('Fault')) {
+          pointIsError = true;
+          errorInfo.error = resError || errorInfo.error;
+          errorInfo.reason = resReason || errorInfo.reason;
+          errorInfo.statusCode = resStatusCode || errorInfo.statusCode;
+          errorInfo.faultName = faultName || errorInfo.faultName;
+          if (ptId.includes('Fault')) errorInfo.faultRule = ptId;
         }
       });
+
+      // Update session variables tracking
+      varAccess.forEach(v => {
+        if (!allSessionVars[v.name]) {
+          allSessionVars[v.name] = {
+            name: v.name,
+            value: v.value,
+            category: getVarCategory(v.name),
+            actions: new Set(),
+            step: ''
+          };
+        }
+        allSessionVars[v.name].actions.add(v.action);
+        allSessionVars[v.name].value = v.value;
+      });
+
+      // Step identification
+      const stepName = combinedProps['stepDefinition-name'] ||
+        combinedProps['stepDefinition-displayName'] ||
+        combinedProps['policy.name'] ||
+        (ptId === 'Execution' ? (combinedProps['name'] || 'Policy Execution') : '') ||
+        (ptId.includes('Fault') ? (combinedProps['name'] || errorInfo.faultName || 'Fault Handler') : '') ||
+        (ptId.includes('Target') ? (combinedProps['target.name'] || targetName || 'Target Execution') : '') ||
+        (pointIsError ? (combinedProps['From'] ? `Error State (${combinedProps['From']})` : `Fault: ${ptId}`) : '');
+
+      const stepType = combinedProps['stepDefinition-type'] ||
+        combinedProps['type'] ||
+        combinedProps['policy.type'] ||
+        (ptId.includes('Fault') ? 'FaultRule' : (ptId.includes('Target') ? 'TargetEndpoint' : ptId));
+
+      const durStr = combinedProps['javascript-executionTime'] || combinedProps['duration'] || '0';
+      const dur = parseInt(durStr, 10) || 0;
+      const enforcement = combinedProps['enforcement'] || (combinedProps['flow'] ? combinedProps['flow'] : (ptId.includes('Fault') ? 'fault' : 'flow'));
+
+      const isPolicy = !!(combinedProps['stepDefinition-name'] || combinedProps['policy.name'] || ptId === 'Execution');
+      const isTarget = ptId.includes('Target') || enforcement.toLowerCase().includes('target');
+      const isFault = ptId.includes('Fault') || enforcement.toLowerCase().includes('fault');
+
+      if (stepName && stepName !== 'Null' && stepName !== 'None') {
+        if (isPolicy) totalPolicyDuration += dur;
+
+        // Tag variable access step name
+        varAccess.forEach(v => {
+          if (allSessionVars[v.name]) allSessionVars[v.name].step = stepName;
+        });
+
+        steps.push({
+          id: ptId,
+          idx: ptIdx,
+          name: stepName,
+          type: stepType || 'Policy',
+          enforcement: enforcement,
+          duration: dur,
+          isError: pointIsError,
+          errorInfo: errorInfo,
+          isPolicy: isPolicy,
+          isTarget: isTarget,
+          isFault: isFault,
+          rawProps: combinedProps,
+          varAccess: varAccess,
+          headers: headers,
+          content: content,
+          timestamp: pointTimestamp
+        });
+      }
     });
+
+    // Also enrich allSessionVars with variables discovered via recursive walk
+    const extractedAllVars = extractVariablesFromTrace(traceData);
+    for (const [k, v] of Object.entries(extractedAllVars)) {
+      if (!allSessionVars[k]) {
+        allSessionVars[k] = {
+          name: k,
+          value: String(v),
+          category: getVarCategory(k),
+          actions: new Set(['ACCESS']),
+          step: 'Trace Context'
+        };
+      }
+    }
+
+    // Update summary bar proxy latency and variables badge
+    if (el.traceSummaryProxyLatency) el.traceSummaryProxyLatency.textContent = `${totalPolicyDuration} ms`;
+    if (el.traceVarsTotalBadge) el.traceVarsTotalBadge.textContent = String(Object.keys(allSessionVars).length);
+
+    // ------------------------------------------------------------------------
+    // Error & Fault Diagnosis Banner
+    // ------------------------------------------------------------------------
+    const failedSteps = steps.filter(s => s.isError);
+    const hasError = failedSteps.length > 0 || respStatus >= 400;
+
+    if (hasError && el.traceErrorBanner) {
+      const primaryErr = failedSteps[0] || null;
+      const errStatusCode = primaryErr?.errorInfo?.statusCode || respStatus;
+      const errReason = primaryErr?.errorInfo?.reason || respStatusText;
+      const errFault = primaryErr?.errorInfo?.faultName || (primaryErr ? primaryErr.name : '');
+      const errStep = primaryErr ? primaryErr.name : (targetUrl ? `Target: ${targetName}` : 'Execution');
+      const errType = primaryErr ? primaryErr.type : 'Gateway';
+      const errDesc = primaryErr?.errorInfo?.error ||
+        (respStatus === 502 ? '502 Bad Gateway: Target backend failed to connect, DNS resolution failed, or returned a 5xx response.' :
+        (respBody && typeof respBody === 'string' && respBody.length < 300 ? respBody : ''));
+
+      el.traceErrorBanner.innerHTML = `
+        <div class="trace-error-header">
+          <div class="trace-error-title-wrap">
+            <span class="trace-error-status-pill">${escapeHtml(errStatusCode)} ${escapeHtml(errReason)}</span>
+            <span class="trace-error-title">${escapeHtml(errFault ? `Fault Triggered: ${errFault}` : `Execution Error: ${errStatusCode} ${errReason}`)}</span>
+          </div>
+          <div class="trace-error-actions">
+            ${primaryErr ? `<button type="button" class="btn btn-xs btn-outline" id="btn-jump-to-error" style="color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);">Jump to Failure Step</button>` : ''}
+          </div>
+        </div>
+        <div class="trace-error-meta-line">
+          <span>Failure Location: </span><code>${escapeHtml(errStep)}</code> (${escapeHtml(errType)})
+          ${targetUrl ? ` &bull; <span>Target URL: </span><code>${escapeHtml(targetUrl)}</code>` : ''}
+        </div>
+        ${errDesc ? `<div class="trace-error-meta-line" style="color: #fca5a5;">${escapeHtml(errDesc)}</div>` : ''}
+      `;
+      el.traceErrorBanner.classList.remove('hidden');
+
+      const btnJump = document.getElementById('btn-jump-to-error');
+      if (btnJump && primaryErr) {
+        btnJump.addEventListener('click', () => {
+          const targetCard = el.tracePipelineContainer.querySelector(`.trace-step-card[data-step-idx="${steps.indexOf(primaryErr)}"]`);
+          if (targetCard) {
+            if (!targetCard.classList.contains('expanded')) {
+              targetCard.click();
+            }
+            targetCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        });
+      }
+    } else if (el.traceErrorBanner) {
+      el.traceErrorBanner.classList.add('hidden');
+    }
+
+    // ------------------------------------------------------------------------
+    // Step Filter Bar Setup
+    // ------------------------------------------------------------------------
+    if (el.traceFilterBar) {
+      el.traceFilterBar.classList.remove('hidden');
+      const countAll = steps.length;
+      const countPolicies = steps.filter(s => s.isPolicy).length;
+      const countVars = steps.filter(s => s.varAccess && s.varAccess.length > 0).length;
+      const countErrors = steps.filter(s => s.isError).length;
+
+      const elCountAll = document.getElementById('filter-count-all');
+      const elCountPolicies = document.getElementById('filter-count-policies');
+      const elCountVars = document.getElementById('filter-count-vars');
+      const elCountErrors = document.getElementById('filter-count-errors');
+
+      if (elCountAll) elCountAll.textContent = String(countAll);
+      if (elCountPolicies) elCountPolicies.textContent = String(countPolicies);
+      if (elCountVars) elCountVars.textContent = String(countVars);
+      if (elCountErrors) elCountErrors.textContent = String(countErrors);
+
+      const errChip = el.traceFilterBar.querySelector('.trace-filter-chip[data-filter="errors"]');
+      if (errChip) {
+        errChip.classList.toggle('has-errors', countErrors > 0);
+      }
+
+      el.traceFilterBar.querySelectorAll('.trace-filter-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          el.traceFilterBar.querySelectorAll('.trace-filter-chip').forEach(c => c.classList.remove('active'));
+          chip.classList.add('active');
+          const filter = chip.getAttribute('data-filter');
+
+          el.tracePipelineContainer.querySelectorAll('.trace-step-item[data-step-idx]').forEach(item => {
+            const idx = parseInt(item.getAttribute('data-step-idx'), 10);
+            const s = steps[idx];
+            if (!s) return;
+
+            let visible = true;
+            if (filter === 'policies') visible = s.isPolicy;
+            else if (filter === 'variables') visible = s.varAccess && s.varAccess.length > 0;
+            else if (filter === 'errors') visible = s.isError;
+
+            item.style.display = visible ? '' : 'none';
+
+            if (filter === 'errors' && visible) {
+              const card = item.querySelector('.trace-step-card');
+              if (card && !card.classList.contains('expanded')) {
+                card.click();
+              }
+            }
+          });
+        });
+      });
+    }
 
     // Extract Request information
     const reqData = testResponse?.request || state.lastResponse?.request || {
@@ -3314,12 +3733,20 @@
         <!-- Top Metrics Cards -->
         <div class="trace-metrics-cards">
           <div class="trace-metric-card">
-            <div class="trace-metric-title">Policies Executed</div>
-            <div class="trace-metric-value">${steps.length}</div>
+            <div class="trace-metric-title">Total Latency</div>
+            <div class="trace-metric-value" style="color: #60a5fa;">${totalLatency} ms</div>
           </div>
           <div class="trace-metric-card">
-            <div class="trace-metric-title">Total Policy Time</div>
-            <div class="trace-metric-value">${totalPolicyDuration} ms</div>
+            <div class="trace-metric-title">Target Latency</div>
+            <div class="trace-metric-value" style="color: ${targetLatency !== null ? '#a78bfa' : 'var(--text-muted)'};">${targetLatencyDisplay}</div>
+          </div>
+          <div class="trace-metric-card">
+            <div class="trace-metric-title">Proxy Latency</div>
+            <div class="trace-metric-value" style="color: #38bdf8;">${totalPolicyDuration} ms</div>
+          </div>
+          <div class="trace-metric-card">
+            <div class="trace-metric-title">Policies Executed</div>
+            <div class="trace-metric-value">${steps.filter(s => s.isPolicy).length}</div>
           </div>
           <div class="trace-metric-card">
             <div class="trace-metric-title">Status</div>
@@ -3336,7 +3763,7 @@
         </div>
 
         <!-- Top Response Body Card -->
-        ${buildTraceTopResponseBodyHtml(respData, respStatus, respStatusText, respBody, respBodyBytes, respDuration)}
+        ${buildTraceTopResponseBodyHtml(respData, respStatus, respStatusText, respBody, respBodyBytes, totalLatency, targetLatency, totalPolicyDuration)}
 
         <!-- Request Ingress -->
         <div class="trace-flow-phase">Client Request &bull; PreFlow</div>
@@ -3418,34 +3845,38 @@
       let responsePhaseStarted = false;
 
       steps.forEach((s, idx) => {
-        // If enforcement changes to response, insert flow divider
-        if (!responsePhaseStarted && s.enforcement.toLowerCase().includes('response')) {
+        // If enforcement changes to response or target phase, insert flow divider
+        if (!responsePhaseStarted && (s.enforcement.toLowerCase().includes('response') || s.isTarget)) {
           responsePhaseStarted = true;
           html += `
-            <div class="trace-flow-phase" style="margin-top: 0.75rem;">Target Response &bull; PostFlow</div>
+            <div class="trace-flow-phase" style="margin-top: 0.75rem;">Target Response &bull; PostFlow ${targetLatency !== null ? `(Target Latency: ${targetLatency} ms)` : ''}</div>
           `;
         }
 
         const stepNum = String(idx + 1).padStart(2, '0');
-        const nodeClass = s.isError ? 'node-error' : 'node-success';
+        const nodeClass = s.isError ? 'node-error' : (s.isTarget ? 'node-info' : 'node-success');
         const statusClass = s.isError ? 'step-status-error' : 'step-status-success';
         const statusText = s.isError ? 'Failed' : 'Passed';
+        const cardClass = s.isError ? 'step-card-error' : (s.isFault ? 'step-card-fault' : (s.isTarget ? 'step-card-target' : ''));
 
         html += `
-          <div class="trace-step-item">
+          <div class="trace-step-item" data-step-idx="${idx}">
             <div class="trace-step-connector"></div>
             <div class="trace-step-node ${nodeClass}">
               ${stepNum}
             </div>
-            <div class="trace-step-card" data-step-idx="${idx}">
-              <div class="trace-step-header">
+            <div class="trace-step-card ${cardClass}" data-step-idx="${idx}">
+              <div class="trace-step-header" style="cursor: pointer;">
                 <div class="trace-step-left">
                   <span class="step-type-pill">${escapeHtml(s.type)}</span>
-                  <span class="step-name-text">${escapeHtml(s.name)}</span>
+                  <span class="step-name-text" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+                  ${s.varAccess && s.varAccess.length > 0 ? `<span class="step-vars-badge" title="${s.varAccess.length} variables accessed in this step">${s.varAccess.length} vars</span>` : ''}
+                  ${s.isError ? `<span class="step-error-tag">Error ${escapeHtml(s.errorInfo?.statusCode || '')}</span>` : ''}
                 </div>
                 <div class="trace-step-right">
                   ${s.duration ? `<span class="step-duration-badge">${s.duration} ms</span>` : ''}
                   <span class="step-status-pill ${statusClass}">${statusText}</span>
+                  <span class="step-expand-icon">▾</span>
                 </div>
               </div>
               <!-- Expandable details container injected on click -->
@@ -3470,7 +3901,9 @@
                 <span class="step-name-text">${escapeHtml(respStatusText)}</span>
               </div>
               <div class="trace-step-right">
-                ${respDuration ? `<span class="step-duration-badge">${respDuration} ms</span>` : ''}
+                ${totalLatency ? `<span class="step-duration-badge" title="Total Round-Trip Latency">Total: ${totalLatency} ms</span>` : ''}
+                ${targetLatency !== null ? `<span class="step-duration-badge" title="Target Latency">Target: ${targetLatency} ms</span>` : ''}
+                <span class="step-duration-badge" title="Proxy Latency (Policy Execution Time)">Proxy: ${totalPolicyDuration} ms</span>
                 <span class="step-duration-badge">${respHeaderKeys.length} header${respHeaderKeys.length === 1 ? '' : 's'}</span>
                 ${respBody ? `<span class="step-duration-badge">${formatBytes(respBodyBytes)}</span>` : ''}
                 <span class="step-status-pill ${respStatus < 400 ? 'step-status-success' : 'step-status-error'}">Egress</span>
@@ -3607,9 +4040,10 @@
       }
     }
 
-    // Attach step expansion handlers
+    // Attach rich step expansion handlers
     el.tracePipelineContainer.querySelectorAll('.trace-step-card[data-step-idx]').forEach(card => {
-      card.addEventListener('click', () => {
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('.step-detail-tab-btn') || e.target.closest('.btn') || e.target.closest('input')) return;
         const idx = card.getAttribute('data-step-idx');
         const s = steps[idx];
         if (!s) return;
@@ -3621,32 +4055,312 @@
           detailsGrid.classList.add('hidden');
           card.classList.remove('expanded');
         } else {
-          // Render properties in grid
-          let gridHtml = '';
-          const keys = Object.keys(s.rawProps).sort();
-          if (keys.length === 0) {
-            gridHtml = '<div style="color: var(--text-muted); padding: 0.25rem 0;">No policy properties recorded.</div>';
-          } else {
-            keys.forEach(k => {
-              const isAuth = k.toLowerCase().includes('authorization') || k.toLowerCase().endsWith('.authorization');
-              const val = isAuth ? maskHeaderValue('authorization', s.rawProps[k]) : s.rawProps[k];
-              gridHtml += `
-                <div class="step-prop-row">
-                  <div class="step-prop-key">${escapeHtml(k)}</div>
-                  <div class="step-prop-val"${isAuth ? ' title="Masked for security"' : ''}>${escapeHtml(val)}</div>
-                </div>
-              `;
-            });
-          }
-          detailsGrid.innerHTML = gridHtml;
+          renderRichStepDetails(card, detailsGrid, s);
           detailsGrid.classList.remove('hidden');
           card.classList.add('expanded');
         }
       });
     });
 
+    // Render Session Variables View
+    renderSessionVariables(allSessionVars);
+
     // Attach top response body handlers
     attachTraceTopResponseBodyListeners(respBody);
+  }
+
+  // Render rich step details including error banner, variables list, properties, and content
+  function renderRichStepDetails(card, detailsGrid, s) {
+    const hasVars = s.varAccess && s.varAccess.length > 0;
+    const propKeys = Object.keys(s.rawProps || {}).sort();
+    const hasContent = !!s.content;
+    const hasHeaders = s.headers && s.headers.length > 0;
+
+    let html = '';
+
+    // Error alert box
+    if (s.isError) {
+      html += `
+        <div class="step-error-box">
+          <div class="step-error-box-header">
+            <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>Step Execution Failure</span>
+            ${s.errorInfo?.statusCode ? `<span class="trace-error-status-pill">${escapeHtml(s.errorInfo.statusCode)} ${escapeHtml(s.errorInfo.reason || '')}</span>` : ''}
+          </div>
+          ${s.errorInfo?.faultName ? `<div class="step-error-box-field"><span class="err-lbl">Fault:</span><span class="err-val err-critical">${escapeHtml(s.errorInfo.faultName)}</span></div>` : ''}
+          ${s.errorInfo?.error ? `<div class="step-error-box-field"><span class="err-lbl">Error:</span><span class="err-val">${escapeHtml(s.errorInfo.error)}</span></div>` : ''}
+          ${s.errorInfo?.reason && s.errorInfo.reason !== s.errorInfo.error ? `<div class="step-error-box-field"><span class="err-lbl">Reason:</span><span class="err-val">${escapeHtml(s.errorInfo.reason)}</span></div>` : ''}
+        </div>
+      `;
+    }
+
+    // Subtabs header
+    html += `
+      <div class="step-detail-tabs-bar">
+        <div class="step-detail-tabs">
+          ${hasVars ? `<button type="button" class="step-detail-tab-btn active" data-tab="vars">Variables (${s.varAccess.length})</button>` : ''}
+          <button type="button" class="step-detail-tab-btn ${!hasVars ? 'active' : ''}" data-tab="props">Properties (${propKeys.length})</button>
+          ${hasContent ? `<button type="button" class="step-detail-tab-btn" data-tab="content">Payload</button>` : ''}
+          ${hasHeaders ? `<button type="button" class="step-detail-tab-btn" data-tab="headers">Headers (${s.headers.length})</button>` : ''}
+        </div>
+        <div class="step-detail-actions">
+          <button type="button" class="btn btn-xs btn-outline btn-copy-step-tab" title="Copy active tab content to clipboard">
+            <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Copy
+          </button>
+        </div>
+      </div>
+    `;
+
+    // Variables Pane
+    if (hasVars) {
+      html += `
+        <div class="step-detail-pane" data-pane="vars">
+          ${s.varAccess.length > 5 ? `<input type="text" class="step-vars-search-input" placeholder="Search ${s.varAccess.length} variables in this step...">` : ''}
+          <div class="vars-container">
+            ${s.varAccess.map(v => `
+              <div class="var-row" data-var-name="${escapeHtml(v.name.toLowerCase())}">
+                <span class="var-tag tag-${v.action.toLowerCase()}">${escapeHtml(v.action)}</span>
+                <span class="var-name">${escapeHtml(v.name)}</span>
+                <span class="var-sep">=</span>
+                <span class="var-val">${escapeHtml(v.value)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // Properties Pane
+    html += `
+      <div class="step-detail-pane ${hasVars ? 'hidden' : ''}" data-pane="props">
+        ${propKeys.length === 0 ? '<div style="color: var(--text-muted); padding: 0.25rem 0;">No properties recorded.</div>' : `
+          <table class="trace-kv-table">
+            <thead>
+              <tr><th>Property</th><th>Value</th></tr>
+            </thead>
+            <tbody>
+              ${propKeys.map(k => {
+                const isAuth = k.toLowerCase().includes('authorization') || k.toLowerCase().endsWith('.authorization');
+                const val = isAuth ? maskHeaderValue('authorization', s.rawProps[k]) : s.rawProps[k];
+                return `<tr><td class="header-key">${escapeHtml(k)}</td><td class="header-val"${isAuth ? ' title="Masked for security"' : ''}>${escapeHtml(val)}</td></tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        `}
+      </div>
+    `;
+
+    // Content / Payload Pane
+    if (hasContent) {
+      html += `
+        <div class="step-detail-pane hidden" data-pane="content">
+          <pre class="trace-body-pre">${escapeHtml(formatPayload(s.content))}</pre>
+        </div>
+      `;
+    }
+
+    // Headers Pane
+    if (hasHeaders) {
+      html += `
+        <div class="step-detail-pane hidden" data-pane="headers">
+          <table class="trace-kv-table">
+            <thead>
+              <tr><th>Header</th><th>Value</th></tr>
+            </thead>
+            <tbody>
+              ${s.headers.map(h => {
+                const hName = h.name || '';
+                const hVal = maskHeaderValue(hName, h.value || '');
+                return `<tr><td class="header-key">${escapeHtml(hName)}</td><td class="header-val">${escapeHtml(hVal)}</td></tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    detailsGrid.innerHTML = html;
+
+    // Attach Subtab Switching
+    detailsGrid.querySelectorAll('.step-detail-tab-btn').forEach(tabBtn => {
+      tabBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const targetTab = tabBtn.getAttribute('data-tab');
+        detailsGrid.querySelectorAll('.step-detail-tab-btn').forEach(b => b.classList.remove('active'));
+        tabBtn.classList.add('active');
+
+        detailsGrid.querySelectorAll('.step-detail-pane').forEach(p => {
+          if (p.getAttribute('data-pane') === targetTab) {
+            p.classList.remove('hidden');
+          } else {
+            p.classList.add('hidden');
+          }
+        });
+      });
+    });
+
+    // Attach step variables search filter
+    const searchInput = detailsGrid.querySelector('.step-vars-search-input');
+    if (searchInput) {
+      searchInput.addEventListener('input', (e) => {
+        e.stopPropagation();
+        const query = searchInput.value.toLowerCase().trim();
+        detailsGrid.querySelectorAll('.var-row').forEach(row => {
+          const varName = row.getAttribute('data-var-name') || '';
+          const varVal = row.querySelector('.var-val')?.textContent?.toLowerCase() || '';
+          const match = !query || varName.includes(query) || varVal.includes(query);
+          row.style.display = match ? '' : 'none';
+        });
+      });
+      searchInput.addEventListener('click', (e) => e.stopPropagation());
+    }
+
+    // Attach tab copy button
+    const btnCopyTab = detailsGrid.querySelector('.btn-copy-step-tab');
+    if (btnCopyTab) {
+      btnCopyTab.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const activePane = detailsGrid.querySelector('.step-detail-pane:not(.hidden)');
+        const activeTabName = activePane?.getAttribute('data-pane') || 'details';
+
+        if (activeTabName === 'vars') {
+          const varsMap = {};
+          s.varAccess.forEach(v => { varsMap[v.name] = v.value; });
+          navigator.clipboard.writeText(JSON.stringify(varsMap, null, 2));
+          showToast('Step variables copied');
+        } else if (activeTabName === 'props') {
+          navigator.clipboard.writeText(JSON.stringify(s.rawProps, null, 2));
+          showToast('Step properties copied');
+        } else if (activeTabName === 'content') {
+          navigator.clipboard.writeText(s.content || '');
+          showToast('Step payload copied');
+        } else if (activeTabName === 'headers') {
+          navigator.clipboard.writeText(JSON.stringify(s.headers, null, 2));
+          showToast('Step headers copied');
+        }
+      });
+    }
+  }
+
+  // Render dedicated Session Variables View
+  function renderSessionVariables(allSessionVars) {
+    if (!el.traceVarsContainer) return;
+
+    const varKeys = Object.keys(allSessionVars).sort();
+    if (varKeys.length === 0) {
+      el.traceVarsContainer.innerHTML = '<div class="empty-state">No variables recorded in this trace session.</div>';
+      return;
+    }
+
+    let activeFilter = 'all';
+
+    function buildTableHtml(filter = 'all', searchQuery = '') {
+      const filteredKeys = varKeys.filter(k => {
+        const v = allSessionVars[k];
+        if (filter !== 'all' && v.category.toLowerCase() !== filter.toLowerCase()) return false;
+        if (searchQuery) {
+          const q = searchQuery.toLowerCase();
+          return k.toLowerCase().includes(q) || String(v.value).toLowerCase().includes(q);
+        }
+        return true;
+      });
+
+      if (filteredKeys.length === 0) {
+        return '<div class="empty-state">No matching variables found.</div>';
+      }
+
+      return `
+        <table class="trace-vars-table">
+          <thead>
+            <tr>
+              <th style="width: 32%;">Variable</th>
+              <th style="width: 12%;">Category</th>
+              <th style="width: 14%;">Actions</th>
+              <th>Value</th>
+              <th style="width: 45px; text-align: center;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filteredKeys.map(k => {
+              const v = allSessionVars[k];
+              const acts = Array.from(v.actions || []);
+              let badgeClass = 'var-cell-badge';
+              if (v.category === 'AI') badgeClass += ' badge-ai';
+              else if (v.category === 'Target') badgeClass += ' badge-target';
+              else if (v.category === 'Error') badgeClass += ' badge-error';
+
+              return `
+                <tr data-var-key="${escapeHtml(k)}">
+                  <td class="var-cell-name">${escapeHtml(k)}</td>
+                  <td><span class="${badgeClass}">${escapeHtml(v.category)}</span></td>
+                  <td>
+                    ${acts.map(a => `<span class="var-tag tag-${a.toLowerCase()}" style="margin-right: 0.2rem;">${escapeHtml(a)}</span>`).join('')}
+                  </td>
+                  <td class="var-cell-val">${escapeHtml(v.value)}</td>
+                  <td style="text-align: center;">
+                    <button type="button" class="btn btn-xs btn-outline btn-copy-var-val" data-key="${escapeHtml(k)}" title="Copy variable value">
+                      <svg class="btn-icon-svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    </button>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    el.traceVarsContainer.innerHTML = buildTableHtml(activeFilter);
+
+    // Attach copy variable value handler
+    const attachVarCopyHandlers = () => {
+      el.traceVarsContainer.querySelectorAll('.btn-copy-var-val').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const key = btn.getAttribute('data-key');
+          if (key && allSessionVars[key]) {
+            navigator.clipboard.writeText(allSessionVars[key].value);
+            showToast(`Copied ${key}`);
+          }
+        });
+      });
+    };
+    attachVarCopyHandlers();
+
+    // Attach filter chips in vars view
+    const varsToolbar = document.querySelector('.trace-vars-toolbar');
+    if (varsToolbar) {
+      varsToolbar.querySelectorAll('.trace-filter-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          varsToolbar.querySelectorAll('.trace-filter-chip').forEach(c => c.classList.remove('active'));
+          chip.classList.add('active');
+          activeFilter = chip.getAttribute('data-category') || 'all';
+          el.traceVarsContainer.innerHTML = buildTableHtml(activeFilter, el.traceVarsSearch?.value || '');
+          attachVarCopyHandlers();
+        });
+      });
+    }
+
+    // Attach real-time search input
+    if (el.traceVarsSearch) {
+      el.traceVarsSearch.addEventListener('input', () => {
+        const query = el.traceVarsSearch.value.trim();
+        el.traceVarsContainer.innerHTML = buildTableHtml(activeFilter, query);
+        attachVarCopyHandlers();
+      });
+    }
+
+    // Attach copy all variables as JSON
+    if (el.btnCopyAllVars) {
+      el.btnCopyAllVars.onclick = () => {
+        const allMap = {};
+        varKeys.forEach(k => {
+          allMap[k] = allSessionVars[k].value;
+        });
+        navigator.clipboard.writeText(JSON.stringify(allMap, null, 2));
+        showToast('All session variables copied as JSON');
+      };
+    }
   }
 
   function downloadTraceJson() {
@@ -3825,7 +4539,16 @@
           });
         }
 
-        // 4. Any direct property with ai. prefix
+        // 4. headers array in trace results
+        if (Array.isArray(obj.headers)) {
+          obj.headers.forEach(h => {
+            if (h && h.name && h.value !== undefined) {
+              vars[h.name] = h.value;
+            }
+          });
+        }
+
+        // 5. Any direct property with ai. prefix
         for (const [k, v] of Object.entries(obj)) {
           if (k.startsWith('ai.') && (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')) {
             vars[k] = v;

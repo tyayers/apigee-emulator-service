@@ -87,10 +87,12 @@ func TestDeployResponseJSON(t *testing.T) {
 }
 
 func TestEvaluateAssertion(t *testing.T) {
+	targetLat := int64(85)
 	resp := &TestResponse{
-		StatusCode: 200,
-		StatusText: "200 OK",
-		DurationMs: 150,
+		StatusCode:      200,
+		StatusText:      "200 OK",
+		DurationMs:      150,
+		TargetLatencyMs: &targetLat,
 		Headers: map[string]string{
 			"Content-Type": "application/json; charset=utf-8",
 			"x-request-id": "req-12345",
@@ -137,6 +139,11 @@ func TestEvaluateAssertion(t *testing.T) {
 		{"response.status.code >= 200", true},
 		{"duration < 1000", true},
 		{"duration > 500", false},
+		{"total.latency == 150", true},
+		{"target.latency == 85", true},
+		{"target.latency < 100", true},
+		{"proxy.latency == 65", true},
+		{"proxy.latency < 100", true},
 
 		// Headers
 		{"headers.content-type contains json", true},

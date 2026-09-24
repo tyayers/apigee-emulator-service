@@ -63,7 +63,8 @@
       </div>
     </div>
     <div class="header-right">
-      <button id="btn-deploy-all" class="btn btn-primary" title="Deploy all packaged bundles to the Apigee emulator">
+      <!-- Admin actions hidden for now; users should only inspect and test deployed proxies -->
+      <button id="btn-deploy-all" class="btn btn-primary hidden" style="display: none;" title="Deploy all packaged bundles to the Apigee emulator">
         <svg class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
           <polyline points="17 8 12 3 7 8"/>
@@ -71,7 +72,7 @@
         </svg>
         Deploy All Bundles
       </button>
-      <button id="btn-reset-emulator" class="btn btn-outline-danger" title="Clear emulator state">
+      <button id="btn-reset-emulator" class="btn btn-outline-danger hidden" style="display: none;" title="Clear emulator state">
         <svg class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
           <path d="M21 3v5h-5"/>
@@ -286,13 +287,22 @@
           </div>
 
           <div class="tabs-header">
-            <button class="tab-btn active" data-tab="tab-headers">Headers <span id="header-count-badge" class="badge-mini">2</span></button>
-            <button class="tab-btn" data-tab="tab-body">Body</button>
+            <button class="tab-btn active" data-tab="tab-body">Body</button>
+            <button class="tab-btn" data-tab="tab-headers">Headers <span id="header-count-badge" class="badge-mini">2</span></button>
             <button class="tab-btn" data-tab="tab-assertions">Assertions <span id="assertions-count-badge" class="badge-mini">0</span></button>
           </div>
 
+          <!-- Body Tab -->
+          <div id="tab-body" class="tab-content active">
+            <div class="editor-toolbar">
+              <button id="btn-prettify-body" class="btn btn-sm btn-outline">Format JSON</button>
+              <button id="btn-clear-body" class="btn btn-sm btn-outline">Clear</button>
+            </div>
+            <textarea id="req-body" class="code-editor" placeholder="Enter JSON or text request payload..."></textarea>
+          </div>
+
           <!-- Headers Tab -->
-          <div id="tab-headers" class="tab-content active">
+          <div id="tab-headers" class="tab-content">
             <div class="headers-table-wrapper">
               <table id="headers-table" class="key-value-table">
                 <thead>
@@ -318,15 +328,6 @@
                 Add x-api-key
               </button>
             </div>
-          </div>
-
-          <!-- Body Tab -->
-          <div id="tab-body" class="tab-content">
-            <div class="editor-toolbar">
-              <button id="btn-prettify-body" class="btn btn-sm btn-outline">Format JSON</button>
-              <button id="btn-clear-body" class="btn btn-sm btn-outline">Clear</button>
-            </div>
-            <textarea id="req-body" class="code-editor" placeholder="Enter JSON or text request payload..."></textarea>
           </div>
 
           <!-- Assertions Tab -->
@@ -462,10 +463,25 @@
                 <button id="btn-copy-session" class="btn-icon-only" title="Copy Session ID">
                   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 </button>
+                <div class="trace-summary-latency-group">
+                  <span class="trace-latency-pill" title="Total Round-Trip Latency">
+                    <span class="latency-label">Total:</span>
+                    <span id="trace-summary-total-latency" class="latency-val">-</span>
+                  </span>
+                  <span class="trace-latency-pill" title="Target Endpoint Latency">
+                    <span class="latency-label">Target:</span>
+                    <span id="trace-summary-target-latency" class="latency-val">-</span>
+                  </span>
+                  <span class="trace-latency-pill" title="Proxy Latency (Policy Execution Time)">
+                    <span class="latency-label">Proxy:</span>
+                    <span id="trace-summary-proxy-latency" class="latency-val">-</span>
+                  </span>
+                </div>
               </div>
               <div class="trace-actions">
                 <div class="trace-view-toggle">
                   <button id="btn-trace-view-timeline" class="btn btn-sm btn-outline active">Timeline</button>
+                  <button id="btn-trace-view-vars" class="btn btn-sm btn-outline">Variables <span id="trace-vars-total-badge" class="badge-mini">0</span></button>
                   <button id="btn-trace-view-json" class="btn btn-sm btn-outline">Raw JSON</button>
                 </div>
                 <button id="btn-download-trace" class="btn btn-sm btn-outline" title="Download trace.json">
@@ -483,9 +499,40 @@
 
             <!-- Trace Visual Timeline (Expanded Vertically) -->
             <div id="trace-timeline-view">
+              <!-- Error Diagnosis Banner (injected dynamically when faults/errors occur) -->
+              <div id="trace-error-banner" class="trace-error-banner hidden"></div>
+
+              <!-- Filter Bar (All / Policies / Variables / Errors) -->
+              <div id="trace-filter-bar" class="trace-filter-bar hidden">
+                <span class="trace-filter-label">Filter Steps:</span>
+                <button class="trace-filter-chip active" data-filter="all">All (<span id="filter-count-all">0</span>)</button>
+                <button class="trace-filter-chip" data-filter="policies">Policies (<span id="filter-count-policies">0</span>)</button>
+                <button class="trace-filter-chip" data-filter="variables">Variables (<span id="filter-count-vars">0</span>)</button>
+                <button class="trace-filter-chip" data-filter="errors">Errors (<span id="filter-count-errors">0</span>)</button>
+              </div>
+
               <div id="trace-pipeline-container" class="trace-pipeline-container">
                 <div class="empty-state">No execution trace recorded. Send a request with "Record &amp; Inspect Trace" enabled.</div>
               </div>
+            </div>
+
+            <!-- Trace Variables Inspector View -->
+            <div id="trace-vars-view" class="hidden">
+              <div class="trace-vars-toolbar">
+                <input type="text" id="trace-vars-search" class="search-input" placeholder="Filter session variables (e.g. target, ai., auth, error, status)...">
+                <div class="trace-vars-filter-chips">
+                  <button class="chip active" data-var-filter="all">All</button>
+                  <button class="chip" data-var-filter="ai">AI (ai.*)</button>
+                  <button class="chip" data-var-filter="target">Target &amp; Routing</button>
+                  <button class="chip" data-var-filter="error">Errors &amp; Faults</button>
+                  <button class="chip" data-var-filter="headers">Headers</button>
+                </div>
+                <button id="btn-copy-all-vars" class="btn btn-sm btn-outline" title="Copy all variables as JSON">
+                  <svg class="btn-icon-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  Copy JSON
+                </button>
+              </div>
+              <div id="trace-vars-container" class="trace-vars-container"></div>
             </div>
 
             <!-- Trace Raw JSON View (Collapsible) -->

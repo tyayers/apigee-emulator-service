@@ -401,9 +401,25 @@ func resolveAssertionTarget(left string, resp *TestResponse) (string, bool) {
 		return strconv.Itoa(resp.StatusCode), true
 	}
 
-	// 2. Duration assertions
-	if leftLower == "duration" || leftLower == "durationms" || leftLower == "response.time" || leftLower == "response.duration" {
+	// 2. Duration / Latency assertions
+	if leftLower == "duration" || leftLower == "durationms" || leftLower == "response.time" || leftLower == "response.duration" || leftLower == "total.latency" || leftLower == "totallatency" {
 		return strconv.FormatInt(resp.DurationMs, 10), true
+	}
+	if leftLower == "targetlatency" || leftLower == "target.latency" || leftLower == "targetlatencyms" || leftLower == "target_latency" {
+		if resp.TargetLatencyMs != nil {
+			return strconv.FormatInt(*resp.TargetLatencyMs, 10), true
+		}
+		return "0", true
+	}
+	if leftLower == "proxylatency" || leftLower == "proxy.latency" || leftLower == "proxylatencyms" || leftLower == "proxy_latency" {
+		proxyLat := resp.DurationMs
+		if resp.TargetLatencyMs != nil {
+			proxyLat = resp.DurationMs - *resp.TargetLatencyMs
+			if proxyLat < 0 {
+				proxyLat = 0
+			}
+		}
+		return strconv.FormatInt(proxyLat, 10), true
 	}
 
 	// 3. Flow/Trace Variables (var.ext1, variable.ext1, variables.ext1, flow.ext1)

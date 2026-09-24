@@ -295,6 +295,20 @@ func (bm *BundleManager) GetMaps() ([]map[string]interface{}, error) {
 	return maps, nil
 }
 
+// GetKVMSecretValues loads key-value maps from maps.json, resolves env vars, and extracts
+// all secret string values from the KVM entries.
+func (bm *BundleManager) GetKVMSecretValues() []string {
+	maps, err := bm.GetMaps()
+	if err != nil || len(maps) == 0 {
+		p := bm.FindDataFile("maps", "maps.json")
+		if p != "" {
+			return LoadKVMSecretsFromFiles(p)
+		}
+		return nil
+	}
+	return ExtractKVMSecretValues(maps)
+}
+
 // GetDataCollectors loads data collectors from data/datacollectors/datacollectors.json or fallbacks.
 func (bm *BundleManager) GetDataCollectors() ([]map[string]interface{}, error) {
 	p := bm.FindDataFile("datacollectors", "datacollectors.json")

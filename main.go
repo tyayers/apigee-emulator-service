@@ -84,6 +84,7 @@ func main() {
 
 	emulatorClient := NewEmulatorClient(mgmtURL, runtimeURL)
 	bundleManager := NewBundleManager(dataDir, rootDir)
+	emulatorClient.KVMSecretProvider = bundleManager.GetKVMSecretValues
 	deploymentManager := NewDeploymentManager(dataDir)
 	proxyTester := NewProxyTester(emulatorClient)
 	analyticsManager := NewAnalyticsManager()

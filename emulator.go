@@ -13,9 +13,10 @@ import (
 
 // EmulatorClient encapsulates communication with Apigee emulator.
 type EmulatorClient struct {
-	MgmtURL    string
-	RuntimeURL string
-	HTTPClient *http.Client
+	MgmtURL           string
+	RuntimeURL        string
+	HTTPClient        *http.Client
+	KVMSecretProvider func() []string
 }
 
 // NewEmulatorClient creates a new EmulatorClient instance.
@@ -331,20 +332,38 @@ func (c *EmulatorClient) GetTraceTransactions(sessionID string) (map[string]inte
 
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &parsed); err == nil {
+		c.redactTrace(parsed)
 		return parsed, nil
 	}
 
 	// Try as array
 	var list []interface{}
 	if err := json.Unmarshal(bodyBytes, &list); err == nil {
-		return map[string]interface{}{
+		res := map[string]interface{}{
 			"transactions": list,
-		}, nil
+		}
+		c.redactTrace(res)
+		return res, nil
 	}
 
-	return map[string]interface{}{
+	rawRes := map[string]interface{}{
 		"raw": string(bodyBytes),
-	}, nil
+	}
+	c.redactTrace(rawRes)
+	return rawRes, nil
+}
+
+func (c *EmulatorClient) redactTrace(traceData map[string]interface{}) {
+	var secrets []string
+	if c.KVMSecretProvider != nil {
+		secrets = c.KVMSecretProvider()
+	}
+	if len(secrets) == 0 {
+		secrets = LoadKVMSecretsFromFiles()
+	}
+	if len(secrets) > 0 {
+		RedactTraceData(traceData, secrets)
+	}
 }
 
 // GetRawDeploymentTree queries GET /v1/emulator/tree and returns raw decoded JSON.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -170,6 +171,15 @@ func (pt *ProxyTester) Execute(req TestRequest) (*TestResponse, error) {
 		Request:        &req,
 	}
 
+	for k, v := range respHeaders {
+		if strings.EqualFold(k, "X-Apigee-target-latency") {
+			if lat, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+				testResp.TargetLatencyMs = &lat
+				break
+			}
+		}
+	}
+
 	// 5. Fetch trace data if trace was enabled
 	if traceSessionID != "" {
 		// Small buffer wait for emulator to record trace
@@ -177,10 +187,76 @@ func (pt *ProxyTester) Execute(req TestRequest) (*TestResponse, error) {
 		traceData, err := pt.Emulator.GetTraceTransactions(traceSessionID)
 		if err == nil && traceData != nil {
 			testResp.TraceData = traceData
+			if testResp.TargetLatencyMs == nil {
+				if lat := extractTargetLatencyFromTrace(traceData); lat != nil {
+					testResp.TargetLatencyMs = lat
+				}
+			}
 		} else if err != nil {
 			fmt.Printf("Warning: failed to retrieve trace transactions for session %s: %v\n", traceSessionID, err)
 		}
 	}
 
 	return testResp, nil
+}
+
+// extractTargetLatencyFromTrace recursively searches the Apigee trace structure for target latency
+func extractTargetLatencyFromTrace(data interface{}) *int64 {
+	var targetLat *int64
+	var targetSentStart, targetRecvEnd int64
+
+	var walk func(v interface{})
+	walk = func(v interface{}) {
+		if targetLat != nil || v == nil {
+			return
+		}
+		switch val := v.(type) {
+		case map[string]interface{}:
+			if name, ok := val["name"].(string); ok {
+				if strings.EqualFold(name, "X-Apigee-target-latency") {
+					if strVal, ok := val["value"].(string); ok {
+						if parsed, err := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); err == nil {
+							targetLat = &parsed
+							return
+						}
+					}
+				} else if name == "target.sent.start.timestamp" {
+					if strVal, ok := val["value"].(string); ok {
+						if parsed, err := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); err == nil {
+							targetSentStart = parsed
+						}
+					}
+				} else if name == "target.received.end.timestamp" {
+					if strVal, ok := val["value"].(string); ok {
+						if parsed, err := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); err == nil {
+							targetRecvEnd = parsed
+						}
+					}
+				}
+			}
+			for _, child := range val {
+				walk(child)
+				if targetLat != nil {
+					return
+				}
+			}
+		case []interface{}:
+			for _, item := range val {
+				walk(item)
+				if targetLat != nil {
+					return
+				}
+			}
+		}
+	}
+
+	walk(data)
+	if targetLat != nil {
+		return targetLat
+	}
+	if targetRecvEnd > 0 && targetSentStart > 0 && targetRecvEnd >= targetSentStart {
+		diff := targetRecvEnd - targetSentStart
+		return &diff
+	}
+	return nil
 }
