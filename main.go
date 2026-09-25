@@ -28,7 +28,9 @@ type Server struct {
 
 	mu                 sync.RWMutex
 	deployMu           sync.Mutex
+	warmupMu           sync.Mutex
 	isDeploying        bool
+	isWarmingUp        bool
 	deployStatusMsg    string
 	deployError        string
 	lastTestDataTime   time.Time
@@ -125,6 +127,7 @@ func main() {
 		mux.HandleFunc(prefix+"/deployments", s.handleDeployments)
 		mux.HandleFunc(prefix+"/tests", s.handleTests)
 		mux.HandleFunc(prefix+"/tests/run", s.handleTestsRun)
+		mux.HandleFunc(prefix+"/tests/warmup", s.handleTestsWarmup)
 		mux.HandleFunc(prefix+"/tests/history", s.handleTestsHistory)
 		mux.HandleFunc(prefix+"/tests/history/", s.handleTestHistoryDetail)
 		mux.HandleFunc(prefix+"/deploy", s.handleDeploy)
@@ -197,6 +200,19 @@ func jsonResponse(w http.ResponseWriter, status int, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
+func (s *Server) getProxyDisplayName(name string) string {
+	if name == "" {
+		return ""
+	}
+	yamlContent, _, err := s.findProxyYaml(name)
+	if err == nil && yamlContent != "" {
+		if dn := ExtractDisplayNameFromYAML(yamlContent); dn != "" {
+			return dn
+		}
+	}
+	return name
+}
+
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -206,12 +222,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	status, _ := s.EmulatorClient.CheckHealth()
 	bundles, _ := s.BundleManager.ListBundles()
 
-	// Correlate deployed state with available bundles
+	// Correlate deployed state with available bundles & populate display names
 	deployedNames := make(map[string]bool)
-	for _, p := range status.ActiveProxies {
-		deployedNames[p.Name] = true
+	for i := range status.ActiveProxies {
+		status.ActiveProxies[i].DisplayName = s.getProxyDisplayName(status.ActiveProxies[i].Name)
+		deployedNames[status.ActiveProxies[i].Name] = true
 	}
 	for i := range bundles {
+		bundles[i].DisplayName = s.getProxyDisplayName(bundles[i].ProxyName)
 		if deployedNames[bundles[i].ProxyName] {
 			bundles[i].IsDeployed = true
 		}
@@ -306,11 +324,17 @@ func (s *Server) handleProxyYaml(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	displayName := ExtractDisplayNameFromYAML(yamlContent)
+	if displayName == "" {
+		displayName = name
+	}
+
 	jsonResponse(w, http.StatusOK, ProxyYamlResponse{
-		Success: true,
-		Proxy:   name,
-		YAML:    yamlContent,
-		Source:  source,
+		Success:     true,
+		Proxy:       name,
+		DisplayName: displayName,
+		YAML:        yamlContent,
+		Source:      source,
 	})
 }
 
@@ -505,7 +529,13 @@ func (s *Server) handleEmulatorState(w http.ResponseWriter, r *http.Request) {
 
 	treeRaw, _ := s.EmulatorClient.GetRawDeploymentTree()
 	deployedProxies, _ := s.EmulatorClient.GetDeploymentTree()
+	for i := range deployedProxies {
+		deployedProxies[i].DisplayName = s.getProxyDisplayName(deployedProxies[i].Name)
+	}
 	bundles, _ := s.BundleManager.ListBundles()
+	for i := range bundles {
+		bundles[i].DisplayName = s.getProxyDisplayName(bundles[i].ProxyName)
+	}
 	products, _ := s.BundleManager.GetProducts()
 	users, _ := s.BundleManager.GetUsers()
 	apps, _ := s.BundleManager.GetApps()
@@ -772,7 +802,7 @@ func (s *Server) handleBundles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enrich with active deployment info
+	// Enrich with active deployment info & display names
 	tree, err := s.EmulatorClient.GetDeploymentTree()
 	if err == nil {
 		deployedMap := make(map[string]bool)
@@ -784,6 +814,9 @@ func (s *Server) handleBundles(w http.ResponseWriter, r *http.Request) {
 				bundles[i].IsDeployed = true
 			}
 		}
+	}
+	for i := range bundles {
+		bundles[i].DisplayName = s.getProxyDisplayName(bundles[i].ProxyName)
 	}
 
 	jsonResponse(w, http.StatusOK, bundles)
@@ -813,6 +846,11 @@ func (s *Server) handleTests(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	for i := range tests {
+		if tests[i].ProxyDisplayName == "" {
+			tests[i].ProxyDisplayName = s.getProxyDisplayName(tests[i].Proxy)
+		}
 	}
 	jsonResponse(w, http.StatusOK, tests)
 }
@@ -875,6 +913,9 @@ func (s *Server) executeDeploy(req DeployRequest) (*DeployResponse, error) {
 
 	// 5. Fetch updated active proxies
 	activeTree, _ := s.EmulatorClient.GetDeploymentTree()
+	for i := range activeTree {
+		activeTree[i].DisplayName = s.getProxyDisplayName(activeTree[i].Name)
+	}
 	duration := time.Since(startTime).Milliseconds()
 
 	return &DeployResponse{
@@ -919,6 +960,9 @@ func (s *Server) startAutoDeploy() {
 	}
 
 	log.Printf("[AutoDeploy] Successfully auto-deployed %d proxies (revision %s) in %dms", resp.TotalDeployed, resp.Revision, resp.DurationMs)
+
+	// Silently run the first test for each proxy in a background server thread to warm up the proxies
+	go s.warmupFirstTestPerProxy()
 }
 
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
@@ -941,6 +985,10 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			Error:   err.Error(),
 		})
 		return
+	}
+
+	if req.All || req.Reset {
+		go s.warmupFirstTestPerProxy()
 	}
 
 	jsonResponse(w, http.StatusOK, resp)
@@ -993,6 +1041,11 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 		testName = fmt.Sprintf("%s %s", req.Method, req.Path)
 	}
 
+	recordReq := req
+	if resp.Request != nil {
+		recordReq = *resp.Request
+	}
+
 	runResult := TestRunResult{
 		ID:             runID,
 		TestName:       testName,
@@ -1002,7 +1055,7 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 		StatusCode:     resp.StatusCode,
 		StatusText:     resp.StatusText,
 		DurationMs:     resp.DurationMs,
-		Request:        req,
+		Request:        recordReq,
 		Response:       resp,
 		Assertions:     resp.Assertions,
 		TraceSessionID: resp.TraceSessionID,
@@ -1097,6 +1150,11 @@ func (s *Server) handleTestsRun(w http.ResponseWriter, r *http.Request) {
 		runID := fmt.Sprintf("run_%d", time.Now().UnixNano())
 		resp.TestRunID = runID
 
+		recordReq := testReq
+		if resp.Request != nil {
+			recordReq = *resp.Request
+		}
+
 		runResult := TestRunResult{
 			ID:             runID,
 			TestName:       tc.Name,
@@ -1107,7 +1165,7 @@ func (s *Server) handleTestsRun(w http.ResponseWriter, r *http.Request) {
 			StatusCode:     resp.StatusCode,
 			StatusText:     resp.StatusText,
 			DurationMs:     resp.DurationMs,
-			Request:        testReq,
+			Request:        recordReq,
 			Response:       resp,
 			Assertions:     resp.Assertions,
 			TraceSessionID: resp.TraceSessionID,
@@ -1134,6 +1192,148 @@ func (s *Server) handleTestsRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, response)
+}
+
+func (s *Server) handleTestsWarmup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	go s.warmupFirstTestPerProxy()
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"status":  "warmup_started",
+		"message": "Silently running first test for each proxy in background thread",
+	})
+}
+
+// warmupFirstTestPerProxy runs the first test for each unique proxy silently in the background
+// to prime runtime caches, connections, and JVM initializations without polluting test history.
+func (s *Server) warmupFirstTestPerProxy() {
+	s.warmupMu.Lock()
+	if s.isWarmingUp {
+		s.warmupMu.Unlock()
+		log.Printf("[Warmup] Proxy warmup already in progress, skipping duplicate run.")
+		return
+	}
+	s.isWarmingUp = true
+	s.warmupMu.Unlock()
+
+	defer func() {
+		s.warmupMu.Lock()
+		s.isWarmingUp = false
+		s.warmupMu.Unlock()
+	}()
+
+	if s.DeploymentManager == nil || s.ProxyTester == nil {
+		log.Printf("[Warmup] DeploymentManager or ProxyTester not initialized, skipping warmup.")
+		return
+	}
+
+	// Brief pause to allow emulator proxy deployment and credential synchronization to settle
+	time.Sleep(1 * time.Second)
+
+	allTests, err := s.DeploymentManager.LoadAllTests()
+	if err != nil {
+		log.Printf("[Warmup] Could not load tests for proxy warmup: %v", err)
+		return
+	}
+
+	// Select the first test for each unique proxy
+	seenProxies := make(map[string]bool)
+	var warmupList []TestCase
+	for _, tc := range allTests {
+		proxyName := strings.TrimSpace(tc.Proxy)
+		if proxyName == "" {
+			continue
+		}
+		if !seenProxies[proxyName] {
+			seenProxies[proxyName] = true
+			warmupList = append(warmupList, tc)
+		}
+	}
+
+	// Check if any active proxies have no test defined in deployments/tests.json
+	if s.EmulatorClient != nil {
+		if status, healthErr := s.EmulatorClient.CheckHealth(); healthErr == nil {
+			for _, p := range status.ActiveProxies {
+				if !seenProxies[p.Name] {
+					seenProxies[p.Name] = true
+					warmupList = append(warmupList, TestCase{
+						Name:  fmt.Sprintf("warmup-%s", strings.ToLower(p.Name)),
+						Proxy: p.Name,
+						Verb:  "GET",
+						Path:  defaultPathForProxy(p.Name),
+					})
+				}
+			}
+		}
+	}
+
+	if len(warmupList) == 0 {
+		log.Printf("[Warmup] No proxies or tests found for warmup.")
+		return
+	}
+
+	log.Printf("[Warmup] Starting background silent warmup of %d proxies (first test per proxy)...", len(warmupList))
+
+	for i, tc := range warmupList {
+		verb := tc.Verb
+		if verb == "" {
+			if tc.Payload != "" {
+				verb = "POST"
+			} else {
+				verb = "GET"
+			}
+		}
+
+		path := tc.Path
+		if path == "" {
+			path = defaultPathForProxy(tc.Proxy)
+		}
+
+		// Replace {GOOGLE_CLOUD_PROJECT} if still present in path
+		if strings.Contains(path, "{GOOGLE_CLOUD_PROJECT}") && s.AnalyticsManager != nil {
+			if proj := s.AnalyticsManager.detectProjectID(); proj != "" {
+				path = strings.ReplaceAll(path, "{GOOGLE_CLOUD_PROJECT}", proj)
+			}
+		}
+
+		body := tc.Payload
+		if body == "" && tc.Body != "" {
+			body = tc.Body
+		}
+
+		headers := make(map[string]string)
+		for k, v := range tc.Headers {
+			headers[k] = v
+		}
+
+		testReq := TestRequest{
+			Proxy:       tc.Proxy,
+			Method:      verb,
+			Path:        path,
+			Headers:     headers,
+			Body:        body,
+			RecordTrace: false,
+			TestName:    tc.Name,
+		}
+
+		startTime := time.Now()
+		resp, execErr := s.ProxyTester.Execute(testReq)
+		elapsed := time.Since(startTime).Milliseconds()
+
+		if execErr != nil {
+			log.Printf("[Warmup] [%d/%d] Proxy '%s' warmup encountered error: %v (%dms)",
+				i+1, len(warmupList), tc.Proxy, execErr, elapsed)
+		} else if resp != nil {
+			log.Printf("[Warmup] [%d/%d] Proxy '%s' warmed up silently with test '%s' (%d %s in %dms)",
+				i+1, len(warmupList), tc.Proxy, tc.Name, resp.StatusCode, resp.StatusText, resp.DurationMs)
+		}
+	}
+
+	log.Printf("[Warmup] Completed background silent warmup for all %d proxies.", len(warmupList))
 }
 
 func (s *Server) handleTestsHistory(w http.ResponseWriter, r *http.Request) {

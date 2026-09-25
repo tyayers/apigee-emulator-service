@@ -22,16 +22,18 @@ type EmulatorStatus struct {
 
 // DeployedProxy represents an active proxy deployed in the emulator.
 type DeployedProxy struct {
-	Name     string `json:"name"`
-	Revision string `json:"revision"`
-	BasePath string `json:"basePath"`
-	URL      string `json:"url"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName,omitempty"`
+	Revision    string `json:"revision"`
+	BasePath    string `json:"basePath"`
+	URL         string `json:"url"`
 }
 
 // BundleInfo describes a proxy bundle packaged in data/bundles.
 type BundleInfo struct {
 	FileName     string    `json:"fileName"`
 	ProxyName    string    `json:"proxyName"`
+	DisplayName  string    `json:"displayName,omitempty"`
 	BasePaths    []string  `json:"basePaths"`
 	SizeBytes    int64     `json:"sizeBytes"`
 	ModifiedAt   time.Time `json:"modifiedAt"`
@@ -52,17 +54,18 @@ type DeploymentConfig struct {
 
 // TestCase represents a pre-configured API test.
 type TestCase struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Proxy       string            `json:"proxy"`
-	Verb        string            `json:"verb"`
-	Path        string            `json:"path"`
-	Headers     map[string]string `json:"headers"`
-	Payload     string            `json:"payload"`
-	Body        string            `json:"body,omitempty"`
-	Request     string            `json:"request,omitempty"`
-	Assertions  []string          `json:"assertions,omitempty"`
-	Deployment  string            `json:"deployment,omitempty"`
+	Name             string            `json:"name"`
+	Description      string            `json:"description,omitempty"`
+	Proxy            string            `json:"proxy"`
+	ProxyDisplayName string            `json:"proxyDisplayName,omitempty"`
+	Verb             string            `json:"verb"`
+	Path             string            `json:"path"`
+	Headers          map[string]string `json:"headers"`
+	Payload          string            `json:"payload"`
+	Body             string            `json:"body,omitempty"`
+	Request          string            `json:"request,omitempty"`
+	Assertions       []string          `json:"assertions,omitempty"`
+	Deployment       string            `json:"deployment,omitempty"`
 }
 
 // DeployRequest represents payload sent to /tester/api/deploy.
@@ -207,9 +210,10 @@ type EmulatorStateResponse struct {
 
 // ProxyYamlResponse represents the response containing a proxy's YAML definition.
 type ProxyYamlResponse struct {
-	Success bool   `json:"success"`
-	Proxy   string `json:"proxy"`
-	YAML    string `json:"yaml,omitempty"`
-	Source  string `json:"source,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Success     bool   `json:"success"`
+	Proxy       string `json:"proxy"`
+	DisplayName string `json:"displayName,omitempty"`
+	YAML        string `json:"yaml,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Error       string `json:"error,omitempty"`
 }

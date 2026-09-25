@@ -97,7 +97,7 @@ ${BOLD}Options:${NC}
   -c, --convert         Convert deployment definitions in 'data/deployments/' into
                         local assets (bundles, products, apps) with aft and exit
   -p, --parameters P    Pass parameters (comma-separated key=val, e.g. -p par1=val1,par2=val2)
-  --project PROJECT_ID  GCP Project ID to replace {project} in deployments
+  --project [PROJECT_ID] GCP Project ID to replace {GOOGLE_CLOUD_PROJECT} in deployments (or uses GOOGLE_CLOUD_PROJECT env var)
 
 ${BOLD}Examples:${NC}
   # Interactive mode (defaults to data/deployments/deployment-1.yaml on Enter)
@@ -256,16 +256,17 @@ declare -A ALL_PARAMS_MAP=()
 declare -a CLI_PARAMETERS=()
 
 collect_parameters() {
-  if [ -z "$PROJECT_ID" ] && command -v gcloud &>/dev/null; then
-    PROJECT_ID=$(gcloud config get-value project 2>/dev/null || true)
+  if [ -z "$PROJECT_ID" ]; then
+    PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-${GCP_PROJECT:-${CLOUDSDK_CORE_PROJECT:-$(gcloud config get-value project 2>/dev/null || true)}}}"
   fi
 
   if [ -n "$PROJECT_ID" ]; then
-    ALL_PARAMS_MAP["project"]="$PROJECT_ID"
-    ALL_PARAMS_MAP["PROJECT"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["GOOGLE_CLOUD_PROJECT"]="$PROJECT_ID"
     ALL_PARAMS_MAP["PROJECT_ID"]="$PROJECT_ID"
     ALL_PARAMS_MAP["GoogleCloudProject"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["GCP_PROJECT"]="$PROJECT_ID"
     export PROJECT_ID="$PROJECT_ID"
+    export GOOGLE_CLOUD_PROJECT="$PROJECT_ID"
     export GoogleCloudProject="$PROJECT_ID"
     export GCP_PROJECT="$PROJECT_ID"
   fi
@@ -437,12 +438,15 @@ merge_aft_parameters() {
   done
 
   for k in "${!ALL_PARAMS_MAP[@]}"; do
-    if [ "$k" != "project" ] && [ "$k" != "PROJECT" ] && [ "$k" != "PROJECT_ID" ]; then
+    if [ "$k" != "project" ] && [ "$k" != "PROJECT" ] && [ "$k" != "PROJECT_ID" ] && [ "$k" != "GOOGLE_CLOUD_PROJECT" ] && [ "$k" != "GCP_PROJECT" ]; then
       merged_map["$k"]="${ALL_PARAMS_MAP[$k]}"
     fi
   done
   if [ -n "${ALL_PARAMS_MAP["GoogleCloudProject"]}" ]; then
     merged_map["GoogleCloudProject"]="${ALL_PARAMS_MAP["GoogleCloudProject"]}"
+  fi
+  if [ -n "${ALL_PARAMS_MAP["GOOGLE_CLOUD_PROJECT"]}" ] && [ -n "${merged_map["GOOGLE_CLOUD_PROJECT"]}" ]; then
+    merged_map["GOOGLE_CLOUD_PROJECT"]="${ALL_PARAMS_MAP["GOOGLE_CLOUD_PROJECT"]}"
   fi
 
   for k in "${!merged_map[@]}"; do
@@ -712,8 +716,13 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --project)
-      PROJECT_ID="$2"
-      shift 2
+      if [[ -n "$2" && "$2" != -* ]]; then
+        PROJECT_ID="$2"
+        shift 2
+      else
+        PROJECT_ID="${PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-${GCP_PROJECT:-}}}"
+        shift
+      fi
       ;;
     --project=*)
       PROJECT_ID="${1#*=}"

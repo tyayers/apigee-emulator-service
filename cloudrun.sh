@@ -60,13 +60,23 @@ SESSION_FILE="$ROOT_DIR/.cloudrun_trace_session"
 # Discover GCP Project & Region
 resolve_gcp_context() {
   if [ -z "$PROJECT_ID" ]; then
-    PROJECT_ID="${GCP_PROJECT:-${CLOUDSDK_CORE_PROJECT:-$(gcloud config get-value project 2>/dev/null || true)}}"
+    PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-${GCP_PROJECT:-${CLOUDSDK_CORE_PROJECT:-$(gcloud config get-value project 2>/dev/null || true)}}}"
   fi
   if [ -z "$REGION" ]; then
-    REGION="${GCP_REGION:-${CLOUDSDK_COMPUTE_REGION:-$(gcloud config get-value run/region 2>/dev/null || true)}}"
+    REGION="${GOOGLE_CLOUD_LOCATION:-${GOOGLE_CLOUD_REGION:-${GCP_REGION:-${CLOUDSDK_COMPUTE_REGION:-$(gcloud config get-value run/region 2>/dev/null || true)}}}}"
   fi
   if [ -z "$REGION" ]; then
     REGION="europe-west1"
+  fi
+
+  if [ -n "$PROJECT_ID" ]; then
+    export PROJECT_ID
+    export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-$PROJECT_ID}"
+  fi
+  if [ -n "$REGION" ]; then
+    export REGION
+    export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$REGION}"
+    export GOOGLE_CLOUD_REGION="${GOOGLE_CLOUD_REGION:-$REGION}"
   fi
 }
 
@@ -184,8 +194,8 @@ show_help() {
   echo -e "${BOLD}Options:${NC}"
   echo "  -a, --all              Deploy all deployments from 'data/deployments/' to Cloud Run"
   echo "  -l, --list             List available deployments and bundles in 'data/'"
-  echo "  --project PROJECT_ID   Override GCP Project ID"
-  echo "  --region REGION        Override Cloud Run region (default: europe-west1)"
+  echo "  --project [PROJECT_ID] Override GCP Project ID (or uses GOOGLE_CLOUD_PROJECT env var)"
+  echo "  --region [REGION]      Override Cloud Run region (or uses GOOGLE_CLOUD_LOCATION / GOOGLE_CLOUD_REGION, default: europe-west1)"
   echo "  --service SERVICE_NAME Override Cloud Run service name (default: apigee-emulator)"
   echo "  -p, --parameters P     Pass additional parameters (comma-separated key=val, e.g. -p par1=val1,par2=val2)"
   echo "  --url URL              Directly target an existing Cloud Run or custom URL"
@@ -270,19 +280,25 @@ collect_parameters() {
   resolve_gcp_context
 
   if [ -n "$PROJECT_ID" ]; then
-    ALL_PARAMS_MAP["project"]="$PROJECT_ID"
-    ALL_PARAMS_MAP["PROJECT"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["GOOGLE_CLOUD_PROJECT"]="$PROJECT_ID"
     ALL_PARAMS_MAP["PROJECT_ID"]="$PROJECT_ID"
     ALL_PARAMS_MAP["GoogleCloudProject"]="$PROJECT_ID"
+    ALL_PARAMS_MAP["GCP_PROJECT"]="$PROJECT_ID"
     export PROJECT_ID="$PROJECT_ID"
+    export GOOGLE_CLOUD_PROJECT="$PROJECT_ID"
     export GoogleCloudProject="$PROJECT_ID"
     export GCP_PROJECT="$PROJECT_ID"
   fi
   if [ -n "$REGION" ]; then
     ALL_PARAMS_MAP["region"]="$REGION"
     ALL_PARAMS_MAP["REGION"]="$REGION"
+    ALL_PARAMS_MAP["GOOGLE_CLOUD_LOCATION"]="$REGION"
+    ALL_PARAMS_MAP["GOOGLE_CLOUD_REGION"]="$REGION"
+    ALL_PARAMS_MAP["GCP_REGION"]="$REGION"
     export REGION="$REGION"
     export GCP_REGION="$REGION"
+    export GOOGLE_CLOUD_LOCATION="$REGION"
+    export GOOGLE_CLOUD_REGION="$REGION"
   fi
   if [ -n "$SERVICE_NAME" ]; then
     ALL_PARAMS_MAP["service"]="$SERVICE_NAME"
@@ -535,12 +551,24 @@ merge_aft_parameters() {
   done
 
   for k in "${!ALL_PARAMS_MAP[@]}"; do
-    if [ "$k" != "project" ] && [ "$k" != "PROJECT" ] && [ "$k" != "PROJECT_ID" ] && [ "$k" != "region" ] && [ "$k" != "REGION" ] && [ "$k" != "service" ] && [ "$k" != "SERVICE_NAME" ]; then
+    if [ "$k" != "project" ] && [ "$k" != "PROJECT" ] && [ "$k" != "PROJECT_ID" ] && \
+       [ "$k" != "region" ] && [ "$k" != "REGION" ] && [ "$k" != "service" ] && [ "$k" != "SERVICE_NAME" ] && \
+       [ "$k" != "GOOGLE_CLOUD_PROJECT" ] && [ "$k" != "GOOGLE_CLOUD_LOCATION" ] && [ "$k" != "GOOGLE_CLOUD_REGION" ] && \
+       [ "$k" != "GCP_PROJECT" ] && [ "$k" != "GCP_REGION" ]; then
       merged_map["$k"]="${ALL_PARAMS_MAP[$k]}"
     fi
   done
   if [ -n "${ALL_PARAMS_MAP["GoogleCloudProject"]}" ]; then
     merged_map["GoogleCloudProject"]="${ALL_PARAMS_MAP["GoogleCloudProject"]}"
+  fi
+  if [ -n "${ALL_PARAMS_MAP["GOOGLE_CLOUD_PROJECT"]}" ] && [ -n "${merged_map["GOOGLE_CLOUD_PROJECT"]}" ]; then
+    merged_map["GOOGLE_CLOUD_PROJECT"]="${ALL_PARAMS_MAP["GOOGLE_CLOUD_PROJECT"]}"
+  fi
+  if [ -n "${ALL_PARAMS_MAP["GOOGLE_CLOUD_LOCATION"]}" ] && [ -n "${merged_map["GOOGLE_CLOUD_LOCATION"]}" ]; then
+    merged_map["GOOGLE_CLOUD_LOCATION"]="${ALL_PARAMS_MAP["GOOGLE_CLOUD_LOCATION"]}"
+  fi
+  if [ -n "${ALL_PARAMS_MAP["GOOGLE_CLOUD_REGION"]}" ] && [ -n "${merged_map["GOOGLE_CLOUD_REGION"]}" ]; then
+    merged_map["GOOGLE_CLOUD_REGION"]="${ALL_PARAMS_MAP["GOOGLE_CLOUD_REGION"]}"
   fi
 
   for k in "${!merged_map[@]}"; do
@@ -557,7 +585,7 @@ deploy_cloudrun_service() {
 
   if [ -z "$PROJECT_ID" ]; then
     echo -e "${RED}Error: No GCP Project configured or specified.${NC}" >&2
-    echo "Please set via: gcloud config set project <PROJECT_ID> or pass --project <PROJECT_ID>" >&2
+    echo "Please set GOOGLE_CLOUD_PROJECT, configure via 'gcloud config set project <PROJECT_ID>', or pass --project <PROJECT_ID>" >&2
     exit 1
   fi
 
@@ -1755,16 +1783,26 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --project)
-      PROJECT_ID="$2"
-      shift 2
+      if [[ -n "$2" && "$2" != -* ]]; then
+        PROJECT_ID="$2"
+        shift 2
+      else
+        PROJECT_ID="${PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-${GCP_PROJECT:-}}}"
+        shift
+      fi
       ;;
     --project=*)
       PROJECT_ID="${1#*=}"
       shift
       ;;
     --region)
-      REGION="$2"
-      shift 2
+      if [[ -n "$2" && "$2" != -* ]]; then
+        REGION="$2"
+        shift 2
+      else
+        REGION="${REGION:-${GOOGLE_CLOUD_LOCATION:-${GOOGLE_CLOUD_REGION:-${GCP_REGION:-}}}}"
+        shift
+      fi
       ;;
     --region=*)
       REGION="${1#*=}"

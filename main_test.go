@@ -478,6 +478,9 @@ func TestProxyYamlEndpoints(t *testing.T) {
 	if !resp1.Success || resp1.YAML == "" || resp1.Proxy != "TestProxy" {
 		t.Errorf("Unexpected TestProxy response: %+v", resp1)
 	}
+	if resp1.DisplayName != "Hello World Proxy" {
+		t.Errorf("Expected TestProxy DisplayName 'Hello World Proxy', got %q", resp1.DisplayName)
+	}
 
 	// 2. Valid proxy with template YAML file: REST-AI-Completions
 	req2 := httptest.NewRequest("GET", "/tester/api/proxies/yaml?proxy=REST-AI-Completions", nil)
@@ -492,6 +495,9 @@ func TestProxyYamlEndpoints(t *testing.T) {
 	}
 	if !resp2.Success || resp2.YAML == "" {
 		t.Errorf("Unexpected REST-AI-Completions response: %+v", resp2)
+	}
+	if resp2.DisplayName != "Completions API" {
+		t.Errorf("Expected REST-AI-Completions DisplayName 'Completions API', got %q", resp2.DisplayName)
 	}
 
 	// 3. Missing query parameter
@@ -660,18 +666,19 @@ func TestKVMEnvResolution(t *testing.T) {
 }
 
 func TestDeploymentParameterResolution(t *testing.T) {
-	t.Setenv("PROJECT_ID", "test-gcp-project-123")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-gcp-project-123")
+	t.Setenv("GOOGLE_CLOUD_LOCATION", "europe-west1")
 	t.Setenv("CUSTOM_ENV_VAR", "custom-value-xyz")
 
 	rawYAML := `name: deployment-test
 parameters:
   - name: GoogleCloudProject
-    default: "{project}"
+    default: "{GOOGLE_CLOUD_PROJECT}"
   - name: ExtraParam
     default: "{CUSTOM_ENV_VAR}"
 proxies:
   - name: TestProxy
-    description: "Running in {project}"
+    description: "Running in {GOOGLE_CLOUD_PROJECT} ({GOOGLE_CLOUD_LOCATION})"
 `
 
 	resolved := SubstituteDeploymentEnvPlaceholders(rawYAML)
@@ -681,8 +688,15 @@ proxies:
 	if !strings.Contains(resolved, `default: "custom-value-xyz"`) {
 		t.Errorf("Expected ExtraParam default to resolve to custom-value-xyz, got: %s", resolved)
 	}
-	if !strings.Contains(resolved, `description: "Running in test-gcp-project-123"`) {
-		t.Errorf("Expected description to resolve to test-gcp-project-123, got: %s", resolved)
+	if !strings.Contains(resolved, `description: "Running in test-gcp-project-123 (europe-west1)"`) {
+		t.Errorf("Expected description to resolve to test-gcp-project-123 (europe-west1), got: %s", resolved)
+	}
+
+	// Verify {project} is NOT replaced
+	unsupportedYAML := `description: "Running in {project}"`
+	resolvedUnsupported := SubstituteDeploymentEnvPlaceholders(unsupportedYAML)
+	if strings.Contains(resolvedUnsupported, "test-gcp-project-123") {
+		t.Errorf("Expected {project} NOT to be replaced, got: %s", resolvedUnsupported)
 	}
 
 	// Test ListDeployments file reading and auto-update
@@ -714,5 +728,100 @@ proxies:
 		t.Errorf("Expected deployment file on disk to remain clean and unmodified, but it was changed:\n%s", string(diskBytes))
 	}
 }
+
+func TestWarmupFirstTestPerProxy(t *testing.T) {
+	// Set up mock emulator runtime server
+	executedRequests := make(map[string]int)
+	var reqMu sync.Mutex
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqMu.Lock()
+		executedRequests[r.URL.Path]++
+		reqMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockServer.Close()
+
+	// Set up temporary deployments directory with tests
+	tmpDir := t.TempDir()
+	depDir := filepath.Join(tmpDir, "deployments")
+	_ = os.MkdirAll(depDir, 0755)
+
+	depYAML := `
+name: warmup-deployment
+tests:
+  - name: test1-for-proxy-a
+    proxy: ProxyA
+    path: /proxy-a/test1
+    method: GET
+  - name: test2-for-proxy-a
+    proxy: ProxyA
+    path: /proxy-a/test2
+    method: POST
+  - name: test1-for-proxy-b
+    proxy: ProxyB
+    path: /proxy-b/test1
+    method: GET
+`
+	_ = os.WriteFile(filepath.Join(depDir, "dep.yaml"), []byte(depYAML), 0644)
+
+	client := NewEmulatorClient(mockServer.URL, mockServer.URL)
+	s := &Server{
+		EmulatorClient:    client,
+		DeploymentManager: NewDeploymentManager(tmpDir),
+		ProxyTester:       NewProxyTester(client),
+		TestHistory:       NewTestHistoryManager(100),
+	}
+
+	// Run warmup directly
+	s.warmupFirstTestPerProxy()
+
+	// Verify that the first test of ProxyA and ProxyB were executed
+	reqMu.Lock()
+	countA1 := executedRequests["/proxy-a/test1"]
+	countA2 := executedRequests["/proxy-a/test2"]
+	countB1 := executedRequests["/proxy-b/test1"]
+	reqMu.Unlock()
+
+	if countA1 != 1 {
+		t.Errorf("Expected exactly 1 request to /proxy-a/test1 (first test for ProxyA), got %d", countA1)
+	}
+	if countA2 != 0 {
+		t.Errorf("Expected 0 requests to /proxy-a/test2 (subsequent test for ProxyA), got %d", countA2)
+	}
+	if countB1 != 1 {
+		t.Errorf("Expected exactly 1 request to /proxy-b/test1 (first test for ProxyB), got %d", countB1)
+	}
+
+	// Verify TestHistory was NOT polluted (silent execution)
+	if history := s.TestHistory.GetHistory(""); len(history) != 0 {
+		t.Errorf("Expected 0 records in TestHistory for silent warmup, got %d", len(history))
+	}
+}
+
+func TestHandleTestsWarmupEndpoint(t *testing.T) {
+	s := &Server{
+		DeploymentManager: NewDeploymentManager(t.TempDir()),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tester/api/tests/warmup", nil)
+	w := httptest.NewRecorder()
+	s.handleTestsWarmup(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status OK, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to parse JSON response: %v", err)
+	}
+
+	if resp["status"] != "warmup_started" {
+		t.Errorf("Expected status 'warmup_started', got %v", resp["status"])
+	}
+}
+
 
 

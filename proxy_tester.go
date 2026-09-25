@@ -64,81 +64,63 @@ func (pt *ProxyTester) Execute(req TestRequest) (*TestResponse, error) {
 		return nil, fmt.Errorf("failed to create http request: %w", err)
 	}
 
+	// Clean and normalize incoming request headers case-insensitively
+	effectiveHeaders := make(map[string]string)
+	if req.Headers != nil {
+		for k, v := range req.Headers {
+			trimmedK := strings.TrimSpace(k)
+			if trimmedK == "" {
+				continue
+			}
+			foundKey := ""
+			for existingKey := range effectiveHeaders {
+				if strings.EqualFold(existingKey, trimmedK) {
+					foundKey = existingKey
+					break
+				}
+			}
+			if foundKey != "" {
+				effectiveHeaders[foundKey] = v
+			} else {
+				effectiveHeaders[trimmedK] = v
+			}
+		}
+	}
+
 	// 2a. Inject Google access token if no Authorization bearer token is present in test request headers
-	if !hasAuthorizationBearerToken(req.Headers) && pt.TokenProvider != nil {
+	if !hasAuthorizationBearerToken(effectiveHeaders) && pt.TokenProvider != nil {
 		token, tokenErr := pt.TokenProvider.GetAccessToken(httpReq.Context())
 		if tokenErr == nil && token != "" {
-			req.Headers = injectGoogleAccessToken(req.Headers, token)
+			effectiveHeaders = injectGoogleAccessToken(effectiveHeaders, token)
 		} else if tokenErr != nil {
 			// Log informative notice; continue without token so offline/unauthenticated proxies still run
 			fmt.Printf("Notice: could not acquire Google access token: %v\n", tokenErr)
 		}
 	}
 
-	// Apply headers
-	for k, v := range req.Headers {
+	hasUA := false
+	for k := range effectiveHeaders {
+		if strings.EqualFold(k, "User-Agent") {
+			hasUA = true
+			break
+		}
+	}
+	if !hasUA {
+		effectiveHeaders["User-Agent"] = "Apigee-Emulator-Manager/1.0"
+	}
+
+	// Apply headers to HTTP request
+	for k, v := range effectiveHeaders {
 		httpReq.Header.Set(k, v)
 	}
-	if httpReq.Header.Get("User-Agent") == "" {
-		httpReq.Header.Set("User-Agent", "Apigee-Emulator-Manager/1.0")
-	}
 
-	// Ensure API key headers are synchronized across both standard and AI key formats
-	apiKey := httpReq.Header.Get("x-api-key")
-	aiKey := httpReq.Header.Get("x-ai-key")
-	if apiKey != "" && aiKey == "" {
-		httpReq.Header.Set("x-ai-key", apiKey)
-	} else if aiKey != "" && apiKey == "" {
-		httpReq.Header.Set("x-api-key", aiKey)
-	}
-
-	// Record effective headers dispatched
-	if req.Headers == nil {
-		req.Headers = make(map[string]string)
-	}
-	for k := range httpReq.Header {
-		req.Headers[k] = httpReq.Header.Get(k)
-	}
+	// Keep req.Headers synchronized with effective dispatched headers without duplicates or extra keys
+	req.Headers = effectiveHeaders
 
 	// 3. Measure execution latency
 	startTime := time.Now()
 	resp, err := pt.Client.Do(httpReq)
 	duration := time.Since(startTime).Milliseconds()
-
-	// If 401 Unauthorized (InvalidApiKey) occurs, try resolving active keys from emulator datastore
-	if err == nil && resp.StatusCode == 401 && (apiKey != "" || aiKey != "") {
-		if activeKeys, keyErr := pt.Emulator.GetActiveConsumerKeys(); keyErr == nil && len(activeKeys) > 0 {
-			activeKey := activeKeys[0]
-			currentKey := apiKey
-			if currentKey == "" {
-				currentKey = aiKey
-			}
-			if activeKey != currentKey {
-				resp.Body.Close()
-				var retryBodyReader io.Reader
-				if req.Body != "" && method != http.MethodGet && method != http.MethodHead {
-					retryBodyReader = strings.NewReader(req.Body)
-				}
-				if retryReq, rErr := http.NewRequest(method, targetURL, retryBodyReader); rErr == nil {
-					for k, v := range req.Headers {
-						retryReq.Header.Set(k, v)
-					}
-					retryReq.Header.Set("x-api-key", activeKey)
-					retryReq.Header.Set("x-ai-key", activeKey)
-					req.Headers["x-api-key"] = activeKey
-					req.Headers["x-ai-key"] = activeKey
-					if retryReq.Header.Get("User-Agent") == "" {
-						retryReq.Header.Set("User-Agent", "Apigee-Emulator-Manager/1.0")
-					}
-					retryStart := time.Now()
-					if retryResp, doErr := pt.Client.Do(retryReq); doErr == nil {
-						resp = retryResp
-						duration = time.Since(retryStart).Milliseconds()
-					}
-				}
-			}
-		}
-	}
 
 	if err != nil {
 		return &TestResponse{

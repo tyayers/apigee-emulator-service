@@ -20,3 +20,4 @@ templates
 tests.json
 proxies
 data/proxies/
+.env

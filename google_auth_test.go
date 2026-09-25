@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -144,4 +145,93 @@ func TestProxyTester_Execute_TokenInjection(t *testing.T) {
 			t.Errorf("Expected status 200, got %d", resp.StatusCode)
 		}
 	})
+
+	t.Run("sends only specified x-api-key without duplicates or injected x-ai-key", func(t *testing.T) {
+		var receivedHeaders http.Header
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedHeaders = r.Header.Clone()
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"ok"}`))
+		}))
+		defer server.Close()
+
+		pt := NewProxyTester(NewEmulatorClient("http://127.0.0.1:9999", server.URL))
+		req := TestRequest{
+			Method: "POST",
+			Path:   "/v1/completions",
+			Headers: map[string]string{
+				"x-api-key": "test-app-key-123",
+			},
+		}
+
+		resp, err := pt.Execute(req)
+		if err != nil {
+			t.Fatalf("pt.Execute failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected 200, got %d", resp.StatusCode)
+		}
+
+		// Verify wire headers sent to server
+		if len(receivedHeaders["X-Api-Key"]) != 1 || receivedHeaders.Get("X-Api-Key") != "test-app-key-123" {
+			t.Errorf("Expected exactly 1 X-Api-Key header with value 'test-app-key-123', got %v", receivedHeaders["X-Api-Key"])
+		}
+		if receivedHeaders.Get("x-ai-key") != "" || receivedHeaders.Get("X-Ai-Key") != "" {
+			t.Errorf("Did not expect any x-ai-key or X-Ai-Key header, got %v", receivedHeaders["X-Ai-Key"])
+		}
+
+		// Verify returned request headers are deduplicated and match specified key
+		if resp.Request == nil || resp.Request.Headers == nil {
+			t.Fatalf("Expected resp.Request.Headers to be non-nil")
+		}
+		apiKeyCount := 0
+		for k, v := range resp.Request.Headers {
+			if strings.EqualFold(k, "x-api-key") {
+				apiKeyCount++
+				if v != "test-app-key-123" {
+					t.Errorf("Expected x-api-key value 'test-app-key-123', got '%s'", v)
+				}
+			}
+			if strings.EqualFold(k, "x-ai-key") {
+				t.Errorf("Unexpected x-ai-key header in resp.Request.Headers")
+			}
+		}
+		if apiKeyCount != 1 {
+			t.Errorf("Expected exactly 1 x-api-key header in resp.Request.Headers, got %d", apiKeyCount)
+		}
+	})
+
+	t.Run("does not replace test api key on 401 response", func(t *testing.T) {
+		requestCount := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestCount++
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"fault":{"faultstring":"Invalid API key"}}`))
+		}))
+		defer server.Close()
+
+		pt := NewProxyTester(NewEmulatorClient("http://127.0.0.1:9999", server.URL))
+		req := TestRequest{
+			Method: "POST",
+			Path:   "/v1/completions",
+			Headers: map[string]string{
+				"x-api-key": "test-app-key-123",
+			},
+		}
+
+		resp, err := pt.Execute(req)
+		if err != nil {
+			t.Fatalf("pt.Execute failed: %v", err)
+		}
+		if resp.StatusCode != 401 {
+			t.Errorf("Expected 401 response, got %d", resp.StatusCode)
+		}
+		if requestCount != 1 {
+			t.Errorf("Expected exactly 1 request (no retry swapping keys), got %d", requestCount)
+		}
+		if resp.Request.Headers["x-api-key"] != "test-app-key-123" {
+			t.Errorf("Expected test key 'test-app-key-123' preserved, got '%s'", resp.Request.Headers["x-api-key"])
+		}
+	})
 }
+

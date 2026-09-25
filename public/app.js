@@ -23,6 +23,7 @@
     activeTraceView: 'timeline', // 'timeline' or 'json'
     activeProxyTab: 'tester', // 'tester' or 'yaml'
     proxyYamlCache: {},
+    proxyDisplayNames: {},
   };
 
   // SVG Icons (Monochromatic)
@@ -47,6 +48,9 @@
     btnDeployAll: document.getElementById('btn-deploy-all'),
     btnReset: document.getElementById('btn-reset-emulator'),
     btnRefresh: document.getElementById('btn-refresh'),
+    btnThemeToggle: document.getElementById('btn-theme-toggle'),
+    themeIconSun: document.getElementById('theme-icon-sun'),
+    themeIconMoon: document.getElementById('theme-icon-moon'),
     activeProxiesList: document.getElementById('active-proxies-list'),
     activeProxiesCount: document.getElementById('active-proxies-count'),
     bundlesList: document.getElementById('bundles-list'),
@@ -266,6 +270,46 @@
     btnDeployModalDismiss: document.getElementById('btn-deploy-modal-dismiss'),
   };
 
+  // Proxy Display Name Helper: returns displayName if present in YAML or active status, else falls back to name
+  function getProxyDisplayName(proxyName) {
+    if (!proxyName) return '';
+    const key = proxyName.toLowerCase();
+    if (state.proxyDisplayNames && state.proxyDisplayNames[key]) {
+      return state.proxyDisplayNames[key];
+    }
+    // Check activeProxies
+    const foundActive = (state.activeProxies || []).find(p => (p.name || p.Name || '').toLowerCase() === key);
+    if (foundActive && (foundActive.displayName || foundActive.DisplayName)) {
+      if (!state.proxyDisplayNames) state.proxyDisplayNames = {};
+      state.proxyDisplayNames[key] = foundActive.displayName || foundActive.DisplayName;
+      return state.proxyDisplayNames[key];
+    }
+    // Check bundles
+    const foundBundle = (state.bundles || []).find(b => (b.proxyName || '').toLowerCase() === key);
+    if (foundBundle && (foundBundle.displayName || foundBundle.DisplayName)) {
+      if (!state.proxyDisplayNames) state.proxyDisplayNames = {};
+      state.proxyDisplayNames[key] = foundBundle.displayName || foundBundle.DisplayName;
+      return state.proxyDisplayNames[key];
+    }
+    // Check tests
+    const foundTest = (state.tests || []).find(t => (t.proxy || '').toLowerCase() === key);
+    if (foundTest && (foundTest.proxyDisplayName || foundTest.displayName)) {
+      if (!state.proxyDisplayNames) state.proxyDisplayNames = {};
+      state.proxyDisplayNames[key] = foundTest.proxyDisplayName || foundTest.displayName;
+      return state.proxyDisplayNames[key];
+    }
+    // Check proxyYamlCache
+    if (state.proxyYamlCache && state.proxyYamlCache[proxyName] && state.proxyYamlCache[proxyName].yaml) {
+      const match = state.proxyYamlCache[proxyName].yaml.match(/^displayName:\s*["']?([^"'\n\r]+)["']?/m);
+      if (match && match[1].trim()) {
+        if (!state.proxyDisplayNames) state.proxyDisplayNames = {};
+        state.proxyDisplayNames[key] = match[1].trim();
+        return state.proxyDisplayNames[key];
+      }
+    }
+    return proxyName;
+  }
+
   // Deployment Wait Dialog Management
   function showDeployWaitDialog(options = {}) {
     if (!el.deployModal) return;
@@ -372,8 +416,59 @@
     });
   }
 
+  // Theme Management (Light and Dark Mode)
+  function initTheme() {
+    const savedTheme = localStorage.getItem('theme');
+    let activeTheme = savedTheme;
+    if (!activeTheme) {
+      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+        activeTheme = 'light';
+      } else {
+        activeTheme = 'dark';
+      }
+    }
+    applyTheme(activeTheme);
+
+    if (window.matchMedia) {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+        if (!localStorage.getItem('theme')) {
+          applyTheme(e.matches ? 'dark' : 'light');
+        }
+      });
+    }
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    const metaTheme = document.querySelector('meta[name="color-scheme"]');
+    if (metaTheme) {
+      metaTheme.content = theme;
+    }
+    if (el.themeIconSun && el.themeIconMoon && el.btnThemeToggle) {
+      if (theme === 'dark') {
+        el.themeIconSun.classList.remove('hidden');
+        el.themeIconMoon.classList.add('hidden');
+        el.btnThemeToggle.title = 'Switch to light mode';
+        el.btnThemeToggle.setAttribute('aria-label', 'Switch to light mode');
+      } else {
+        el.themeIconSun.classList.add('hidden');
+        el.themeIconMoon.classList.remove('hidden');
+        el.btnThemeToggle.title = 'Switch to dark mode';
+        el.btnThemeToggle.setAttribute('aria-label', 'Switch to dark mode');
+      }
+    }
+  }
+
+  function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    const next = current === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('theme', next);
+    applyTheme(next);
+  }
+
   // Initialization
   async function init() {
+    initTheme();
     initCollapsibleCards();
     setupTabHandlers();
     setupEventListeners();
@@ -570,6 +665,7 @@
 
   // Event Listeners
   function setupEventListeners() {
+    if (el.btnThemeToggle) el.btnThemeToggle.addEventListener('click', toggleTheme);
     if (el.btnRefresh) el.btnRefresh.addEventListener('click', () => fetchStatus(true));
     if (el.btnDeployAll) el.btnDeployAll.addEventListener('click', deployAll);
     if (el.btnDeploySelected) el.btnDeploySelected.addEventListener('click', deploySelected);
@@ -822,12 +918,17 @@
 
   function getHeadersFromTable() {
     const headers = {};
+    const seenLower = new Set();
     el.headersTbody.querySelectorAll('tr').forEach(tr => {
       const enabled = tr.querySelector('.header-enable')?.checked;
       const key = tr.querySelector('.header-key')?.value?.trim();
       const val = tr.querySelector('.header-val')?.value?.trim();
       if (enabled && key) {
-        headers[key] = val;
+        const lower = key.toLowerCase();
+        if (!seenLower.has(lower)) {
+          seenLower.add(lower);
+          headers[key] = val;
+        }
       }
     });
     return headers;
@@ -849,6 +950,22 @@
       state.products = data.products || [];
       state.users = data.users || [];
       state.apps = data.apps || [];
+
+      // Record proxy display names from status
+      (data.activeProxies || []).forEach(p => {
+        const name = p.name || p.Name;
+        const disp = p.displayName || p.DisplayName;
+        if (name && disp) {
+          state.proxyDisplayNames[name.toLowerCase()] = disp;
+        }
+      });
+      (data.availableBundles || []).forEach(b => {
+        const name = b.proxyName;
+        const disp = b.displayName;
+        if (name && disp) {
+          state.proxyDisplayNames[name.toLowerCase()] = disp;
+        }
+      });
 
       // Fallback: if products, users, or apps missing from status payload, fetch endpoints
       if (!data.products) {
@@ -915,6 +1032,9 @@
       const seenEndpoints = new Set();
       const unique = [];
       (data || []).forEach(t => {
+        if (t.proxy && t.proxyDisplayName) {
+          state.proxyDisplayNames[t.proxy.toLowerCase()] = t.proxyDisplayName;
+        }
         const nameKey = (t.name || '').toLowerCase().trim();
         const endKey = `${(t.proxy || '').toLowerCase()}::${(t.verb || t.method || '').toUpperCase()}::${(t.path || '').toLowerCase()}`;
         if (!seenNames.has(nameKey) && !seenEndpoints.has(endKey)) {
@@ -956,7 +1076,8 @@
 
     if (matchingTests.length > 0) {
       const group = document.createElement('optgroup');
-      group.label = `Tests for ${activeProxy}`;
+      const activeDisplayName = getProxyDisplayName(activeProxy);
+      group.label = `Tests for ${activeDisplayName}`;
       matchingTests.forEach(({ test, idx }) => {
         const opt = document.createElement('option');
         opt.value = String(idx);
@@ -976,7 +1097,8 @@
         opt.value = String(idx);
         if (test.description) opt.title = test.description;
         const assertCount = (test.assertions && test.assertions.length) ? ` [${test.assertions.length} asserts]` : '';
-        opt.textContent = `${test.proxy} > ${test.name} (${test.verb || 'GET'})${assertCount}`;
+        const pDisp = getProxyDisplayName(test.proxy) || test.proxyDisplayName || test.proxy;
+        opt.textContent = `${pDisp} > ${test.name} (${test.verb || 'GET'})${assertCount}`;
         group.appendChild(opt);
       });
       el.presetSelect.appendChild(group);
@@ -1054,10 +1176,14 @@
     // Populate Headers
     el.headersTbody.innerHTML = '';
     const headers = test.headers || {};
+    const seenHeaderKeys = new Set();
     Object.keys(headers).forEach(k => {
+      const lower = k.trim().toLowerCase();
+      if (!lower || seenHeaderKeys.has(lower)) return;
+      seenHeaderKeys.add(lower);
       addHeaderRow(k, headers[k], true);
     });
-    if (!headers['Content-Type']) {
+    if (!seenHeaderKeys.has('content-type')) {
       addHeaderRow('Content-Type', 'application/json', true);
     }
 
@@ -1177,12 +1303,18 @@
     showTesterView();
     state.selectedProxyName = proxyName;
 
+    const displayName = getProxyDisplayName(proxyName);
     // Update proxy nav label & badges
     if (el.proxyNavSelectedName) {
-      el.proxyNavSelectedName.textContent = proxyName;
+      el.proxyNavSelectedName.textContent = displayName;
+      if (displayName !== proxyName) {
+        el.proxyNavSelectedName.setAttribute('title', proxyName);
+      } else {
+        el.proxyNavSelectedName.removeAttribute('title');
+      }
     }
     if (el.proxyYamlTitle) {
-      el.proxyYamlTitle.textContent = `${proxyName} Definition`;
+      el.proxyYamlTitle.textContent = `${displayName} Definition`;
     }
 
     // Update target dropdown if exists
@@ -1294,6 +1426,9 @@
       const data = await res.json();
       if (res.ok && data.success) {
         state.proxyYamlCache[proxyName] = data;
+        if (data.displayName) {
+          state.proxyDisplayNames[proxyName.toLowerCase()] = data.displayName;
+        }
       }
     } catch (_) {
       // Silent prefetch failure
@@ -1303,11 +1438,17 @@
   async function loadProxyYaml(proxyName, forceReload = false) {
     if (!proxyName) return;
 
+    const displayName = getProxyDisplayName(proxyName);
     if (el.proxyYamlTitle) {
-      el.proxyYamlTitle.textContent = `${proxyName} Definition`;
+      el.proxyYamlTitle.textContent = `${displayName} Definition`;
     }
     if (el.proxyNavSelectedName) {
-      el.proxyNavSelectedName.textContent = proxyName;
+      el.proxyNavSelectedName.textContent = displayName;
+      if (displayName !== proxyName) {
+        el.proxyNavSelectedName.setAttribute('title', proxyName);
+      } else {
+        el.proxyNavSelectedName.removeAttribute('title');
+      }
     }
 
     // Check cache
@@ -1343,6 +1484,21 @@
 
   function renderProxyYaml(data) {
     if (!data || !data.yaml) return;
+    if (data.displayName && data.proxy) {
+      state.proxyDisplayNames[data.proxy.toLowerCase()] = data.displayName;
+      if (state.selectedProxyName && state.selectedProxyName.toLowerCase() === data.proxy.toLowerCase()) {
+        const disp = data.displayName;
+        if (el.proxyYamlTitle) el.proxyYamlTitle.textContent = `${disp} Definition`;
+        if (el.proxyNavSelectedName) {
+          el.proxyNavSelectedName.textContent = disp;
+          if (disp !== data.proxy) {
+            el.proxyNavSelectedName.setAttribute('title', data.proxy);
+          } else {
+            el.proxyNavSelectedName.removeAttribute('title');
+          }
+        }
+      }
+    }
     if (el.proxyYamlSourceBadge) {
       el.proxyYamlSourceBadge.textContent = data.source || `${data.proxy || 'proxy'}.yaml`;
     }
@@ -1478,19 +1634,20 @@
     el.activeProxiesList.innerHTML = '';
     state.activeProxies.forEach(p => {
       const name = p.name || p.Name || '';
+      const displayName = getProxyDisplayName(name) || p.displayName || p.DisplayName || name;
       const basePath = p.basePath || p.BasePath || (name ? '/' + name.toLowerCase() : '');
       const revision = p.revision || p.Revision || '1';
 
       const li = document.createElement('li');
       li.className = 'proxy-item';
       li.setAttribute('data-proxy-name', name);
-      li.setAttribute('title', `${name} (${basePath}) - Click to select & test`);
+      li.setAttribute('title', displayName !== name ? `${displayName} (${name}) (${basePath}) - Click to select & test` : `${name} (${basePath}) - Click to select & test`);
 
       li.innerHTML = `
         <div class="proxy-item-left">
           ${ICONS.proxyNode}
           <div class="proxy-info">
-            <span class="proxy-name">${escapeHtml(name)}</span>
+            <span class="proxy-name">${escapeHtml(displayName)}</span>
             <span class="proxy-basepath">${escapeHtml(basePath)} (r${revision})</span>
           </div>
         </div>
@@ -1521,7 +1678,9 @@
     state.bundles.forEach(b => {
       const li = document.createElement('li');
       li.className = 'bundle-item';
-      li.setAttribute('title', `${b.proxyName} (${b.fileName})`);
+      const proxyName = b.proxyName || '';
+      const displayName = getProxyDisplayName(proxyName) || b.displayName || proxyName;
+      li.setAttribute('title', displayName !== proxyName ? `${displayName} (${proxyName}) (${b.fileName})` : `${proxyName} (${b.fileName})`);
 
       const kb = (b.sizeBytes / 1024).toFixed(1);
       const isDeployed = b.isDeployed;
@@ -1535,7 +1694,7 @@
         <div style="display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex: 1;">
           <input type="checkbox" class="bundle-checkbox" data-file="${escapeHtml(b.fileName)}" ${isDeployed ? 'checked' : ''} title="Select bundle for deployment">
           <div class="bundle-info">
-            <span class="bundle-name">${escapeHtml(b.proxyName)}</span>
+            <span class="bundle-name">${escapeHtml(displayName)}</span>
             <span class="bundle-meta">${kb} KB ${basePathsStr ? '&bull; ' + escapeHtml(basePathsStr) : ''}</span>
           </div>
         </div>
@@ -1870,6 +2029,7 @@
       } else {
         el.stateTableProxiesBody.innerHTML = proxies.map(p => {
           const proxyName = p.name || '';
+          const displayName = getProxyDisplayName(proxyName) || p.displayName || proxyName;
           const bundle = bundles.find(b => (b.proxyName || '').toLowerCase() === proxyName.toLowerCase());
 
           let policiesHtml = '<span class="text-muted" style="font-size: 0.75rem;">None</span>';
@@ -1882,9 +2042,11 @@
             targetsHtml = '<div style="margin-top: 0.25rem;">' + bundle.targetRoutes.map(tr => `<span class="code-pill" style="font-size: 0.68rem;">&rarr; ${escapeHtml(tr)}</span>`).join(' ') + '</div>';
           }
 
+          const nameSubtitle = displayName !== proxyName ? `<div style="font-size: 0.72rem; color: var(--text-muted);">${escapeHtml(proxyName)}</div>` : '';
+
           return `
             <tr>
-              <td><strong>${escapeHtml(proxyName)}</strong></td>
+              <td><strong>${escapeHtml(displayName)}</strong>${nameSubtitle}</td>
               <td><span class="badge badge-dim">${escapeHtml(p.environment || 'test')}</span></td>
               <td><code>r${escapeHtml(p.revision || '1')}</code></td>
               <td><code>${escapeHtml(p.basePath || '/')}</code></td>
@@ -2327,16 +2489,24 @@
   function applyApiKeyToHeaders(key) {
     if (!key) return;
     let found = false;
+    const toRemove = [];
     el.headersTbody.querySelectorAll('tr').forEach(tr => {
       const kInput = tr.querySelector('.header-key');
       const vInput = tr.querySelector('.header-val');
       const chk = tr.querySelector('.header-enable');
-      if (kInput && (kInput.value.trim().toLowerCase() === 'x-api-key' || kInput.value.trim().toLowerCase() === 'apikey')) {
-        if (vInput) vInput.value = key;
-        if (chk) chk.checked = true;
-        found = true;
+      const lower = kInput ? kInput.value.trim().toLowerCase() : '';
+      if (lower === 'x-api-key' || lower === 'apikey' || lower === 'x-ai-key') {
+        if (!found) {
+          if (kInput) kInput.value = 'x-api-key';
+          if (vInput) vInput.value = key;
+          if (chk) chk.checked = true;
+          found = true;
+        } else {
+          toRemove.push(tr);
+        }
       }
     });
+    toRemove.forEach(tr => tr.remove());
 
     if (!found) {
       addHeaderRow('x-api-key', key, true);
@@ -2405,7 +2575,8 @@
     Array.from(proxyNames).sort().forEach(name => {
       const opt = document.createElement('option');
       opt.value = name;
-      opt.textContent = name;
+      const disp = getProxyDisplayName(name);
+      opt.textContent = (disp && disp !== name) ? `${disp} (${name})` : name;
       el.reqProxyName.appendChild(opt);
     });
 
@@ -2812,7 +2983,14 @@
     const headers = req.headers || {};
     const body = req.body || '';
     const bodyBytes = body ? new Blob([body]).size : 0;
-    const headerKeys = Object.keys(headers);
+    const cleanHeaderKeys = [];
+    const seenSentKeys = new Set();
+    Object.keys(headers).forEach(k => {
+      const lower = k.trim().toLowerCase();
+      if (!lower || seenSentKeys.has(lower)) return;
+      seenSentKeys.add(lower);
+      cleanHeaderKeys.push(k);
+    });
 
     if (el.reqSentMethod) {
       el.reqSentMethod.textContent = method;
@@ -2823,7 +3001,7 @@
       el.reqSentUrl.title = path;
     }
     if (el.reqSentHeadersBadge) {
-      el.reqSentHeadersBadge.textContent = `${headerKeys.length} header${headerKeys.length === 1 ? '' : 's'}`;
+      el.reqSentHeadersBadge.textContent = `${cleanHeaderKeys.length} header${cleanHeaderKeys.length === 1 ? '' : 's'}`;
     }
     if (el.reqSentBodySizeBadge) {
       el.reqSentBodySizeBadge.textContent = formatBytes(bodyBytes);
@@ -2831,10 +3009,10 @@
 
     // Render Headers
     el.reqHeadersTbody.innerHTML = '';
-    if (headerKeys.length === 0) {
+    if (cleanHeaderKeys.length === 0) {
       el.reqHeadersTbody.innerHTML = '<tr><td colspan="2" class="empty-state">No request headers sent.</td></tr>';
     } else {
-      headerKeys.sort().forEach(k => {
+      cleanHeaderKeys.sort().forEach(k => {
         const tr = document.createElement('tr');
         const isAuth = k.toLowerCase() === 'authorization';
         const displayVal = maskHeaderValue(k, headers[k]);
@@ -2973,7 +3151,13 @@
     if (!el.historyTbody) return;
     const targetProxy = proxyName || state.selectedProxyName || '';
     if (el.historyProxyBadge) {
-      el.historyProxyBadge.textContent = targetProxy || 'All Proxies';
+      const disp = targetProxy ? getProxyDisplayName(targetProxy) : 'All Proxies';
+      el.historyProxyBadge.textContent = disp;
+      if (targetProxy && disp !== targetProxy) {
+        el.historyProxyBadge.setAttribute('title', targetProxy);
+      } else {
+        el.historyProxyBadge.removeAttribute('title');
+      }
     }
 
     try {
@@ -3047,7 +3231,14 @@
         }
         el.headersTbody.innerHTML = '';
         const headers = run.request.headers || {};
-        Object.keys(headers).forEach(k => addHeaderRow(k, headers[k], true));
+        const seenHistKeys = new Set();
+        Object.keys(headers).forEach(k => {
+          const lower = k.trim().toLowerCase();
+          if (!lower || seenHistKeys.has(lower)) return;
+          if (lower === 'x-ai-key') return; // Filter legacy auto-injected x-ai-key
+          seenHistKeys.add(lower);
+          addHeaderRow(k, headers[k], true);
+        });
         el.reqBody.value = run.request.body || '';
         state.assertions = run.request.assertions || [];
         renderAssertionsList();
@@ -4769,7 +4960,11 @@
       if (!selectEl) return;
       const sorted = Array.from(set).sort();
       selectEl.innerHTML = `<option value="">${defaultLabel}</option>` +
-        sorted.map(val => `<option value="${escapeHtml(val)}" ${val === currentVal ? 'selected' : ''}>${escapeHtml(val)}</option>`).join('');
+        sorted.map(val => {
+          const disp = selectEl === el.analyticsFilterProxy ? getProxyDisplayName(val) : val;
+          const label = (disp && disp !== val) ? `${disp} (${val})` : val;
+          return `<option value="${escapeHtml(val)}" ${val === currentVal ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+        }).join('');
     };
 
     updateSelect(el.analyticsFilterProxy, proxies, analyticsState.filters.proxy, 'All Proxies');
