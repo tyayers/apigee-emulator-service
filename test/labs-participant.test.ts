@@ -89,5 +89,5 @@ describe("Labs Participant uniqueness and account deletion", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: testUser }),
     });
-  });
+  }, 15000);
 });

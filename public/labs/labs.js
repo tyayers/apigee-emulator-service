@@ -361,6 +361,62 @@
     setTimeout(() => promptOnboarding(true), 350);
   }
 
+  // Open Trace in External Apigee Trace Viewer (directly in new tab)
+  async function openTraceInViewer(traceData) {
+    if (!traceData) {
+      showToast('No trace data available to open', 'warning');
+      return;
+    }
+
+    const userRaw = (state.participant?.name || 'user').trim().toLowerCase();
+    const user = encodeURIComponent(userRaw || 'user');
+    const viewerBase = 'https://apigee-trace-viewer-323709580283.europe-west1.run.app';
+    const viewerUrl = `${viewerBase}/${user}`;
+
+    const openBtn = document.getElementById('btn-open-trace');
+    const openBtnLabel = document.getElementById('btn-open-trace-label');
+
+    // Pre-open new tab synchronously within user click event to prevent popup blockers
+    const newTab = window.open('about:blank', '_blank');
+
+    if (openBtn) openBtn.disabled = true;
+    if (openBtnLabel) openBtnLabel.textContent = 'Posting... ⏳';
+
+    try {
+      const resp = await fetch('/api/labs/publish-trace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user: userRaw,
+          traceData,
+        }),
+      });
+
+      const data = await resp.json().catch(() => ({}));
+
+      if (!resp.ok && !data.success) {
+        if (newTab) newTab.close();
+        showToast(data.error || 'Failed to post trace to viewer', 'danger');
+        return;
+      }
+
+      const targetUrl = data.url || viewerUrl;
+      if (newTab) {
+        newTab.location.href = targetUrl;
+      } else {
+        window.open(targetUrl, '_blank');
+      }
+      showToast('Opening Apigee Trace Viewer in new tab...', 'success');
+    } catch (err) {
+      if (newTab) newTab.close();
+      console.error('Error posting trace to viewer:', err);
+      showToast('Error publishing trace to viewer', 'danger');
+    } finally {
+      if (openBtn) openBtn.disabled = false;
+      if (openBtnLabel) openBtnLabel.textContent = 'Open Trace';
+    }
+  }
+
   // Register Participant Form Handler
   async function handleOnboardingSubmit(e) {
     e.preventDefault();
@@ -1034,8 +1090,7 @@
     const headerCountBadge = document.getElementById('header-count-badge');
     const traceSessionId = document.getElementById('trace-session-id');
     const downloadTraceBtn = document.getElementById('btn-download-trace');
-    const traceRawContainer = document.getElementById('trace-raw-container');
-    const traceRawCode = document.getElementById('trace-raw-code');
+    const openTraceBtn = document.getElementById('btn-open-trace');
 
     if (!result) {
       if (banner) banner.className = 'validation-status-banner not-run';
@@ -1052,7 +1107,7 @@
       if (headerCountBadge) headerCountBadge.textContent = '0';
       if (traceSessionId) traceSessionId.textContent = 'None';
       if (downloadTraceBtn) downloadTraceBtn.style.display = 'none';
-      if (traceRawContainer) traceRawContainer.style.display = 'none';
+      if (openTraceBtn) openTraceBtn.style.display = 'none';
       return;
     }
 
@@ -1154,13 +1209,15 @@
         a.download = `apigee_trace_${test.name}.json`;
         a.click();
       };
+    } else if (downloadTraceBtn) {
+      downloadTraceBtn.style.display = 'none';
     }
 
-    if (traceRawContainer && result.traceData) {
-      traceRawContainer.style.display = 'block';
-      if (traceRawCode) {
-        traceRawCode.textContent = JSON.stringify(result.traceData, null, 2);
-      }
+    if (openTraceBtn && result.traceData) {
+      openTraceBtn.style.display = 'inline-flex';
+      openTraceBtn.onclick = () => openTraceInViewer(result.traceData);
+    } else if (openTraceBtn) {
+      openTraceBtn.style.display = 'none';
     }
   }
 
@@ -1448,6 +1505,7 @@
 
     const btnConfirmReset = document.getElementById('btn-confirm-reset');
     if (btnConfirmReset) btnConfirmReset.onclick = handleResetConfirm;
+
   }
 
   // Initialize Application

@@ -410,7 +410,17 @@
               <strong>Trace Session:</strong>
               <span id="trace-session-id" class="mono-text">None</span>
             </div>
-            <button class="btn btn-secondary btn-sm" id="btn-download-trace" style="display: none;">Download Trace JSON</button>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <button class="btn btn-secondary btn-sm" id="btn-download-trace" style="display: none;">Download JSON</button>
+              <button class="btn btn-primary btn-sm" id="btn-open-trace" style="display: none;">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                  <polyline points="15 3 21 3 21 9"/>
+                  <line x1="10" y1="14" x2="21" y2="3"/>
+                </svg>
+                <span id="btn-open-trace-label">Open Trace</span>
+              </button>
+            </div>
           </div>
 
           <div class="trace-pipeline-visual">
@@ -442,11 +452,6 @@
                 <div class="node-desc">Recorded target latency, attached tracking headers, and returned model response.</div>
               </div>
             </div>
-          </div>
-
-          <div class="trace-raw-container" id="trace-raw-container" style="display: none;">
-            <div class="trace-raw-header">Raw Trace Data Captured</div>
-            <pre class="code-block-compact"><code id="trace-raw-code"></code></pre>
           </div>
         </div>
 

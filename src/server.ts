@@ -1063,6 +1063,48 @@ export class EmulatorServer {
       }
     }
 
+    // 33. POST /labs/publish-trace
+    if ((subPath === "labs/publish-trace" || subPath === "labs/open-trace") && method === "POST") {
+      try {
+        const body = await req.json();
+        const rawUser = body.user || body.userName || body.name || "user";
+        const user = encodeURIComponent(String(rawUser).trim().toLowerCase() || "user");
+        const traceData = body.traceData || body.trace || {};
+        const viewerBase = process.env.APIGEE_TRACE_VIEWER_URL || "https://apigee-trace-viewer-323709580283.europe-west1.run.app";
+        const viewerUrl = `${viewerBase.replace(/\/+$/, "")}/${user}`;
+
+        console.log(`[TraceViewer] Forwarding trace data to: ${viewerUrl}`);
+        const upstreamRes = await fetch(viewerUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(traceData),
+        });
+
+        if (!upstreamRes.ok) {
+          const errText = await upstreamRes.text().catch(() => "");
+          console.warn(`[TraceViewer] Upstream returned HTTP ${upstreamRes.status}: ${errText}`);
+          return this.jsonResponse({
+            success: false,
+            error: `Trace viewer returned HTTP ${upstreamRes.status}`,
+            url: viewerUrl,
+          }, upstreamRes.status);
+        }
+
+        const upstreamJson = await upstreamRes.json().catch(() => null);
+        return this.jsonResponse({
+          success: true,
+          url: viewerUrl,
+          upstream: upstreamJson,
+        });
+      } catch (err: any) {
+        console.error(`[TraceViewer] Error forwarding trace:`, err);
+        return this.jsonResponse({
+          success: false,
+          error: err.message || String(err),
+        }, 500);
+      }
+    }
+
     return this.jsonResponse({ error: "Endpoint not found" }, 404);
   }
 
