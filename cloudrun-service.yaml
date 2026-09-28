@@ -122,6 +122,21 @@ spec:
                           route:
                             cluster: manager_service
                             timeout: 300s
+                        - match:
+                            prefix: "/labs"
+                          route:
+                            cluster: manager_service
+                            timeout: 300s
+                        - match:
+                            prefix: "/lab"
+                          route:
+                            cluster: manager_service
+                            timeout: 300s
+                        - match:
+                            prefix: "/api"
+                          route:
+                            cluster: manager_service
+                            timeout: 300s
 
                         # All other paths route to Apigee Runtime Message Processor (Port 8998)
                         - match:

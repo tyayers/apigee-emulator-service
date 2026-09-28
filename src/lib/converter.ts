@@ -1287,7 +1287,11 @@ export class ApigeeConverter {
       zipfile.outputStream
         .pipe(fs.createWriteStream(tempFilePath + ".zip"))
         .on("close", function () {
-          if (removeDir) fs.rmSync(tempFilePath, { recursive: true });
+          if (removeDir) {
+            try {
+              fs.rmSync(tempFilePath, { recursive: true, force: true });
+            } catch {}
+          }
           resolve(tempFilePath + ".zip");
         });
       zipfile.end();

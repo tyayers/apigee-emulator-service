@@ -254,7 +254,7 @@ export class DeploymentDeployer {
     const revision = await this.emulatorClient.deployBundle(environment, zipBuffer);
 
     // 10. Sync Cassandra keys
-    syncCassandraDeveloperAppKeys(this.dataDir);
+    await syncCassandraDeveloperAppKeys(this.dataDir);
 
     const activeProxies = await this.emulatorClient.getDeploymentTree();
     const durationMs = Date.now() - startTime;

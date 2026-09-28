@@ -34,6 +34,7 @@ export interface EmulatorStatus {
 export interface TestCase {
   name: string;
   description?: string;
+  documentation?: string;
   proxy: string;
   proxyDisplayName?: string;
   verb: string;

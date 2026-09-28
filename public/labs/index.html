@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apigee AI Gateway - Interactive Deployment Codelab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="labs.css">
+</head>
+<body>
+  <!-- Header (Google Cloud / Codelabs Style) -->
+  <header class="lab-header">
+    <div class="header-brand">
+      <div class="brand-badge" title="Google Cloud Apigee">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+          <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM19 18H6c-2.21 0-4-1.79-4-4 0-2.05 1.53-3.76 3.56-3.97l1.07-.11.5-.95C8.08 7.14 9.94 6 12 6c2.62 0 4.88 1.86 5.39 4.43l.3 1.5 1.53.11c1.56.1 2.78 1.41 2.78 2.96 0 1.65-1.35 3-3 3z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-title">
+          <span>Apigee AI Gateway</span>
+          <span class="brand-pill">Codelab</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stepper Progress Bar Summary -->
+    <div class="header-center">
+      <div class="lab-progress-tracker" id="lab-progress-tracker">
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" id="progress-bar-fill" style="width: 0%;"></div>
+        </div>
+        <div class="progress-stats">
+          <span id="progress-status-text">Loading deployment tests...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- User Profile & Meta Actions -->
+    <div class="header-meta">
+      <!-- Active Participant Chip -->
+      <div class="participant-chip" id="participant-chip" title="Click to view/switch participant profile">
+        <div class="participant-avatar" id="participant-avatar">?</div>
+        <div class="participant-info">
+          <div class="participant-name" id="participant-name">Provisioning...</div>
+          <div class="participant-key-pill" id="participant-key-pill">No Key</div>
+        </div>
+      </div>
+
+      <!-- Leaderboard Action Button -->
+      <button class="btn btn-secondary btn-sm btn-leaderboard" id="btn-open-leaderboard" title="View Usage & Token Leaderboard">
+        <span class="trophy-icon">🏆</span>
+        <span>Leaderboard</span>
+      </button>
+
+      <!-- Reset Labs Button -->
+      <button class="btn btn-secondary btn-sm" id="btn-reset-labs" title="Reset all progress and start fresh">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+        </svg>
+        <span>Reset Labs</span>
+      </button>
+
+      <div class="lab-score-pill" id="score-display" title="Tests Validated">
+        <span class="check-icon">✓</span>
+        <span id="score-text">0 / 0 Validated</span>
+      </div>
+
+      <a href="/tester/" class="btn btn-secondary btn-sm" title="Open API Tester Application">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="16 18 22 12 16 6"/>
+          <polyline points="8 6 2 12 8 18"/>
+        </svg>
+        <span>Tester</span>
+      </a>
+
+      <button id="btn-theme-toggle" class="btn-icon" title="Toggle Dark/Light Mode">
+        <svg id="theme-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1" x2="12" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1" y1="12" x2="3" y2="12"/>
+          <line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Stepper Steps Navigation Ribbon -->
+  <nav class="test-stepper-ribbon" id="test-stepper-ribbon" aria-label="Test Steps">
+    <!-- Injected dynamically by JS -->
+  </nav>
+
+  <!-- Notification Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Main Split-Screen Workspace -->
+  <main class="lab-split-container">
+    
+    <!-- Left Pane: Documentation & YAML Explanation -->
+    <section class="lab-pane left-pane" id="left-pane">
+      <div class="pane-header">
+        <div class="pane-title-group">
+          <div class="step-badge" id="step-badge">STEP 1 OF 5</div>
+          <h2 class="test-title" id="test-title">Loading test...</h2>
+        </div>
+        <div class="meta-badges" id="meta-badges">
+          <span class="badge badge-proxy" id="badge-proxy">Proxy</span>
+          <span class="badge badge-verb" id="badge-verb">POST</span>
+          <span class="badge badge-path" id="badge-path">/path</span>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs for Left Pane -->
+      <div class="pane-nav-tabs">
+        <button class="pane-nav-tab active" data-tab="docs" id="tab-btn-docs">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+            <polyline points="10 9 9 9 8 9"/>
+          </svg>
+          <span>Documentation &amp; Flow</span>
+        </button>
+        <button class="pane-nav-tab" data-tab="yaml" id="tab-btn-yaml">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="4 17 10 11 4 5"/>
+            <line x1="12" y1="19" x2="20" y2="19"/>
+          </svg>
+          <span>Test YAML Snippet</span>
+        </button>
+        <button class="pane-nav-tab" data-tab="proxy-yaml" id="tab-btn-proxy-yaml">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+            <line x1="6" y1="6" x2="6.01" y2="6"/>
+            <line x1="6" y1="18" x2="6.01" y2="18"/>
+          </svg>
+          <span>Proxy Configuration YAML</span>
+        </button>
+      </div>
+
+      <!-- Left Pane Scrollable Content Views -->
+      <div class="pane-scroll-content custom-scrollbar" id="left-pane-content">
+        
+        <!-- Tab View 1: Documentation & Architecture Flow -->
+        <div class="pane-tab-view active" id="view-docs">
+          <!-- Overview Banner -->
+          <div class="doc-callout-card">
+            <div class="doc-callout-icon">💡</div>
+            <div class="doc-callout-body">
+              <strong id="doc-description-title">Architecture &amp; Policy Flow</strong>
+              <p id="doc-description-text">
+                This deployment test validates how the Apigee Emulator enforces security, rate quotas, and routing to upstream AI model endpoints.
+              </p>
+            </div>
+          </div>
+
+          <!-- Interactive Policy Flow Diagram -->
+          <div class="flow-diagram-container">
+            <div class="flow-diagram-header">Apigee Runtime Execution Pipeline</div>
+            <div class="flow-diagram-steps" id="flow-diagram-steps">
+              <!-- Rendered dynamically by JS -->
+            </div>
+          </div>
+
+          <!-- Documentation Tag Content (Rendered Markdown) -->
+          <div class="markdown-doc-wrapper">
+            <div class="markdown-body" id="markdown-doc-content">
+              <!-- Rendered markdown from test.documentation injected here -->
+            </div>
+          </div>
+
+          <!-- Expected Assertions Card -->
+          <div class="assertions-guide-card">
+            <h4>Expected Validation Criteria</h4>
+            <ul class="assertions-list" id="assertions-expected-list">
+              <!-- Populated by JS -->
+            </ul>
+          </div>
+        </div>
+
+        <!-- Tab View 2: Test YAML Snippet -->
+        <div class="pane-tab-view" id="view-yaml">
+          <div class="yaml-viewer-header">
+            <span class="yaml-file-tag">data/deployments/deployment-1.yaml</span>
+            <button class="btn btn-secondary btn-sm" id="btn-copy-test-yaml" title="Copy YAML snippet">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>Copy</span>
+            </button>
+          </div>
+          <div class="code-editor-container">
+            <pre class="code-block" id="test-yaml-code"><code># YAML loading...</code></pre>
+          </div>
+
+          <!-- Field Annotations -->
+          <div class="yaml-field-annotations">
+            <h4>Field Breakdown &amp; Rationale</h4>
+            <div class="annotation-item">
+              <span class="field-key">proxy</span>
+              <span class="field-desc">The deployed Apigee API proxy that receives and dispatches this request.</span>
+            </div>
+            <div class="annotation-item">
+              <span class="field-key">path</span>
+              <span class="field-desc">The virtual gateway basepath and resource URI routed by Apigee.</span>
+            </div>
+            <div class="annotation-item">
+              <span class="field-key">headers</span>
+              <span class="field-desc">Contains client credentials (e.g. <code>x-api-key</code>) mapped to your provisioned app.</span>
+            </div>
+            <div class="annotation-item">
+              <span class="field-key">assertions</span>
+              <span class="field-desc">Expression criteria that must evaluate to true for the test step to pass.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab View 3: Proxy Configuration YAML -->
+        <div class="pane-tab-view" id="view-proxy-yaml">
+          <div class="yaml-viewer-header">
+            <span class="yaml-file-tag" id="proxy-yaml-source-tag">Proxy Definition</span>
+            <button class="btn btn-secondary btn-sm" id="btn-copy-proxy-yaml" title="Copy Proxy YAML">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>Copy</span>
+            </button>
+          </div>
+          <div class="code-editor-container">
+            <pre class="code-block" id="proxy-yaml-code"><code># Loading proxy definition...</code></pre>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Right Pane: Test Runner, Trace & Runtime Analysis -->
+    <section class="lab-pane right-pane" id="right-pane">
+      <div class="pane-header">
+        <div class="pane-title-group">
+          <div class="step-badge-secondary">RUNTIME VALIDATION WORKBENCH</div>
+          <h3 class="test-title">Execute &amp; Trace Apigee Policies</h3>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-primary btn-run" id="btn-run-test">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            <span id="btn-run-text">Run Test &amp; Trace</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Right Pane Scrollable Content Views -->
+      <div class="pane-scroll-content custom-scrollbar" id="right-pane-content">
+        
+        <!-- Live Request Workbench Card -->
+        <div class="request-summary-card">
+          <div class="request-summary-header">
+            <div class="request-url-pill">
+              <span class="method-tag" id="req-method-tag">POST</span>
+              <span class="url-text" id="req-url-text">http://localhost:8998/path</span>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="btn-toggle-edit-mode">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+              <span id="edit-mode-label">Edit Request</span>
+            </button>
+          </div>
+
+          <!-- Preview Mode Details -->
+          <div class="request-preview-section" id="request-preview-section">
+            <div class="request-headers-row" id="req-headers-preview">
+              <!-- Injected by JS -->
+            </div>
+            <div class="request-body-preview" id="req-body-preview-wrapper">
+              <pre class="code-block-compact"><code id="req-body-code">// Body</code></pre>
+            </div>
+          </div>
+
+          <!-- Edit Mode Form (Hidden by default) -->
+          <div class="request-edit-section" id="request-edit-section" style="display: none;">
+            <div class="form-group">
+              <label class="form-label">Custom Headers (JSON)</label>
+              <textarea class="code-textarea" id="edit-req-headers" rows="3"></textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Request Body (JSON)</label>
+              <textarea class="code-textarea" id="edit-req-body" rows="4"></textarea>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-secondary btn-sm" id="btn-reset-req-edit">Reset to Default</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Validation Status Banner -->
+        <div class="validation-status-banner not-run" id="validation-banner">
+          <div class="status-icon" id="validation-icon">⏳</div>
+          <div class="status-content">
+            <div class="status-heading" id="validation-heading">Step Not Yet Run</div>
+            <div class="status-subtext" id="validation-subtext">Click "Run Test &amp; Trace" to execute the request against the Apigee Emulator runtime.</div>
+          </div>
+          <div class="status-metrics" id="validation-metrics" style="display: none;">
+            <div class="metric-pill">
+              <span class="metric-lbl">Status</span>
+              <span class="metric-val" id="val-status-code">200</span>
+            </div>
+            <div class="metric-pill">
+              <span class="metric-lbl">Total Time</span>
+              <span class="metric-val" id="val-total-time">0 ms</span>
+            </div>
+            <div class="metric-pill">
+              <span class="metric-lbl">Target Latency</span>
+              <span class="metric-val" id="val-target-time">0 ms</span>
+            </div>
+            <div class="metric-pill">
+              <span class="metric-lbl">Tokens</span>
+              <span class="metric-val" id="val-tokens">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Assertions Checklist Card -->
+        <div class="assertions-results-card" id="assertions-results-card">
+          <div class="assertions-header">
+            <h4>Assertion Results</h4>
+            <span class="assertions-count" id="assertions-count">0 / 0 Passed</span>
+          </div>
+          <div class="assertions-list" id="assertions-results-list">
+            <div class="assertion-placeholder">Run test to evaluate assertions.</div>
+          </div>
+        </div>
+
+        <!-- Step Validated Next Step Callout -->
+        <div class="next-step-prompt" id="next-step-prompt" style="display: none;">
+          <div class="prompt-text">
+            <strong>🎉 Step Validated!</strong> You verified this AI interface configuration. Continue to the next test to explore more gateway features.
+          </div>
+          <button class="btn btn-success btn-sm" id="btn-continue-next">
+            <span>Continue to Next Step →</span>
+          </button>
+        </div>
+
+        <!-- Result Tabs: Response Body vs Gateway Headers vs Trace Pipeline -->
+        <div class="result-analysis-tabs">
+          <button class="result-tab active" data-rtab="body" id="rtab-btn-body">Response Body</button>
+          <button class="result-tab" data-rtab="headers" id="rtab-btn-headers">
+            <span>Gateway Headers</span>
+            <span class="tab-badge" id="header-count-badge">0</span>
+          </button>
+          <button class="result-tab" data-rtab="trace" id="rtab-btn-trace">Runtime Trace</button>
+        </div>
+
+        <!-- Result Tab 1: Response Body -->
+        <div class="result-tab-view active" id="view-result-body">
+          <div class="response-viewer-header">
+            <span class="response-status-badge" id="response-status-pill">No Response Yet</span>
+            <button class="btn btn-secondary btn-sm" id="btn-copy-response" title="Copy response JSON">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>Copy JSON</span>
+            </button>
+          </div>
+          <div class="code-editor-container">
+            <pre class="code-block" id="response-body-code"><code>Run the test to see the live model response from the Apigee Emulator runtime.</code></pre>
+          </div>
+        </div>
+
+        <!-- Result Tab 2: Gateway Headers Table -->
+        <div class="result-tab-view" id="view-result-headers">
+          <div class="headers-table-container">
+            <table class="headers-table">
+              <thead>
+                <tr>
+                  <th>Header Name</th>
+                  <th>Value</th>
+                  <th>Architecture Role</th>
+                </tr>
+              </thead>
+              <tbody id="headers-table-body">
+                <tr>
+                  <td colspan="3" class="text-center text-muted">No response headers captured yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Result Tab 3: Runtime Trace Pipeline Visualizer -->
+        <div class="result-tab-view" id="view-result-trace">
+          <div class="trace-summary-header">
+            <div>
+              <strong>Trace Session:</strong>
+              <span id="trace-session-id" class="mono-text">None</span>
+            </div>
+            <button class="btn btn-secondary btn-sm" id="btn-download-trace" style="display: none;">Download Trace JSON</button>
+          </div>
+
+          <div class="trace-pipeline-visual">
+            <div class="trace-step-node">
+              <div class="node-icon">1</div>
+              <div class="node-content">
+                <div class="node-title">PreFlow Request Verification</div>
+                <div class="node-desc">Validated API Key via Cassandra KMS, extracted developer app profile, and checked quota buckets.</div>
+              </div>
+            </div>
+            <div class="trace-step-node">
+              <div class="node-icon">2</div>
+              <div class="node-content">
+                <div class="node-title">Token &amp; Authorization Injection</div>
+                <div class="node-desc">Injected Google Cloud ADC OAuth bearer token or upstream provider credentials.</div>
+              </div>
+            </div>
+            <div class="trace-step-node">
+              <div class="node-icon">3</div>
+              <div class="node-content">
+                <div class="node-title">Upstream Model Execution</div>
+                <div class="node-desc">Forwarded payload to backend AI target; captured target processing latency.</div>
+              </div>
+            </div>
+            <div class="trace-step-node">
+              <div class="node-icon">4</div>
+              <div class="node-content">
+                <div class="node-title">PostFlow &amp; Response</div>
+                <div class="node-desc">Recorded target latency, attached tracking headers, and returned model response.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="trace-raw-container" id="trace-raw-container" style="display: none;">
+            <div class="trace-raw-header">Raw Trace Data Captured</div>
+            <pre class="code-block-compact"><code id="trace-raw-code"></code></pre>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <!-- Bottom Navigation Control Footer -->
+  <footer class="lab-footer">
+    <div class="footer-left">
+      <button class="btn btn-secondary btn-sm" id="btn-prev-test" disabled>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="19" y1="12" x2="5" y2="12"/>
+          <polyline points="12 19 5 12 12 5"/>
+        </svg>
+        <span>Previous Test</span>
+      </button>
+    </div>
+
+    <div class="footer-center">
+      <div class="stepper-dots-container" id="stepper-dots-container">
+        <!-- Injected dots by JS -->
+      </div>
+    </div>
+
+    <div class="footer-right">
+      <button class="btn btn-primary btn-sm" id="btn-next-test">
+        <span>Next Test</span>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="5" y1="12" x2="19" y2="12"/>
+          <polyline points="12 5 19 12 12 19"/>
+        </svg>
+      </button>
+    </div>
+  </footer>
+
+  <!-- ==============================================================================
+       Modal 1: Participant Onboarding (Name Input & Cassandra Credential Provisioning)
+       ============================================================================== -->
+  <dialog class="lab-modal" id="modal-onboarding">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-badge-icon">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+          </svg>
+        </div>
+        <div style="flex: 1;">
+          <h2 class="modal-title">Welcome to Apigee AI Gateway Codelab</h2>
+          <p class="modal-subtitle">Provision your personal developer sandbox and credentials to start.</p>
+        </div>
+        <button class="btn-icon btn-close-modal" id="btn-close-onboarding" title="Close" style="display: none;">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <div class="onboarding-explainer">
+          <p>
+            To begin this interactive deployment lab, enter your name. We will dynamically generate a developer user, register an application, and provision your custom API key directly into the <strong>Cassandra KMS datastore</strong> running on the Apigee emulator.
+          </p>
+        </div>
+
+        <div id="onboarding-error-box" class="alert alert-danger" style="display: none; margin-bottom: 14px;"></div>
+
+        <form id="form-onboarding" class="onboarding-form">
+          <div class="form-group">
+            <label for="input-participant-name" class="form-label">Your Full Name</label>
+            <input type="text" id="input-participant-name" class="form-input form-input-lg" placeholder="e.g., Alex Rivers or Jane Doe" required autocomplete="name" autofocus />
+          </div>
+
+          <div class="provision-details-box">
+            <div class="prov-detail-row">
+              <span class="prov-label">API Product:</span>
+              <span class="prov-val"><code>test-product</code> (Access to all 5 AI Gateway Proxies)</span>
+            </div>
+            <div class="prov-detail-row">
+              <span class="prov-label">Datastore:</span>
+              <span class="prov-val">Cassandra <code>kms_hybrid_hybrid.app_credential</code></span>
+            </div>
+            <div class="prov-detail-row">
+              <span class="prov-label">Quota Tier:</span>
+              <span class="prov-val">60 calls / minute + Token Bucket</span>
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button type="submit" class="btn btn-primary btn-lg btn-block" id="btn-submit-onboarding">
+              <span>Start Codelab &amp; Provision Key 🚀</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ==============================================================================
+       Modal 1b: Participant Profile & Account Management Dialog
+       ============================================================================== -->
+  <dialog class="lab-modal" id="modal-participant-profile">
+    <div class="modal-card" style="max-width: 500px;">
+      <div class="modal-header">
+        <div class="modal-badge-icon" id="profile-badge-avatar" style="font-size: 18px; font-weight: 700;">
+          U
+        </div>
+        <div style="flex: 1;">
+          <h2 class="modal-title" id="profile-modal-name">Participant Profile</h2>
+          <p class="modal-subtitle" id="profile-modal-app">Apigee Developer Sandbox</p>
+        </div>
+        <button class="btn-icon btn-close-modal" id="btn-close-profile-modal" title="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body custom-scrollbar" style="display: flex; flex-direction: column; gap: 16px;">
+        <div style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+            <span style="color: var(--text-secondary);">User Name:</span>
+            <span style="font-weight: 600; color: var(--text-primary);" id="profile-val-name">-</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+            <span style="color: var(--text-secondary);">Email:</span>
+            <span style="font-family: var(--font-mono); color: var(--text-primary);" id="profile-val-email">-</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+            <span style="color: var(--text-secondary);">API Key:</span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <code style="font-family: var(--font-mono); font-size: 12px; background: var(--bg-secondary); padding: 2px 6px; border-radius: 4px;" id="profile-val-key">-</code>
+              <button class="btn btn-secondary btn-xs" id="btn-copy-profile-key" title="Copy Key">Copy</button>
+            </div>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+            <span style="color: var(--text-secondary);">Datastore:</span>
+            <span style="font-size: 12px; color: var(--text-secondary);">Cassandra <code>kms_hybrid_hybrid</code></span>
+          </div>
+        </div>
+
+        <!-- Danger Zone: Close & Delete Account -->
+        <div style="background: var(--danger-bg); border: 1px solid var(--danger); border-radius: var(--radius-md); padding: 14px 16px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--danger); font-weight: 600; font-size: 13.5px;">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            <span>Close &amp; Delete Account</span>
+          </div>
+          <p style="font-size: 12px; line-height: 1.45; color: var(--text-secondary); margin: 0 0 12px 0;">
+            Permanently delete your user profile, revoke your provisioned API key in Cassandra, and wipe all your usage metrics from the leaderboard.
+          </p>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-sm" id="btn-open-delete-account" style="background: #d93025; color: white; border-color: #b31412;">
+              <span>Close &amp; Delete Account</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-switch-account">
+              <span>Switch / Register New User</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ==============================================================================
+       Modal 1c: Confirmation Dialog for Account & Data Deletion
+       ============================================================================== -->
+  <dialog class="lab-modal" id="modal-delete-confirm">
+    <div class="modal-card" style="max-width: 460px;">
+      <div class="modal-header">
+        <div class="modal-badge-icon danger">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+        </div>
+        <div style="flex: 1;">
+          <h2 class="modal-title">Delete Account &amp; Data?</h2>
+          <p class="modal-subtitle">This action cannot be undone.</p>
+        </div>
+        <button class="btn-icon btn-close-modal" id="btn-close-delete-modal" title="Cancel">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body custom-scrollbar">
+        <p style="font-size: 13.5px; line-height: 1.5; color: var(--text-secondary); margin: 0 0 12px 0;">
+          Are you sure you want to permanently close and delete your account <strong id="delete-confirm-user-name" style="color: var(--text-primary);">-</strong>?
+        </p>
+        <ul style="font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; padding-left: 18px; margin: 0;">
+          <li>Your API key will be deleted and revoked from Cassandra.</li>
+          <li>All your test execution records and token stats will be removed from the leaderboard.</li>
+          <li>Your local lab progress and traces will be cleared.</li>
+        </ul>
+      </div>
+
+      <div class="modal-footer" style="padding: 16px 24px; border-top: 1px solid var(--border-color); background-color: var(--bg-primary); display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn btn-secondary btn-sm" id="btn-cancel-delete">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="btn-confirm-delete" style="background: linear-gradient(135deg, #d93025, #b31412); color: white; border-color: #b31412;">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+          <span>Yes, Delete Account &amp; All Data</span>
+        </button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ==============================================================================
+       Modal 2: Leaderboard & Token / Budget Usage Summary
+       ============================================================================== -->
+  <dialog class="lab-modal modal-wide" id="modal-leaderboard">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-badge-icon gold">
+          <span>🏆</span>
+        </div>
+        <div style="flex: 1;">
+          <h2 class="modal-title">Apigee AI Gateway - Usage Leaderboard</h2>
+          <p class="modal-subtitle">Fleet analytics tracking token consumption, API calls, and estimated budgets across participants.</p>
+        </div>
+        <button class="btn-icon btn-close-modal" id="btn-close-leaderboard" title="Close Leaderboard">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body custom-scrollbar">
+        <!-- Spotlight Highlights (Podium Stats) -->
+        <div class="leaderboard-spotlight-grid">
+          <div class="spotlight-card tokens">
+            <div class="spotlight-icon">🔥</div>
+            <div class="spotlight-info">
+              <span class="spotlight-label">Most Tokens Consumed</span>
+              <strong class="spotlight-value" id="spot-tokens-val">0</strong>
+              <span class="spotlight-user" id="spot-tokens-user">--</span>
+            </div>
+          </div>
+
+          <div class="spotlight-card calls">
+            <div class="spotlight-icon">⚡</div>
+            <div class="spotlight-info">
+              <span class="spotlight-label">Most API Calls</span>
+              <strong class="spotlight-value" id="spot-calls-val">0</strong>
+              <span class="spotlight-user" id="spot-calls-user">--</span>
+            </div>
+          </div>
+
+          <div class="spotlight-card budget">
+            <div class="spotlight-icon">💰</div>
+            <div class="spotlight-info">
+              <span class="spotlight-label">Highest Budget Used</span>
+              <strong class="spotlight-value" id="spot-budget-val">$0.00</strong>
+              <span class="spotlight-user" id="spot-budget-user">--</span>
+            </div>
+          </div>
+
+          <div class="spotlight-card fleet">
+            <div class="spotlight-icon">⏱</div>
+            <div class="spotlight-info">
+              <span class="spotlight-label">Avg Fleet Latency</span>
+              <strong class="spotlight-value" id="spot-latency-val">0 ms</strong>
+              <span class="spotlight-user">Across all models</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Leaderboard Table -->
+        <div class="leaderboard-table-wrapper">
+          <table class="leaderboard-table">
+            <thead>
+              <tr>
+                <th style="width: 60px;">Rank</th>
+                <th>Participant</th>
+                <th>Consumer Key</th>
+                <th>Tests Validated</th>
+                <th>API Calls</th>
+                <th>Total Tokens</th>
+                <th>Estimated Budget</th>
+                <th>Avg Latency</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboard-table-body">
+              <!-- Rendered dynamically by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-refresh-leaderboard">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"/>
+            <polyline points="1 20 1 14 7 14"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+          <span>Refresh Data</span>
+        </button>
+        <button class="btn btn-primary btn-sm" id="btn-close-leaderboard-footer">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Reset Confirmation Dialog -->
+  <dialog id="modal-reset-confirm" class="lab-modal">
+    <div class="modal-card" style="max-width: 480px;">
+      <div class="modal-header">
+        <div class="modal-badge-icon danger">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+        </div>
+        <div style="flex: 1;">
+          <h2 class="modal-title">Reset Codelab Progress?</h2>
+          <p class="modal-subtitle">Start fresh from Step 1</p>
+        </div>
+        <button class="btn-icon btn-close-modal" id="btn-close-reset-modal" title="Cancel">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body custom-scrollbar">
+        <p style="font-size: 13.5px; line-height: 1.5; color: var(--text-secondary); margin: 0;">
+          This will reset all 5 validated test steps, clear execution traces and response previews, and return to Step 1.
+        </p>
+
+        <div style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
+          <label style="display: flex; align-items: center; gap: 10px; font-size: 13px; cursor: pointer; color: var(--text-primary); user-select: none;">
+            <input type="checkbox" id="chk-reset-usage" checked style="width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer;">
+            <span>Clear my recorded calls from the leaderboard</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 10px; font-size: 13px; cursor: pointer; color: var(--danger); user-select: none;">
+            <input type="checkbox" id="chk-delete-account" style="width: 16px; height: 16px; accent-color: var(--danger); cursor: pointer;">
+            <span style="font-weight: 500;">Permanently close &amp; delete my account and data</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="modal-footer" style="padding: 16px 24px; border-top: 1px solid var(--border-color); background-color: var(--bg-primary); display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn btn-secondary btn-sm" id="btn-cancel-reset">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="btn-confirm-reset" style="background: linear-gradient(135deg, #d93025, #b31412); color: white; border-color: #b31412;">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+          <span>Yes, Reset Progress</span>
+        </button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="labs.js"></script>
+</body>
+</html>

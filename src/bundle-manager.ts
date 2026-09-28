@@ -123,7 +123,43 @@ export class BundleManager {
     }
   }
 
-  public getProducts(): any[] {
+  public getCustomResources(): { products: any[]; users: any[]; apps: any[] } {
+    const p = path.join(this.dataDir, "labs-custom-resources.json");
+    if (!fs.existsSync(p)) {
+      return { products: [], users: [], apps: [] };
+    }
+    try {
+      const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+      return {
+        products: Array.isArray(data.products) ? data.products : [],
+        users: Array.isArray(data.users) ? data.users : [],
+        apps: Array.isArray(data.apps) ? data.apps : [],
+      };
+    } catch {
+      return { products: [], users: [], apps: [] };
+    }
+  }
+
+  public saveCustomResources(res: { products?: any[]; users?: any[]; apps?: any[] }): { products: any[]; users: any[]; apps: any[] } {
+    const p = path.join(this.dataDir, "labs-custom-resources.json");
+    const existing = this.getCustomResources();
+    const updated = {
+      products: res.products !== undefined ? res.products : existing.products,
+      users: res.users !== undefined ? res.users : existing.users,
+      apps: res.apps !== undefined ? res.apps : existing.apps,
+    };
+    fs.writeFileSync(p, JSON.stringify(updated, null, 2), "utf-8");
+    return updated;
+  }
+
+  public clearCustomResources(): void {
+    const p = path.join(this.dataDir, "labs-custom-resources.json");
+    if (fs.existsSync(p)) {
+      fs.unlinkSync(p);
+    }
+  }
+
+  public getDefaultProducts(): any[] {
     const p = this.findDataFile("products", "products.json");
     if (!p || !fs.existsSync(p)) return [];
     try {
@@ -133,7 +169,7 @@ export class BundleManager {
     }
   }
 
-  public getUsers(): any[] {
+  public getDefaultUsers(): any[] {
     const p = this.findDataFile("developers", "developers.json");
     if (!p || !fs.existsSync(p)) return [];
     try {
@@ -143,7 +179,7 @@ export class BundleManager {
     }
   }
 
-  public getApps(): any[] {
+  public getDefaultApps(): any[] {
     const p = this.findDataFile("developerapps", "developerapps.json");
     if (!p || !fs.existsSync(p)) return [];
     try {
@@ -151,6 +187,24 @@ export class BundleManager {
     } catch {
       return [];
     }
+  }
+
+  public getProducts(): any[] {
+    const def = this.getDefaultProducts();
+    const custom = this.getCustomResources().products;
+    return [...def, ...custom];
+  }
+
+  public getUsers(): any[] {
+    const def = this.getDefaultUsers();
+    const custom = this.getCustomResources().users;
+    return [...def, ...custom];
+  }
+
+  public getApps(): any[] {
+    const def = this.getDefaultApps();
+    const custom = this.getCustomResources().apps;
+    return [...def, ...custom];
   }
 
   public getDataCollectors(): any[] {
@@ -512,8 +566,8 @@ export class BundleManager {
   p.operationGroup = opGroup;
   p.llmOperationGroup = llmGroup;
 
-  // In Apigee Emulator, if operationGroup or llmOperationGroup is present,
-  // proxies and apiResources must NOT be set
+  // In Apigee Emulator: if operationGroup or llmOperationGroup is present,
+  // API resources or proxies should NOT be set
   if (splitOps.length > 0 || normalizedLLMConfigs.length > 0) {
     delete p.proxies;
     delete p.apiResources;
@@ -546,29 +600,71 @@ export class BundleManager {
       data: JSON.stringify(products, null, 2),
     });
 
-    // 2. Developer apps
-    const apps = this.getApps();
-    for (const app of apps) {
-      if (!app.credentials) app.credentials = [];
-      const hasKey = app.credentials.some(
-        (c: any) => c.consumerKey === "test-api-key-12345" || c.consumerKey === "test-app-key-123",
-      );
-      if (!hasKey) {
-        app.credentials.push({
-          consumerKey: "test-api-key-12345",
-          consumerSecret: "test-api-secret-12345",
-          status: "approved",
-          apiProducts: [{ apiproduct: "test-product", status: "approved" }],
+    // 2. Developer apps and Developers
+    const rawUsers = this.getUsers();
+    const userEmails = new Set(rawUsers.map((u: any) => u.email));
+
+    const apps = this.getApps().map((app: any) => {
+      const email = app.developerEmail || app.developerId || "test@example.com";
+      if (!userEmails.has(email)) {
+        rawUsers.push({
+          email: email,
+          userName: email,
+          firstName: "Lab",
+          lastName: "Developer",
+          attributes: [],
         });
+        userEmails.add(email);
       }
-    }
+
+      const creds = Array.isArray(app.credentials) ? app.credentials : [];
+      const prodNames: string[] = Array.isArray(app.apiProducts)
+        ? app.apiProducts
+        : creds.flatMap((c: any) => (c.apiProducts || []).map((p: any) => typeof p === "string" ? p : p.apiproduct)).filter(Boolean);
+
+      return {
+        name: app.name,
+        displayName: app.displayName || app.name,
+        developerEmail: email,
+        callbackUrl: app.callbackUrl || "",
+        expiryType: app.expiryType || "never",
+        apiProducts: prodNames.length > 0 ? prodNames : ["test-product"],
+        credentials: creds.map((c: any) => {
+          const credProds = Array.isArray(c.apiProducts) && c.apiProducts.length > 0
+            ? c.apiProducts.map((p: any) => ({
+                apiproduct: typeof p === "string" ? p : p.apiproduct,
+                status: "approved",
+              }))
+            : (prodNames.length > 0 ? prodNames : ["test-product"]).map((pn) => ({
+                apiproduct: pn,
+                status: "approved",
+              }));
+
+          return {
+            consumerKey: c.consumerKey,
+            consumerSecret: c.consumerSecret || "custom-secret-123",
+            status: c.status || "approved",
+            apiProducts: credProds,
+          };
+        }),
+        attributes: Array.isArray(app.attributes) ? app.attributes : [],
+      };
+    });
+
     zipEntries.push({
       path: "developerapps.json",
       data: JSON.stringify(apps, null, 2),
     });
 
     // 3. Developers
-    const users = this.getUsers();
+    const users = rawUsers.map((u: any) => ({
+      email: u.email || "test@example.com",
+      userName: u.userName || u.email || "test@example.com",
+      firstName: u.firstName || "Developer",
+      lastName: u.lastName || "User",
+      attributes: Array.isArray(u.attributes) ? u.attributes : [],
+    }));
+
     zipEntries.push({
       path: "developers.json",
       data: JSON.stringify(users, null, 2),

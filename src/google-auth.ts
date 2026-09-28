@@ -70,9 +70,7 @@ export class GoogleAuthService {
 
     // 2. Primary: Google Application Default Credentials (ADC) via google-auth-library
     try {
-      const client = await this.auth.getClient();
-      const tokenResponse = await client.getAccessToken();
-      const token = typeof tokenResponse === "string" ? tokenResponse : tokenResponse?.token;
+      const token = await this.auth.getAccessToken();
       if (token && typeof token === "string" && token.trim()) {
         this.cachedToken = token.trim();
         this.expiry = now + 50 * 60 * 1000;
@@ -82,7 +80,37 @@ export class GoogleAuthService {
       // ADC error; proceed to fallbacks
     }
 
-    // 3. Fallback: gcloud auth application-default print-access-token
+    // 3. Fallback: Compute / Cloud Run Metadata Server
+    const metadataEndpoints = [
+      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+      `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=${encodeURIComponent(this.scope)}`,
+      "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+    ];
+
+    for (const endpoint of metadataEndpoints) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3500);
+        const res = await fetch(endpoint, {
+          headers: { "Metadata-Flavor": "Google" },
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (res.ok) {
+          const data = (await res.json()) as { access_token?: string; expires_in?: number };
+          if (data.access_token) {
+            this.cachedToken = data.access_token.trim();
+            const expiresIn = (data.expires_in || 3600) * 1000;
+            this.expiry = now + expiresIn;
+            return this.cachedToken;
+          }
+        }
+      } catch {
+        // Continue to fallback
+      }
+    }
+
+    // 4. Fallback: gcloud auth application-default print-access-token
     try {
       const gcloudAdc = spawnSync("gcloud", ["auth", "application-default", "print-access-token"], {
         encoding: "utf-8",
@@ -96,35 +124,6 @@ export class GoogleAuthService {
       }
     } catch {
       // Continue
-    }
-
-    // 4. Fallback: Compute / Cloud Run Metadata Server
-    const metadataEndpoints = [
-      `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=${encodeURIComponent(this.scope)}`,
-      `http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token?scopes=${encodeURIComponent(this.scope)}`,
-    ];
-
-    for (const endpoint of metadataEndpoints) {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 1000);
-        const res = await fetch(endpoint, {
-          headers: { "Metadata-Flavor": "Google" },
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        if (res.ok) {
-          const data = (await res.json()) as { access_token?: string; expires_in?: number };
-          if (data.access_token) {
-            this.cachedToken = data.access_token;
-            const expiresIn = (data.expires_in || 3600) * 1000;
-            this.expiry = now + expiresIn;
-            return this.cachedToken;
-          }
-        }
-      } catch {
-        // Continue to fallback
-      }
     }
 
     // 5. Fallback: gcloud auth print-access-token
@@ -142,6 +141,8 @@ export class GoogleAuthService {
     } catch {
       // Continue without token
     }
+
+    console.warn("[GoogleAuth] Notice: No Google OAuth access token acquired. Calls requiring upstream Google authentication may fail.");
 
     return "";
   }

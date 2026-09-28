@@ -11,6 +11,7 @@
     "deploy": "bun run src/index.ts --deploy"
   },
   "dependencies": {
+    "cassandra-driver": "^4.10.0",
     "chalk": "^5.4.1",
     "google-auth-library": "^11.1.0",
     "jsonpath-plus": "^10.2.0",

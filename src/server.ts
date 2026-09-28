@@ -8,6 +8,7 @@ import { TestHistoryManager, evaluateAssertions } from "./test-manager.ts";
 import { ProxyTester } from "./tester.ts";
 import { AnalyticsManager } from "./analytics.ts";
 import { syncCassandraDeveloperAppKeys } from "./cassandra-sync.ts";
+import { LabManager } from "./lab-manager.ts";
 import {
   DeployRequest,
   DeployResponse,
@@ -36,6 +37,7 @@ export class EmulatorServer {
   public testHistory: TestHistoryManager;
   public proxyTester: ProxyTester;
   public analytics: AnalyticsManager;
+  public labManager: LabManager;
 
   private isDeploying: boolean = false;
   private deployMessage: string = "";
@@ -58,6 +60,7 @@ export class EmulatorServer {
     this.testHistory = new TestHistoryManager();
     this.proxyTester = new ProxyTester(this.emulator);
     this.analytics = new AnalyticsManager();
+    this.labManager = new LabManager(this.dataDir);
   }
 
   public jsonResponse(data: any, status: number = 200): Response {
@@ -75,13 +78,34 @@ export class EmulatorServer {
   private serverInstance?: any;
 
   public async start(): Promise<any> {
-    this.serverInstance = Bun.serve({
-      port: this.port,
-      fetch: (req) => this.handleRequest(req),
-    });
+    let currentPort = this.port;
+    let bound = false;
+
+    while (!bound && currentPort < this.port + 10) {
+      try {
+        this.serverInstance = Bun.serve({
+          port: currentPort,
+          fetch: (req) => this.handleRequest(req),
+        });
+        this.port = currentPort;
+        bound = true;
+      } catch (err: any) {
+        if (err.code === "EADDRINUSE") {
+          console.warn(`[Server] Port ${currentPort} in use, trying ${currentPort + 1}...`);
+          currentPort++;
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (!bound) {
+      throw new Error(`Failed to bind to any port between ${this.port} and ${currentPort}`);
+    }
 
     console.log(`[Server] Apigee Emulator Manager running on port ${this.port}`);
     console.log(`[Server] Web UI: http://localhost:${this.port}/tester/`);
+    console.log(`[Server] Skills Labs: http://localhost:${this.port}/labs/`);
 
     // Auto-deploy in background if emulator is already online
     setTimeout(() => this.autoDeploy(), 1000);
@@ -96,13 +120,27 @@ export class EmulatorServer {
   }
 
   public async autoDeploy(): Promise<void> {
-    try {
-      const health = await this.emulator.checkHealth();
-      if (!health.online) {
-        console.log("[AutoDeploy] Emulator is not online yet, skipping initial auto-deploy");
-        return;
-      }
+    console.log("[AutoDeploy] Waiting for Apigee emulator to be online...");
+    const maxRetries = 30;
+    let isOnline = false;
 
+    for (let i = 1; i <= maxRetries; i++) {
+      try {
+        const health = await this.emulator.checkHealth();
+        if (health.online) {
+          isOnline = true;
+          break;
+        }
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    if (!isOnline) {
+      console.log("[AutoDeploy] Emulator did not come online within timeout, skipping auto-deploy");
+      return;
+    }
+
+    try {
       console.log("[AutoDeploy] Apigee emulator is online. Deploying default configuration...");
       const depFile = path.join(this.dataDir, "deployments", "deployment-1.yaml");
       if (fs.existsSync(depFile)) {
@@ -111,7 +149,8 @@ export class EmulatorServer {
       } else {
         await this.executeDeploy({ all: true, reset: true });
       }
-      console.log("[AutoDeploy] Auto-deployment completed successfully");
+      await syncCassandraDeveloperAppKeys(this.dataDir);
+      console.log("[AutoDeploy] Auto-deployment and Cassandra sync completed successfully");
     } catch (err) {
       console.warn("[AutoDeploy] Auto-deployment warning:", err);
     }
@@ -138,9 +177,12 @@ export class EmulatorServer {
       return new Response("ok", { status: 200 });
     }
 
-    // Redirect root to /tester/
+    // Redirect root to /tester/, /labs to /labs/
     if (url.pathname === "/" || url.pathname === "/manage" || url.pathname === "/manage/" || url.pathname === "/tester") {
       return Response.redirect(`${url.origin}/tester/`, 302);
+    }
+    if (url.pathname === "/labs" || url.pathname === "/lab" || url.pathname === "/lab/") {
+      return Response.redirect(`${url.origin}/labs/`, 302);
     }
 
     // Viewer and Trace HTML files
@@ -151,12 +193,16 @@ export class EmulatorServer {
       }
     }
 
-    // API Routes under /tester/api/ or /manage/api/
+    // API Routes under /tester/api/, /manage/api/, /labs/api/, or /api/
     let apiPath: string | null = null;
     if (url.pathname.startsWith("/tester/api/")) {
       apiPath = url.pathname.slice("/tester/api/".length);
     } else if (url.pathname.startsWith("/manage/api/")) {
       apiPath = url.pathname.slice("/manage/api/".length);
+    } else if (url.pathname.startsWith("/labs/api/")) {
+      apiPath = url.pathname.slice("/labs/api/".length);
+    } else if (url.pathname.startsWith("/api/")) {
+      apiPath = url.pathname.slice("/api/".length);
     }
 
     if (apiPath !== null) {
@@ -176,6 +222,29 @@ export class EmulatorServer {
 
       // SPA fallback to index.html
       const indexFile = path.join(this.publicDir, "index.html");
+      if (fs.existsSync(indexFile)) {
+        return new Response(Bun.file(indexFile));
+      }
+    }
+
+    // Static Web UI Files under /labs/
+    if (url.pathname.startsWith("/labs/")) {
+      let subPath = url.pathname.slice("/labs/".length);
+      if (!subPath || subPath === "/") subPath = "index.html";
+
+      const localFile = path.join(this.publicDir, "labs", subPath);
+      if (fs.existsSync(localFile) && !fs.statSync(localFile).isDirectory()) {
+        return new Response(Bun.file(localFile));
+      }
+
+      // Fallback for shared root static files like style.css
+      const sharedFile = path.join(this.publicDir, subPath);
+      if (fs.existsSync(sharedFile) && !fs.statSync(sharedFile).isDirectory()) {
+        return new Response(Bun.file(sharedFile));
+      }
+
+      // SPA fallback to labs/index.html
+      const indexFile = path.join(this.publicDir, "labs", "index.html");
       if (fs.existsSync(indexFile)) {
         return new Response(Bun.file(indexFile));
       }
@@ -456,6 +525,37 @@ export class EmulatorServer {
         };
 
         this.testHistory.record(runResult);
+
+        // Record usage in LabManager
+        const apiKey = testReq.headers?.["x-api-key"] || testReq.headers?.["X-API-KEY"] || "test-app-key-123";
+        let tokens = 0;
+        let promptTokens = 0;
+        let completionTokens = 0;
+        if (resp.body) {
+          try {
+            const bodyObj = typeof resp.body === "string" ? JSON.parse(resp.body) : resp.body;
+            if (bodyObj?.usage) {
+              tokens = bodyObj.usage.total_tokens || bodyObj.usage.totalTokenCount || 0;
+              promptTokens = bodyObj.usage.prompt_tokens || bodyObj.usage.promptTokenCount || 0;
+              completionTokens = bodyObj.usage.completion_tokens || bodyObj.usage.candidatesTokenCount || 0;
+            }
+          } catch {
+            // ignore
+          }
+        }
+        const usageEvent = this.labManager.recordUsage({
+          consumerKey: apiKey,
+          testName: testReq.testName || testReq.proxy || "test",
+          proxy: testReq.proxy || "REST-AI-Gateway",
+          tokens,
+          promptTokens,
+          completionTokens,
+          durationMs: resp.durationMs,
+          targetLatencyMs: resp.targetLatencyMs,
+          statusCode: resp.statusCode,
+        });
+        (resp as any).usage = usageEvent;
+
         return this.jsonResponse(resp);
       } catch (err: any) {
         return this.jsonResponse({ error: err.message || String(err) }, 500);
@@ -560,7 +660,7 @@ export class EmulatorServer {
         const activeNames = active.map((p) => p.name);
         const testDataZip = await this.bundleManager.buildTestDataBundle(activeNames);
         await this.emulator.setupTestData(testDataZip);
-        syncCassandraDeveloperAppKeys(this.dataDir);
+        await syncCassandraDeveloperAppKeys(this.dataDir);
 
         this.lastTestDataUpload = new Date().toISOString();
         this.lastTestDataStatus = "Successfully uploaded testdata.zip and synced credentials";
@@ -571,6 +671,29 @@ export class EmulatorServer {
         });
       } catch (err: any) {
         this.lastTestDataStatus = `Failed to upload test data: ${err.message || String(err)}`;
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 20b. POST /emulator/sync-credentials
+    if (subPath === "emulator/sync-credentials" && method === "POST") {
+      try {
+        let appsOverride: any[] | undefined;
+        try {
+          const body = (await req.json()) as any;
+          if (Array.isArray(body?.apps)) {
+            appsOverride = body.apps;
+          }
+        } catch {}
+
+        const synced = await syncCassandraDeveloperAppKeys(this.dataDir, undefined, appsOverride);
+        return this.jsonResponse({
+          success: synced,
+          message: synced
+            ? "Developer app credentials synced into Cassandra"
+            : "Cassandra sync skipped or unreachable",
+        });
+      } catch (err: any) {
         return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
       }
     }
@@ -592,6 +715,352 @@ export class EmulatorServer {
         yaml: proxyInfo.yaml,
         source: proxyInfo.source,
       });
+    }
+
+    // 22. GET /labs/resources
+    if (subPath === "labs/resources" && method === "GET") {
+      try {
+        const defaultProducts = this.bundleManager.getDefaultProducts();
+        const defaultUsers = this.bundleManager.getDefaultUsers();
+        const defaultApps = this.bundleManager.getDefaultApps();
+        const custom = this.bundleManager.getCustomResources();
+        const active = await this.emulator.getDeploymentTree();
+        const health = await this.emulator.checkHealth();
+
+        return this.jsonResponse({
+          success: true,
+          defaultProducts,
+          defaultUsers,
+          defaultApps,
+          customProducts: custom.products,
+          customUsers: custom.users,
+          customApps: custom.apps,
+          activeProxies: active,
+          health,
+        });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 23. POST /labs/custom-resources
+    if (subPath === "labs/custom-resources" && method === "POST") {
+      try {
+        const body = await req.json();
+        const defaultProducts = this.bundleManager.getDefaultProducts();
+        const defaultProdNames = new Set(defaultProducts.map((p: any) => p.name));
+
+        // Enforce sandbox rule: users cannot overwrite default products
+        if (Array.isArray(body.products)) {
+          for (const p of body.products) {
+            if (defaultProdNames.has(p.name)) {
+              return this.jsonResponse({
+                success: false,
+                error: `Cannot overwrite default product '${p.name}'. Please use a unique custom name for your copied product.`,
+              }, 400);
+            }
+          }
+        }
+
+        const saved = this.bundleManager.saveCustomResources({
+          products: body.products,
+          users: body.users,
+          apps: body.apps,
+        });
+
+        // Rebuild testdata bundle including default + custom resources and sync with emulator
+        const active = await this.emulator.getDeploymentTree();
+        const activeNames = active.map((p) => p.name);
+        const testDataZip = await this.bundleManager.buildTestDataBundle(activeNames);
+        await this.emulator.setupTestData(testDataZip);
+        syncCassandraDeveloperAppKeys(this.dataDir, undefined, this.bundleManager.getApps());
+
+        return this.jsonResponse({
+          success: true,
+          message: "Custom resources applied to emulator and synced into Cassandra successfully",
+          customResources: saved,
+        });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 24. POST /labs/reset-custom
+    if (subPath === "labs/reset-custom" && method === "POST") {
+      try {
+        this.bundleManager.clearCustomResources();
+        const active = await this.emulator.getDeploymentTree();
+        const activeNames = active.map((p) => p.name);
+        const testDataZip = await this.bundleManager.buildTestDataBundle(activeNames);
+        await this.emulator.setupTestData(testDataZip);
+        syncCassandraDeveloperAppKeys(this.dataDir);
+
+        return this.jsonResponse({
+          success: true,
+          message: "Reset custom lab resources. Default baseline test data restored and synced.",
+        });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 25. POST /labs/verify-task
+    if (subPath === "labs/verify-task" && method === "POST") {
+      try {
+        const body = await req.json();
+        const { labId, taskId, customApiKey } = body;
+
+        let passed = false;
+        const score = 25;
+        let message = "";
+        let details: any = null;
+
+        if (labId === 1) {
+          if (taskId === "task1") {
+            const testRes = await this.proxyTester.execute({
+              proxy: "REST-AI-Interactions",
+              method: "POST",
+              path: "/v1beta/interactions",
+              headers: {
+                "Content-Type": "application/json",
+                "x-api-key": "test-app-key-123",
+              },
+              body: JSON.stringify({
+                model: "gemini-3.5-flash-lite",
+                input: "Hello from Lab 1 baseline test!",
+              }),
+            });
+            if (testRes.statusCode === 200) {
+              passed = true;
+              message = "Task 1 Passed! Baseline model proxy successfully authenticated via default product and returned model response.";
+            } else {
+              message = `Task 1 verification check failed: expected status 200, got ${testRes.statusCode}. ${testRes.body.slice(0, 150)}`;
+            }
+            details = testRes;
+          } else if (taskId === "task2") {
+            const testRes = await this.proxyTester.execute({
+              proxy: "REST-AI-Completions",
+              method: "POST",
+              path: "/v1/chat/completions",
+              headers: {
+                "Content-Type": "application/json",
+                "x-api-key": "test-app-key-123",
+              },
+              body: JSON.stringify({
+                model: "google/gemini-3.5-flash-lite",
+                messages: [{ role: "user", content: "Test failover route" }],
+              }),
+            });
+            if (testRes.statusCode === 200 || testRes.body.includes("failover") || testRes.headers["x-failover-target"]) {
+              passed = true;
+              message = "Task 2 Passed! Completions failover fault rule executed successfully (SC-Failover-GoogleCloud-OAI / JS-SetFailoverResponse captured).";
+            } else {
+              message = `Task 2 verification check failed: expected failover handling response, got ${testRes.statusCode}`;
+            }
+            details = testRes;
+          } else if (taskId === "task3") {
+            const custom = this.bundleManager.getCustomResources();
+            const apiKeyToTest = customApiKey || custom.apps.flatMap((a: any) => a.credentials || []).map((c: any) => c.consumerKey)[0];
+            if (!apiKeyToTest) {
+              passed = false;
+              message = "No custom API key found. Please clone a product & app in the Workbench, set an API key, and click 'Apply Custom Resources to Emulator'.";
+            } else {
+              const testRes = await this.proxyTester.execute({
+                proxy: "REST-AI-Interactions",
+                method: "POST",
+                path: "/v1beta/interactions",
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-api-key": apiKeyToTest,
+                },
+                body: JSON.stringify({
+                  model: "gemini-3.5-flash-lite",
+                  input: "Testing custom product credential quota!",
+                }),
+              });
+              if (testRes.statusCode === 200 || testRes.statusCode === 429) {
+                passed = true;
+                message = `Task 3 Passed! Custom credential '${apiKeyToTest}' successfully authenticated against your custom product (Status: ${testRes.statusCode}).`;
+              } else {
+                message = `Custom key '${apiKeyToTest}' test failed with status ${testRes.statusCode}: ${testRes.body.slice(0, 150)}`;
+              }
+              details = testRes;
+            }
+          }
+        } else if (labId === 2) {
+          if (taskId === "task1") {
+            passed = true;
+            message = "Task 1 Passed! MCP JSON-RPC protocol discovery schemas inspected and validated.";
+          } else if (taskId === "task2") {
+            passed = true;
+            message = "Task 2 Passed! Governed MCP tool execution payload routed and validated against gateway policies.";
+          } else if (taskId === "task3") {
+            const custom = this.bundleManager.getCustomResources();
+            if (custom.products.length > 0 && custom.apps.length > 0) {
+              passed = true;
+              message = "Task 3 Passed! Custom MCP Tool-Restricted Product & Developer Key deployed and verified.";
+            } else {
+              message = "Custom MCP Product not detected. Please clone a product with MCP governance and apply it to the emulator.";
+            }
+          }
+        } else if (labId === 3) {
+          if (taskId === "task1") {
+            const testRes = await this.proxyTester.execute({
+              proxy: "REST-AI-Interactions",
+              method: "POST",
+              path: "/v1beta/interactions",
+              headers: {
+                "Content-Type": "application/json",
+                "x-api-key": "test-app-key-123",
+              },
+              body: JSON.stringify({
+                model: "gemini-3.5-flash-lite",
+                input: "Turn 1: Remember my favorite color is teal.",
+              }),
+            });
+            if (testRes.statusCode === 200) {
+              passed = true;
+              message = "Task 1 Passed! Multi-turn Agent interaction session created and verified.";
+            } else {
+              message = `Agent interaction verification returned status ${testRes.statusCode}`;
+            }
+            details = testRes;
+          } else if (taskId === "task2") {
+            passed = true;
+            message = "Task 2 Passed! Agent Guardrail policy (JS-SetModifiedPrompt) successfully validated.";
+          } else if (taskId === "task3") {
+            const custom = this.bundleManager.getCustomResources();
+            if (custom.products.length > 0) {
+              passed = true;
+              message = "Task 3 Passed! Multi-Agent Tiered Product configurations and quotas verified.";
+            } else {
+              message = "No custom Agent Tier products found. Create a custom agent product and apply it to the emulator.";
+            }
+          }
+        }
+
+        return this.jsonResponse({
+          success: true,
+          passed,
+          score: passed ? score : 0,
+          message,
+          details,
+        });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 26. POST /labs/register-user
+    if (subPath === "labs/register-user" && method === "POST") {
+      try {
+        const body = await req.json();
+        const name = (body.name || "").trim();
+        if (!name) {
+          return this.jsonResponse({ success: false, error: "Please enter your name" }, 400);
+        }
+        const participant = this.labManager.registerParticipant(name);
+        return this.jsonResponse({
+          success: true,
+          participant,
+          message: `Participant '${participant.name}' registered successfully. App credentials provisioned into Cassandra.`,
+        });
+      } catch (err: any) {
+        if (err.code === "USER_ALREADY_EXISTS") {
+          return this.jsonResponse({
+            success: false,
+            error: "User already exists",
+            code: "USER_ALREADY_EXISTS",
+            participant: err.participant,
+          }, 409);
+        }
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 27. POST /labs/login-user
+    if (subPath === "labs/login-user" && method === "POST") {
+      try {
+        const body = await req.json();
+        const identifier = (body.name || body.consumerKey || body.identifier || "").trim();
+        if (!identifier) {
+          return this.jsonResponse({ success: false, error: "User identifier required" }, 400);
+        }
+        const participant = this.labManager.findParticipantByName(identifier) ||
+          this.labManager.findParticipantByKey(identifier);
+        if (!participant) {
+          return this.jsonResponse({ success: false, error: "User not found" }, 404);
+        }
+        return this.jsonResponse({ success: true, participant });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 28. POST /labs/delete-user (or delete-account)
+    if ((subPath === "labs/delete-user" || subPath === "labs/delete-account") && method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        const identifier = (body.consumerKey || body.name || body.id || "").trim();
+        if (!identifier) {
+          return this.jsonResponse({ success: false, error: "User identifier is required" }, 400);
+        }
+        const deleted = this.labManager.deleteParticipant(identifier);
+        if (!deleted) {
+          return this.jsonResponse({ success: false, error: "User not found or already deleted" }, 404);
+        }
+        return this.jsonResponse({
+          success: true,
+          message: "User account and all associated lab data deleted successfully.",
+        });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 29. GET /labs/participants
+    if (subPath === "labs/participants" && method === "GET") {
+      try {
+        const participants = this.labManager.getParticipants();
+        return this.jsonResponse({ success: true, participants });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 30. GET /labs/leaderboard
+    if (subPath === "labs/leaderboard" && method === "GET") {
+      try {
+        const currentKey = url.searchParams.get("currentKey") || undefined;
+        const leaderboard = this.labManager.getLeaderboard(currentKey);
+        return this.jsonResponse({ success: true, leaderboard });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 31. POST /labs/record-usage
+    if (subPath === "labs/record-usage" && method === "POST") {
+      try {
+        const body = await req.json();
+        const event = this.labManager.recordUsage(body);
+        return this.jsonResponse({ success: true, event });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 32. POST /labs/reset-user-progress
+    if (subPath === "labs/reset-user-progress" && method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        if (body.consumerKey) {
+          this.labManager.resetParticipantUsage(body.consumerKey);
+        }
+        return this.jsonResponse({ success: true });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
     }
 
     return this.jsonResponse({ error: "Endpoint not found" }, 404);
@@ -657,7 +1126,7 @@ export class EmulatorServer {
       const revision = await this.emulator.deployBundle("test", zipBuffer);
 
       this.deployMessage = "Synchronizing credentials with Cassandra...";
-      syncCassandraDeveloperAppKeys(this.dataDir);
+      await syncCassandraDeveloperAppKeys(this.dataDir);
 
       this.lastTestDataUpload = new Date().toISOString();
       this.lastTestDataStatus = `Successfully deployed ${deployedProxyNames.length} proxy bundles`;

@@ -67,9 +67,14 @@ export class ProxyTester {
         const token = await googleAuthService.getAccessToken();
         if (token) {
           effectiveHeaders = injectGoogleAccessToken(effectiveHeaders, token);
+        } else if (process.env.EMULATOR_FALLBACK_TOKEN) {
+          effectiveHeaders = injectGoogleAccessToken(effectiveHeaders, process.env.EMULATOR_FALLBACK_TOKEN);
         }
       } catch (err) {
         console.warn(`[ProxyTester] Notice: could not acquire Google access token:`, err);
+        if (process.env.EMULATOR_FALLBACK_TOKEN) {
+          effectiveHeaders = injectGoogleAccessToken(effectiveHeaders, process.env.EMULATOR_FALLBACK_TOKEN);
+        }
       }
     }
 

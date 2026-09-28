@@ -640,12 +640,16 @@ deploy_cloudrun_service() {
         if [ "$aft_ok" -eq 0 ]; then
           for pzip in "$tmp_dep_dir"/*.zip; do
             if [ -f "$pzip" ]; then
-              cp "$pzip" "$ROOT_DIR/data/bundles/"
-              echo -e "  • Bundle created: $(basename "$pzip")"
-              mkdir -p "$ROOT_DIR/data/proxies"
               local pname
               pname="$(basename "$pzip" .zip)"
-              aft -i "$pzip" -f proxy -n "$pname" -o "$ROOT_DIR/data/proxies/$pname.yaml" --no-animation 2>/dev/null || true
+              local sanitize_tmp
+              sanitize_tmp=$(mktemp -d /tmp/pzip-san-XXXXXX)
+              unzip -q -o "$pzip" -d "$sanitize_tmp"
+              sanitize_target_endpoints "$sanitize_tmp"
+              rm -f "$ROOT_DIR/data/bundles/$pname.zip"
+              (cd "$sanitize_tmp" && zip -q -r "$ROOT_DIR/data/bundles/$pname.zip" .)
+              rm -rf "$sanitize_tmp"
+              echo -e "  • Bundle created & sanitized: $pname.zip"
             fi
           done
 
@@ -773,11 +777,22 @@ for fname, subdir in [('products.json', 'products'), ('developers.json', 'develo
     echo -e "${GREEN}✓ Apigee Emulator, Envoy, and Tester UI are healthy and ready on Cloud Run!${NC}"
   fi
 
+  # Automatically deploy all deployments from data/deployments/
+  echo -e "\n${BLUE}Deploying all deployments from data/deployments/ to Cloud Run...${NC}"
+  local all_deps=()
+  while IFS= read -r f; do [ -n "$f" ] && all_deps+=("$f"); done < <(get_available_deployments)
+  if [ ${#all_deps[@]} -gt 0 ]; then
+    deploy_proxies_to_cloudrun "${all_deps[@]}"
+  else
+    echo -e "${YELLOW}No deployments found in data/deployments/ to deploy.${NC}"
+  fi
+
   echo -e "\n${BOLD}================================================================${NC}"
   echo -e "${BOLD}Cloud Run Service URL:${NC} ${CYAN}$cr_url${NC}"
   echo -e "${BOLD}Apigee Emulator Tester UI:${NC} ${GREEN}$cr_url/tester/${NC}"
+  echo -e "${BOLD}Apigee Labs UI:${NC} ${GREEN}$cr_url/labs/${NC}"
   echo -e "${BOLD}Next Steps:${NC}"
-  echo -e "  1. Open ${GREEN}$cr_url/tester/${NC} in your browser to inspect proxies, deploy bundles, and run interactive tests with traces."
+  echo -e "  1. Open ${GREEN}$cr_url/labs/${NC} or ${GREEN}$cr_url/tester/${NC} in your browser."
   echo -e "  2. Or deploy additional deployments via CLI:"
   echo -e "     \033[1;32m./cloudrun.sh data/deployments/deployment-1.yaml\033[0m"
   echo -e "${BOLD}================================================================${NC}\n"
@@ -850,12 +865,13 @@ except Exception as e:
 sanitize_target_endpoints() {
   local target_dir="$1"
   python3 -c "
-import glob, os, xml.etree.ElementTree as ET
+import glob, os, re, xml.etree.ElementTree as ET
 
 td = '$target_dir/apiproxy'
 target_xmls = glob.glob(f'{td}/targets/*.xml')
 targets = [os.path.splitext(os.path.basename(f))[0] for f in target_xmls]
 
+# 1. Sanitize RouteRules in proxy endpoints
 for proxy_file in glob.glob(f'{td}/proxies/*.xml'):
     try:
         tree = ET.parse(proxy_file)
@@ -877,6 +893,19 @@ for proxy_file in glob.glob(f'{td}/proxies/*.xml'):
             tree.write(proxy_file, encoding='utf-8', xml_declaration=True)
     except Exception as e:
         print(f'Warning during sanitization of {proxy_file}: {e}')
+
+# 2. Sanitize policy XMLs: Strip Authentication blocks with GoogleAccessToken and ensure continueOnError=true
+for policy_file in glob.glob(f'{td}/policies/*.xml'):
+    try:
+        with open(policy_file, 'r', encoding='utf-8') as pf:
+            pcontent = pf.read()
+        new_content = re.sub(r'<Authentication\b[^>]*>[\s\S]*?<\/Authentication>', '', pcontent)
+        new_content = new_content.replace('continueOnError=\"false\"', 'continueOnError=\"true\"').replace(\"continueOnError='false'\", \"continueOnError='true'\")
+        if new_content != pcontent:
+            with open(policy_file, 'w', encoding='utf-8') as pf:
+                pf.write(new_content)
+    except Exception as e:
+        print(f'Warning during policy sanitization of {policy_file}: {e}')
 "
 }
 
@@ -1441,6 +1470,19 @@ except Exception:
   echo -e "${GREEN}✓ Proxies successfully deployed to Apigee Emulator on Cloud Run!${NC}"
   echo ""
 
+  # Sync Cassandra credentials on Cloud Run via manager endpoint
+  echo -e "${BLUE}Synchronizing developer app credentials into Cassandra on Cloud Run...${NC}"
+  local sync_resp
+  sync_resp=$(curl_cr -s -X POST "$cr_url/tester/api/emulator/sync-credentials" 2>/dev/null || true)
+  if echo "$sync_resp" | grep -q '"success":true'; then
+    echo -e "${GREEN}✓ API credentials successfully synchronized into Cassandra.${NC}"
+  else
+    # Fallback attempt via setup-testdata
+    curl_cr -s -X POST "$cr_url/tester/api/emulator/setup-testdata" >/dev/null 2>&1 || true
+    echo -e "${YELLOW}Notice: Credentials sync requested from manager.${NC}"
+  fi
+  echo ""
+
   # Update Cloud Run environment variables if parameters were specified
   update_cloudrun_service_env_vars
 
@@ -1597,7 +1639,7 @@ interactive_menu() {
     echo -e "Current Service: ${YELLOW}Not deployed or URL not cached${NC}\n"
   fi
 
-  echo -e "  ${BOLD}1)${NC} ${GREEN}Deploy Containers to Cloud Run${NC} (Envoy + Apigee Emulator)"
+  echo -e "  ${BOLD}1)${NC} ${GREEN}Deploy Containers + All Deployments to Cloud Run${NC} (Envoy + Apigee + Manager + Deployments)"
   echo -e "  ${BOLD}2)${NC} Deploy default deployment (${CYAN}data/deployments/deployment-1.yaml${NC})"
   echo -e "  ${BOLD}3)${NC} Browse & deploy deployments (data/deployments/*.yaml)"
   echo -e "  ${BOLD}4)${NC} Browse & deploy ZIP bundles (data/bundles/*.zip)"
