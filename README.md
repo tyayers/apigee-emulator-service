@@ -8,10 +8,12 @@ This repository provides tools, scripts, and a lightweight web service for build
 
 - [Prerequisites](#prerequisites)
 - [1. Creating and Starting the Apigee Emulator Container](#1-creating-and-starting-the-apigee-emulator-container)
-- [2. Deploying with `deploy.sh` (TestProxy & Deployment Manifests)](#2-deploying-with-deploysh-testproxy--deployment-manifests)
-  - [Deploying TestProxy Directly](#deploying-testproxy-directly)
-  - [Converting Deployment Manifests (`--convert`)](#converting-deployment-manifests---convert)
+- [2. Managing & Deploying Locally (`local.sh`)](#2-managing--deploying-locally-localsh)
+  - [Interactive Menu](#interactive-menu)
+  - [Starting the Emulator & Web UI](#starting-the-emulator--web-ui)
   - [Deploying Deployment Manifests Directly](#deploying-deployment-manifests-directly)
+  - [Testing & Tracing Locally](#testing--tracing-locally)
+  - [Local Management Commands](#local-management-commands)
 - [3. Tracing Proxy Executions with `trace.html`](#3-tracing-proxy-executions-with-tracehtml)
 - [4. Testing TestProxy Endpoints](#4-testing-testproxy-endpoints)
 - [5. Deploying to Google Cloud Run (`cloudrun.sh`)](#5-deploying-to-google-cloud-run-cloudrunsh)
@@ -20,11 +22,12 @@ This repository provides tools, scripts, and a lightweight web service for build
   - [Deploying TestProxy to Cloud Run](#deploying-testproxy-to-cloud-run)
   - [Testing & Tracing on Cloud Run](#testing--tracing-on-cloud-run)
   - [Cloud Run Management Commands](#cloud-run-management-commands)
-- [6. Apigee Emulator Tester (`/tester/` Web UI & Go Service)](#6-apigee-emulator-tester-tester-web-ui--go-service)
+- [6. Apigee Emulator Tester (`/tester/` Web UI & Bun TypeScript Service)](#6-apigee-emulator-tester-tester-web-ui--bun-typescript-service)
   - [Running the Tester Service](#running-the-tester-service)
   - [Web UI Features](#web-ui-features)
   - [Test Suites & Assertions (from `deployment-1.yaml`)](#test-suites--assertions-from-deployment-1yaml)
   - [REST API Reference](#rest-api-reference)
+  - [Running Unit & Integration Tests](#running-unit--integration-tests)
 
 ---
 
@@ -32,10 +35,8 @@ This repository provides tools, scripts, and a lightweight web service for build
 
 - **Docker** installed and running (for local emulator container)
 - **Google Cloud SDK (`gcloud`)** installed and authenticated (for Cloud Run)
-- **AFT (Apigee Templater)** CLI tool installed
+- **Bun** (v1.1+) installed (`curl -fsSL https://bun.sh/install | bash`)
 - **cURL** & **jq**
-- **Python 3** with `pyyaml` (`pip install pyyaml`)
-- **Go 1.21+** (for building the local tester service)
 
 ---
 
@@ -76,54 +77,67 @@ docker stop apigee
 
 ---
 
-## 2. Deploying with `deploy.sh` (TestProxy & Deployment Manifests)
+## 2. Managing & Deploying Locally (`local.sh`)
 
-The [`deploy.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/deploy.sh) script compiles AFT YAML files into proxy bundles, generates environment configs, packages test data, and deploys everything to the emulator.
+[`local.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/local.sh) is the local counterpart to `cloudrun.sh`. It automatically discovers or accepts your GCP Project ID, substitutes `{GOOGLE_CLOUD_PROJECT}` in deployment manifests, manages the Docker emulator container, compiles and deploys resources using Bun TypeScript, and provides commands for testing and tracing.
 
-### Deploying Deployments Directly
-
-To compile and deploy [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml):
-
+### Interactive Menu
+Run `./local.sh` with no arguments to bring up the interactive console:
 ```bash
-./deploy.sh data/deployments/deployment-1.yaml
+./local.sh
 ```
 
-This compiles the proxies defined in the deployment, packages test data (`products.json`, `developerapps.json`, etc.), resets the emulator, and deploys to the `test` environment.
-
----
-
-### Converting Deployment Manifests (`--convert`)
-
-You can convert any deployment manifest (such as [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml)) into deployable local assets:
-
+### Starting the Emulator & Web UI
+Start the Apigee emulator container and launch the Bun TypeScript tester server:
 ```bash
-# Convert a specific deployment manifest
-./deploy.sh --convert data/deployments/deployment-1.yaml
+./local.sh up
 
-# Or convert all deployment manifests in data/deployments/
-./deploy.sh --convert
+# Or with live auto-reload on file edits:
+./local.sh start --dev
 ```
-
-#### How Conversion Works:
-1. Runs `aft -i data/deployments/<file>.yaml -f zip -o <target_dir> --no-animation`.
-2. Copies generated proxy bundles into [`data/bundles/`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/bundles/) for automated startup deployment by the Go service.
-3. Unpacks bundles into `dist/bundle/` and sanitizes target routes.
-4. Merges generated API products, developers, and apps into `dist/` and sanitizes product schemas.
-
----
 
 ### Deploying Deployment Manifests Directly
-
-Deploy [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) in a single step:
-
+Deploy a deployment YAML with automatic GCP project substitution:
 ```bash
-./deploy.sh data/deployments/deployment-1.yaml
+# Auto-detects project from GOOGLE_CLOUD_PROJECT or gcloud config:
+./local.sh deploy data/deployments/deployment-1.yaml
+
+# Or explicitly specify the GCP Project ID:
+./local.sh deploy --project my-gcp-project data/deployments/deployment-1.yaml
+
+# Deploy all deployments in data/deployments/:
+./local.sh deploy --all
 ```
 
-When given a deployment manifest, `deploy.sh`:
-1. Compiles the included proxies (`TestProxy`) with `aft`.
-2. Merges products, developers, apps, and credentials (`test-app-key-123`).
-3. Resets the local emulator, loads all test data, and deploys the proxy bundle.
+### Testing & Tracing Locally
+```bash
+# Run tests for all deployed proxies
+./local.sh test
+
+# Run tests for a specific proxy
+./local.sh test REST-AI-Interactions
+
+# Start a trace session for a proxy
+./local.sh trace-start REST-AI-Interactions
+
+# Stop trace and save to trace.json
+./local.sh trace-stop
+```
+
+### Local Management Commands
+
+| Command | Description |
+|---|---|
+| `./local.sh up` | Start emulator container and launch Bun server |
+| `./local.sh deploy [FILE]` | Deploy deployment YAML with `{GOOGLE_CLOUD_PROJECT}` substitution |
+| `./local.sh test [PROXY]` | Execute proxy tests and assertion evaluations |
+| `./local.sh status` | Check Docker container, emulator health, and deployed proxies |
+| `./local.sh tester` / `ui` | Open Tester Web UI at `http://localhost:8082/tester/` |
+| `./local.sh trace-start [PROXY]` | Start debug trace session for proxy |
+| `./local.sh trace-stop` | Stop trace session and save transactions to `trace.json` |
+| `./local.sh reset` | Clear deployed proxies and reset emulator state |
+| `./local.sh logs` | Follow Docker container logs |
+| `./local.sh stop` | Stop Apigee Docker container |
 
 ---
 
@@ -322,23 +336,29 @@ curl -i "$CLOUDRUN_URL/testproxy" -H "x-api-key: test-app-key-123"
 
 ---
 
-## 6. Apigee Emulator Tester (`/tester/` Web UI & Go Service)
+## 6. Apigee Emulator Tester (`/tester/` Web UI & Bun TypeScript Service)
 
-[`apigee-emulator-service`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/main.go) is a lightweight Go service that provides automated bundle deployment, a test runner, and a developer Web UI (**"Apigee Emulator Tester"**).
+`apigee-emulator-service` is a Bun TypeScript service that provides automated template and deployment YAML conversion, bundle deployment, a test runner, and a developer Web UI (**"Apigee Emulator Tester"**).
 
 ### Running the Tester Service
 
 ```bash
-# Build the binary
-go build -o apigee-emulator-service .
+# Install dependencies
+bun install
 
-# Run the service (default port 8085)
-PORT=8085 ./apigee-emulator-service
+# Start the service (default port 8082, or specify PORT)
+bun run start
+
+# Or run in development mode with live watch/reload
+bun run dev
+
+# Or deploy a deployment manifest and run tests directly in CLI mode
+bun run src/index.ts --deploy data/deployments/deployment-1.yaml --no-server
 ```
 
 Open your browser to:
 ```text
-http://localhost:8085/tester/
+http://localhost:8082/tester/
 ```
 
 ---
@@ -346,7 +366,7 @@ http://localhost:8085/tester/
 ### Web UI Features
 
 - **Automatic Startup Deployment**: Automatically deploys all bundles in `data/bundles/*.zip` on startup and displays a waiting overlay while deployment completes.
-- **Deep Linking**: Share and bookmark URLs like `http://localhost:8085/tester/?proxy=TestProxy`.
+- **Deep Linking**: Share and bookmark URLs like `http://localhost:8082/tester/?proxy=REST-AI-Interactions`.
 - **Vertical Trace Visualizer**: Step-by-step transaction inspector (Request &rarr; Target Request &rarr; Target Response &rarr; Response). Click any policy step to inspect flow variables and execution timing.
 - **Google Access Token Injection (Cloud Run Workaround)**: Automatically obtains a Google Cloud access token (with `https://www.googleapis.com/auth/cloud-platform` scope) from the Cloud Run deployment's service account (or local ADC / gcloud) and injects it as `Authorization: Bearer <token>` into test requests whenever no authorization bearer token is present in the request headers.
 - **Test Runner & History**: Run tests, evaluate assertions, and review historical test runs with downloadable results and traces.
@@ -359,19 +379,25 @@ Deployment manifests define test collections at the end of the file:
 
 ```yaml
 tests:
-  - name: testproxy-test1
-    proxy: TestProxy
-    path: /testproxy
-    method: GET
+  - name: interactions-test1
+    description: Tests the Gemini Interactions API
+    proxy: REST-AI-Interactions
+    path: /v1beta/interactions
+    method: POST
     headers:
-      x-api-key: test-api-key-12345
+      x-api-key: test-app-key-123
+    body: |
+      {
+        "model": "gemini-3.5-flash-lite",
+        "input": "What is the capital of France?"
+      }
     assertions:
-      - status.code == 200
+      - response.status == 200
 ```
 
 In the Web UI:
-- Selecting **TestProxy** displays available tests from the dropdown.
-- Expected assertions are shown (e.g. `status.code == 200`).
+- Selecting **REST-AI-Interactions** displays available tests from the dropdown.
+- Expected assertions are shown (e.g. `response.status == 200`).
 - Clicking **"Send Request"** executes the test and captures live trace data.
 - Clicking **"Test All"** runs the complete test suite across all proxies and records the run in the test history.
 
@@ -384,31 +410,51 @@ All endpoints are available under `/tester/api/`:
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/healthz` | Service health check |
-| `GET` | `/tester/api/status` | Emulator & Cassandra readiness, deployed proxies, bundles |
+| `GET` | `/tester/api/status` | Emulator readiness, deployed proxies, products, apps, bundles |
 | `GET` | `/tester/api/bundles` | List packaged ZIP bundles in `data/bundles/` |
+| `GET` | `/tester/api/deployments` | List available deployment YAML manifests |
 | `GET` | `/tester/api/tests` | List test suites and assertions from deployment manifests |
 | `POST` | `/tester/api/tests/run` | Execute tests, evaluate assertions, and record run history |
-| `GET` | `/tester/api/tests/history` | List test run history (optional `?proxy=TestProxy`) |
+| `GET` | `/tester/api/tests/history` | List test run history (optional `?proxy=ProxyName`) |
 | `GET` | `/tester/api/tests/history/:id` | Get detailed test run results, assertions, and full trace |
 | `DELETE` | `/tester/api/tests/history` | Clear test history |
-| `POST` | `/tester/api/deploy` | Deploy selected or all bundles (`{"bundles": ["..."], "reset": true}`) |
+| `POST` | `/tester/api/deploy` | Deploy deployment YAML (`{"yaml": "...", "reset": true}`) or bundles (`{"bundles": ["..."], "reset": true}`) |
 | `POST` | `/tester/api/reset` | Reset emulator state |
 | `POST` | `/tester/api/test` | Execute an HTTP request against the proxy runtime with trace capture |
 | `POST` | `/tester/api/trace/start` | Start debug trace session for a proxy |
 | `GET` | `/tester/api/trace/transactions` | Retrieve recorded trace transactions |
 
-#### Example: Deploy All Bundles via API
+#### Example 1: Deploy a Deployment Manifest via API
 
 ```bash
-curl -X POST http://localhost:8085/tester/api/deploy \
+# Convert and deploy deployment YAML directly
+curl -X POST http://localhost:8082/tester/api/deploy \
+  -H "Content-Type: application/json" \
+  -d "{\"yaml\": $(jq -Rs . < data/deployments/deployment-1.yaml), \"reset\": true}"
+```
+
+#### Example 2: Deploy All Existing Bundles via API
+
+```bash
+curl -X POST http://localhost:8082/tester/api/deploy \
   -H "Content-Type: application/json" \
   -d '{"reset": true}'
 ```
 
-#### Example: Run Proxy Tests via API
+#### Example 3: Run Proxy Tests via API
 
 ```bash
-curl -X POST http://localhost:8085/tester/api/tests/run \
+curl -X POST http://localhost:8082/tester/api/tests/run \
   -H "Content-Type: application/json" \
-  -d '{"proxy": "TestProxy"}'
+  -d '{"proxy": "REST-AI-Interactions"}'
 ```
+
+---
+
+### Running Unit & Integration Tests
+
+Run the built-in Bun test suite:
+```bash
+bun test
+```
+

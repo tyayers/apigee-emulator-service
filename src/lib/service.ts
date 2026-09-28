@@ -1,0 +1,2828 @@
+import { ApigeeConverter } from "./converter.js";
+import { Template, Proxy, Feature, Product, Products, User, Users, Deployment, Deployments, ApigeeConfig } from "./interfaces.js";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import * as YAML from "yaml";
+import { Blob } from "buffer";
+import chalk from "chalk";
+
+export class ApigeeTemplaterService {
+  tempPath: string = "./data/temp/";
+  templatesPath: string = "./data/templates/";
+  featuresPath: string = "./data/features/";
+  proxiesPath: string = "./data/proxies/";
+  productsPath: string = "./data/products/";
+  usersPath: string = "./data/users/";
+  deploymentsPath: string = "./data/deployments/";
+  public apigeeProxyListCache: { [key: string]: string[] } = {};
+  public apigeeSharedFlowListCache: { [key: string]: string[] } = {};
+  public templateListCache: string[] = [];
+  public featureListCache: string[] = [];
+  public productListCache: string[] = [];
+  public userListCache: string[] = [];
+  public deploymentListCache: string[] = [];
+
+  private cacheTtlMs: number = 24 * 60 * 60 * 1000; // 1 day in milliseconds
+
+  public get baseRepository(): string {
+    return (
+      process.env.AFT_REPOSITORY ||
+      "https://github.com/gcp-samples/apigee-template-repository"
+    );
+  }
+
+  public get templatesRepository(): string {
+    return (
+      process.env.AFT_TEMPLATES_REPOSITORY ||
+      `${this.baseRepository}/tree/main/templates`
+    );
+  }
+
+  public get featuresRepository(): string {
+    return (
+      process.env.AFT_FEATURES_REPOSITORY ||
+      `${this.baseRepository}/tree/main/features`
+    );
+  }
+
+  public get proxiesRepository(): string {
+    return (
+      process.env.AFT_PROXIES_REPOSITORY ||
+      `${this.baseRepository}/tree/main/proxies`
+    );
+  }
+
+  public get productsRepository(): string {
+    return (
+      process.env.AFT_PRODUCTS_REPOSITORY ||
+      `${this.baseRepository}/tree/main/products`
+    );
+  }
+
+  public get usersRepository(): string {
+    return (
+      process.env.AFT_USERS_REPOSITORY ||
+      `${this.baseRepository}/tree/main/users`
+    );
+  }
+
+  public get deploymentsRepository(): string {
+    return (
+      process.env.AFT_DEPLOYMENTS_REPOSITORY ||
+      `${this.baseRepository}/tree/main/deployments`
+    );
+  }
+
+  remoteGetBaseUrl = process.env.TEMPLATER_GET_BASE_URL
+    ? process.env.TEMPLATER_GET_BASE_URL
+    : "https://raw.githubusercontent.com/apigee/apigee-templater/refs/heads/main/repository/";
+  remoteListUrl = process.env.TEMPLATER_LIST_URL
+    ? process.env.TEMPLATER_LIST_URL
+    : "https://api.github.com/repos/apigee/apigee-templater/contents/repository/";
+
+  public getCacheDir(): string {
+    const homeDir = os.homedir() || process.env.HOME || process.env.USERPROFILE || ".";
+    return path.join(homeDir, ".aft", "cache");
+  }
+
+  private getCachePath(key: "templates" | "features" | "products" | "users" | "deployments"): string {
+    return path.join(this.getCacheDir(), `${key}.json`);
+  }
+
+  private readCache<T>(key: "templates" | "features" | "products" | "users" | "deployments"): T[] | null {
+    try {
+      const filePath = this.getCachePath(key);
+      if (!fs.existsSync(filePath)) return null;
+
+      const raw = fs.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+
+      if (!parsed || !Array.isArray(parsed.data)) return null;
+      if (parsed.version !== 2) return null;
+
+      const age = Date.now() - (parsed.timestamp || 0);
+      if (age < this.cacheTtlMs && parsed.data.length > 0) {
+        return parsed.data as T[];
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  private readStaleCache<T>(key: "templates" | "features" | "products" | "users" | "deployments"): T[] | null {
+    try {
+      const filePath = this.getCachePath(key);
+      if (!fs.existsSync(filePath)) return null;
+      const raw = fs.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.data) && parsed.data.length > 0 && parsed.version === 2) {
+        return parsed.data as T[];
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  private writeCache<T>(key: "templates" | "features" | "products" | "users" | "deployments", data: T[]): void {
+    try {
+      const filePath = this.getCachePath(key);
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const payload = {
+        version: 2,
+        timestamp: Date.now(),
+        data,
+      };
+      fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+    } catch (e) {}
+  }
+
+  public clearCache(): { cleared: string[]; errors: string[] } {
+    const cleared: string[] = [];
+    const errors: string[] = [];
+    const cacheDir = this.getCacheDir();
+
+    if (fs.existsSync(cacheDir)) {
+      try {
+        const files = fs.readdirSync(cacheDir);
+        for (const file of files) {
+          const p = path.join(cacheDir, file);
+          try {
+            fs.rmSync(p, { recursive: true, force: true });
+            cleared.push(file);
+          } catch (err: any) {
+            errors.push(`${file}: ${err.message}`);
+          }
+        }
+      } catch (err: any) {
+        errors.push(err.message);
+      }
+    }
+    this.templateListCache = [];
+    this.featureListCache = [];
+    this.productListCache = [];
+    this.userListCache = [];
+    return { cleared, errors };
+  }
+
+  public getRepoRawBaseUrl(repoUrl: string): string {
+    const treeMatch = repoUrl.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/tree\/([^\/]+)(?:\/(.*))?$/);
+    if (treeMatch) {
+      const [, owner, repo, branch, repoPath] = treeMatch;
+      const pathSuffix = repoPath ? `${repoPath.replace(/\/+$/, "")}/` : "";
+      return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${pathSuffix}`;
+    }
+
+    const rawMatch = repoUrl.match(/^https?:\/\/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)\/([^\/]+)(?:\/(.*))?$/);
+    if (rawMatch) {
+      const [, owner, repo, branch, repoPath] = rawMatch;
+      const pathSuffix = repoPath ? `${repoPath.replace(/\/+$/, "")}/` : "";
+      return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${pathSuffix}`;
+    }
+
+    const directMatch = repoUrl.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)(?:\/(.*))?$/);
+    if (directMatch) {
+      const [, owner, repo, repoPath] = directMatch;
+      const pathSuffix = repoPath ? `${repoPath.replace(/\/+$/, "")}/` : "";
+      return `https://raw.githubusercontent.com/${owner}/${repo}/main/${pathSuffix}`;
+    }
+
+    return repoUrl.endsWith("/") ? repoUrl : `${repoUrl}/`;
+  }
+
+  private getRepoApiUrl(repoUrl: string): string {
+    const treeMatch = repoUrl.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/tree\/([^\/]+)(?:\/(.*))?$/);
+    if (treeMatch) {
+      const [, owner, repo, branch, repoPath] = treeMatch;
+      const pathSuffix = repoPath ? `/${repoPath}` : "";
+      return `https://api.github.com/repos/${owner}/${repo}/contents${pathSuffix}?ref=${branch}`;
+    }
+
+    const rawMatch = repoUrl.match(/^https?:\/\/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)\/([^\/]+)(?:\/(.*))?$/);
+    if (rawMatch) {
+      const [, owner, repo, branch, repoPath] = rawMatch;
+      const pathSuffix = repoPath ? `/${repoPath}` : "";
+      return `https://api.github.com/repos/${owner}/${repo}/contents${pathSuffix}?ref=${branch}`;
+    }
+
+    const repoMatch = repoUrl.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/?$/);
+    if (repoMatch) {
+      const [, owner, repo] = repoMatch;
+      return `https://api.github.com/repos/${owner}/${repo}/contents`;
+    }
+
+    return repoUrl;
+  }
+
+  private getGithubHeaders(): { [key: string]: string } {
+    const headers: { [key: string]: string } = {
+      "User-Agent": "apigee-templater",
+    };
+    let token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+    if (!token) {
+      try {
+        const { execSync } = require("child_process");
+        token = execSync("gh auth token", { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" }).trim();
+      } catch (e) {}
+    }
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    return headers;
+  }
+
+  public getCandidateFilenames(name: string): string[] {
+    const raw = name.trim().replaceAll(" ", "-");
+    const withoutExt = raw.replace(/\.(yaml|yml|json)$/i, "");
+    const singleHyphen = withoutExt.replace(/-+/g, "-");
+    const doubleHyphen = withoutExt.replace(/(?<!-)-(?!-)/g, "--");
+
+    const parts = singleHyphen.split("-");
+    const firstDouble = parts.length > 1 ? `${parts[0]}--${parts.slice(1).join("-")}` : singleHyphen;
+
+    const baseNames = Array.from(new Set([raw, withoutExt, singleHyphen, firstDouble, doubleHyphen]));
+    const candidates: string[] = [];
+
+    for (const b of baseNames) {
+      if (b.toLowerCase().endsWith(".yaml") || b.toLowerCase().endsWith(".yml")) {
+        candidates.push(b);
+      } else {
+        candidates.push(`${b}.yaml`);
+        candidates.push(`${b}.yml`);
+        candidates.push(b);
+      }
+    }
+
+    return Array.from(new Set(candidates));
+  }
+
+  constructor(basePath: string = "", subDirs: boolean = true) {
+    if (basePath && subDirs) {
+      this.tempPath = basePath + "temp/";
+      this.templatesPath = basePath + "templates/";
+      this.featuresPath = basePath + "features/";
+      this.proxiesPath = basePath + "proxies/";
+      this.productsPath = basePath + "products/";
+      this.usersPath = basePath + "users/";
+    } else if (basePath) {
+      this.tempPath = basePath;
+      this.templatesPath = basePath;
+      this.featuresPath = basePath;
+      this.proxiesPath = basePath;
+      this.productsPath = basePath;
+      this.usersPath = basePath;
+    }
+  }
+
+  public async templatesList(forceRefresh: boolean = false): Promise<Template[]> {
+    return new Promise(async (resolve, reject) => {
+      if (!forceRefresh) {
+        const cached = this.readCache<Template>("templates");
+        if (cached && cached.length > 0) {
+          this.templateListCache = cached.map((x) => x.name);
+          return resolve(cached);
+        }
+      }
+
+      let templates: Template[] = [];
+      const repoUrl = process.env.AFT_TEMPLATES_REPOSITORY || this.templatesRepository;
+
+      try {
+        const apiUrl = this.getRepoApiUrl(repoUrl);
+        const response = await fetch(apiUrl, {
+          headers: this.getGithubHeaders(),
+        });
+
+        if (response.status === 200) {
+          const remoteTemplates: any = await response.json();
+          if (Array.isArray(remoteTemplates) && remoteTemplates.length > 0) {
+            for (const item of remoteTemplates) {
+              if (
+                item &&
+                item.name &&
+                (item.name.endsWith(".json") || item.name.endsWith(".yaml") || item.name.endsWith(".yml"))
+              ) {
+                if (item.download_url) {
+                  try {
+                    const downloadResponse = await fetch(item.download_url);
+                    if (downloadResponse.status === 200) {
+                      const text = await downloadResponse.text();
+                      let remoteTemplate: Template;
+                      if (item.name.endsWith(".yaml") || item.name.endsWith(".yml")) {
+                        remoteTemplate = YAML.parse(text) as Template;
+                      } else {
+                        remoteTemplate = JSON.parse(text) as Template;
+                      }
+                      if (remoteTemplate) {
+                        const name = item.name.replace(/\.(json|yaml|yml)$/, "");
+                        const yamlName = remoteTemplate.name;
+                        remoteTemplate.name = name;
+                        if (yamlName && yamlName !== name) {
+                          remoteTemplate.yamlName = yamlName;
+                        }
+                        const idx = templates.findIndex((x) => x.name === remoteTemplate.name);
+                        if (idx === -1) templates.push(remoteTemplate);
+                      }
+                    }
+                  } catch (e) {}
+                } else {
+                  const name = item.name.replace(/\.(json|yaml|yml)$/, "");
+                  if (!templates.some((x) => x.name === name)) {
+                    templates.push({
+                      name: name,
+                      type: "template",
+                      gateway: "apigee",
+                      schemaVersion: "1.0.0",
+                      description: "",
+                      features: [],
+                      parameters: [],
+                      endpoints: [],
+                      targets: [],
+                    } as Template);
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      if (templates && templates.length > 0) {
+        this.writeCache("templates", templates);
+        this.templateListCache = templates.map((x) => x.name);
+      } else {
+        const stale = this.readStaleCache<Template>("templates");
+        if (stale && stale.length > 0) {
+          templates = stale;
+          this.templateListCache = templates.map((x) => x.name);
+        }
+      }
+
+      resolve(templates);
+    });
+  }
+
+  public async featuresList(forceRefresh: boolean = false): Promise<Feature[]> {
+    return new Promise<Feature[]>(async (resolve, reject) => {
+      if (!forceRefresh) {
+        const cached = this.readCache<Feature>("features");
+        if (cached && cached.length > 0) {
+          this.featureListCache = cached.map((x) => x.name);
+          return resolve(cached);
+        }
+      }
+
+      let features: Feature[] = [];
+      const repoUrl = process.env.AFT_FEATURES_REPOSITORY || this.featuresRepository;
+
+      try {
+        const apiUrl = this.getRepoApiUrl(repoUrl);
+        const response = await fetch(apiUrl, {
+          headers: this.getGithubHeaders(),
+        });
+
+        if (response.status === 200) {
+          const remoteFeatures: any = await response.json();
+          if (Array.isArray(remoteFeatures) && remoteFeatures.length > 0) {
+            const validItems = remoteFeatures.filter(
+              (item) =>
+                item &&
+                item.name &&
+                (item.name.endsWith(".json") || item.name.endsWith(".yaml") || item.name.endsWith(".yml")),
+            );
+
+            const fetchedFeatures = await Promise.all(
+              validItems.map(async (item) => {
+                const name = item.name.replace(/\.(json|yaml|yml)$/, "");
+                if (item.download_url) {
+                  try {
+                    const downloadResponse = await fetch(item.download_url);
+                    if (downloadResponse.status === 200) {
+                      const text = await downloadResponse.text();
+                      let remoteFeature: Feature;
+                      if (item.name.endsWith(".yaml") || item.name.endsWith(".yml")) {
+                        remoteFeature = YAML.parse(text) as Feature;
+                      } else {
+                        remoteFeature = JSON.parse(text) as Feature;
+                      }
+                      if (remoteFeature) {
+                        const yamlName = remoteFeature.name;
+                        remoteFeature.name = name;
+                        if (yamlName && yamlName !== name) {
+                          remoteFeature.yamlName = yamlName;
+                        }
+                        return remoteFeature;
+                      }
+                    }
+                  } catch (e) {}
+                }
+                return {
+                  name: name,
+                  displayName: name,
+                  type: "feature",
+                  description: "",
+                  documentation: "",
+                  gateway: "apigee",
+                  schemaVersion: "1.0.0",
+                  categories: [],
+                  parameters: [],
+                  endpoints: [],
+                  targets: [],
+                  policies: [],
+                  resources: [],
+                } as Feature;
+              }),
+            );
+
+            for (const feature of fetchedFeatures) {
+              if (feature && !features.some((f) => f.name === feature.name)) {
+                features.push(feature);
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      if (features && features.length > 0) {
+        this.writeCache("features", features);
+        this.featureListCache = features.map((x) => x.name);
+      } else {
+        const stale = this.readStaleCache<Feature>("features");
+        if (stale && stale.length > 0) {
+          features = stale;
+          this.featureListCache = features.map((x) => x.name);
+        }
+      }
+
+      resolve(features);
+    });
+  }
+
+  public async proxiesList(): Promise<Proxy[]> {
+    return new Promise(async (resolve, reject) => {
+      let proxies: Proxy[] = [];
+      if (fs.existsSync(this.proxiesPath)) {
+        let proxyNames: string[] = fs.readdirSync(this.proxiesPath);
+
+        for (let proxyPath of proxyNames) {
+          if (proxyPath.endsWith(".json")) {
+            let proxy: Proxy = JSON.parse(fs.readFileSync(this.proxiesPath + proxyPath, "utf8"));
+            proxies.push(proxy);
+          } else if (proxyPath.endsWith(".yaml")) {
+            let proxy: Proxy = YAML.parse(fs.readFileSync(this.proxiesPath + proxyPath, "utf8"));
+            proxies.push(proxy);
+          }
+        }
+      }
+
+      let response = await fetch(this.remoteListUrl + "proxies");
+
+      if (response.status == 200) {
+        let remoteProxies: any = await response.json();
+        if (remoteProxies && remoteProxies.length > 0) {
+          for (let proxy of remoteProxies) {
+            if (
+              proxy &&
+              proxy["name"] &&
+              (proxy["name"].endsWith(".json") || proxy["name"].endsWith(".yaml"))
+            ) {
+              let downloadResponse = await fetch(proxy["download_url"]);
+              if (downloadResponse.status == 200) {
+                let remoteProxy: Proxy;
+                let remoteTemplateText = await downloadResponse.text();
+                if (proxy["name"].endsWith(".yaml"))
+                  remoteProxy = YAML.parse(remoteTemplateText) as Proxy;
+                else remoteProxy = JSON.parse(remoteTemplateText) as Proxy;
+                let proxyExistsIndex = proxies.findIndex((x) => x.name == remoteProxy.name);
+                if (proxyExistsIndex == -1) proxies.push(remoteProxy);
+              }
+            }
+          }
+        }
+      }
+
+      resolve(proxies);
+    });
+  }
+
+  public async templateGet(name: string, relativeDir?: string): Promise<Template | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let result: Template | undefined = undefined;
+      const candidates = this.getCandidateFilenames(name);
+
+      // 1. Local filesystem check
+      for (const candidate of candidates) {
+        const localPaths = [
+          ...(relativeDir ? [path.resolve(relativeDir, candidate), path.join(relativeDir, candidate)] : []),
+          path.join(this.templatesPath, candidate),
+          path.join("repository/templates", candidate),
+          candidate,
+          path.resolve(process.cwd(), candidate),
+          path.join(process.cwd(), candidate),
+          path.join(import.meta.dirname, "../templates", candidate),
+        ];
+
+        for (const lp of localPaths) {
+          if (fs.existsSync(lp) && !fs.statSync(lp).isDirectory()) {
+            try {
+              const content = fs.readFileSync(lp, "utf8");
+              if (candidate.endsWith(".json")) {
+                result = JSON.parse(content) as Template;
+              } else {
+                result = YAML.parse(content) as Template;
+              }
+              if (result) {
+                if (!result.name) {
+                  result.name = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                }
+                if (!result.features) {
+                  result.features = [];
+                }
+                return resolve(result);
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      // 2. Direct HTTP / Raw repository fetch
+      if (name.startsWith("https://") || name.startsWith("http://")) {
+        try {
+          const res = await fetch(name, { headers: this.getGithubHeaders() });
+          if (res.status === 200) {
+            const text = await res.text();
+            result = name.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+            if (result) {
+              const fileStem = path.basename(name).replace(/\.(yaml|yml|json)$/i, "");
+              const yamlName = result.name;
+              result.name = fileStem;
+              if (yamlName && yamlName !== fileStem) {
+                result.yamlName = yamlName;
+              }
+              if (!result.features) {
+                result.features = [];
+              }
+              return resolve(result);
+            }
+          }
+        } catch (e) {}
+      } else {
+        const rawBaseUrl = this.getRepoRawBaseUrl(this.templatesRepository);
+        for (const candidate of candidates) {
+          try {
+            const res = await fetch(`${rawBaseUrl}${candidate}`, {
+              headers: this.getGithubHeaders(),
+            });
+            if (res.status === 200) {
+              const text = await res.text();
+              result = candidate.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+              if (result) {
+                const fileStem = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                const yamlName = result.name;
+                result.name = fileStem;
+                if (yamlName && yamlName !== fileStem) {
+                  result.yamlName = yamlName;
+                }
+                return resolve(result);
+              }
+            }
+          } catch (e) {}
+        }
+      }
+
+      // 3. Fallback: repository list search
+      try {
+        const allTemplates = await this.templatesList();
+        const baseNames = candidates.map((c) => c.replace(/\.(yaml|yml|json)$/i, ""));
+        const found = allTemplates.find(
+          (t) =>
+            baseNames.includes(t.name) ||
+            baseNames.includes(t.name.replace(/-+/g, "-")) ||
+            (t.yamlName && baseNames.includes(t.yamlName)) ||
+            (t.displayName && baseNames.includes(t.displayName.replace(/-+/g, "-"))),
+        );
+        if (found) result = found;
+      } catch (e) {}
+
+      resolve(result);
+    });
+  }
+
+  public async loadTemplate(
+    templateRef: string | Template,
+    relativeDir?: string,
+  ): Promise<Template | undefined> {
+    return new Promise(async (resolve) => {
+      if (typeof templateRef === "object" && templateRef !== null) {
+        const tmpl = templateRef as Template;
+        if (!tmpl.features) tmpl.features = [];
+        return resolve(tmpl);
+      }
+      if (typeof templateRef === "string") {
+        let res = await this.templateGet(templateRef, relativeDir);
+        if (res && !res.features) res.features = [];
+        return resolve(res);
+      }
+      resolve(undefined);
+    });
+  }
+
+  public async proxyGet(name: string, relativeDir?: string): Promise<Proxy | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let result: Proxy | undefined = undefined;
+      const candidates = this.getCandidateFilenames(name);
+
+      // 1. Local filesystem check
+      for (const candidate of candidates) {
+        const localPaths = [
+          ...(relativeDir ? [path.resolve(relativeDir, candidate), path.join(relativeDir, candidate)] : []),
+          path.join(this.proxiesPath, candidate),
+          path.join("repository/proxies", candidate),
+          candidate,
+          path.resolve(process.cwd(), candidate),
+          path.join(process.cwd(), candidate),
+          path.join(import.meta.dirname, "../proxies", candidate),
+        ];
+
+        for (const lp of localPaths) {
+          if (fs.existsSync(lp) && !fs.statSync(lp).isDirectory()) {
+            try {
+              const content = fs.readFileSync(lp, "utf8");
+              if (candidate.endsWith(".json")) {
+                result = JSON.parse(content) as Proxy;
+              } else {
+                result = YAML.parse(content) as Proxy;
+              }
+              if (result) {
+                if (!result.name) {
+                  result.name = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                }
+                return resolve(result);
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      // 2. Direct HTTP / Raw repository fetch
+      if (name.startsWith("https://") || name.startsWith("http://")) {
+        try {
+          const res = await fetch(name, { headers: this.getGithubHeaders() });
+          if (res.status === 200) {
+            const text = await res.text();
+            result = name.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+            if (result) {
+              const fileStem = path.basename(name).replace(/\.(yaml|yml|json)$/i, "");
+              const yamlName = result.name;
+              result.name = fileStem;
+              if (yamlName && yamlName !== fileStem) {
+                result.yamlName = yamlName;
+              }
+              return resolve(result);
+            }
+          }
+        } catch (e) {}
+      } else {
+        const rawBaseUrl = this.getRepoRawBaseUrl(this.proxiesRepository);
+        for (const candidate of candidates) {
+          try {
+            const res = await fetch(`${rawBaseUrl}${candidate}`, {
+              headers: this.getGithubHeaders(),
+            });
+            if (res.status === 200) {
+              const text = await res.text();
+              result = candidate.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+              if (result) {
+                const fileStem = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                const yamlName = result.name;
+                result.name = fileStem;
+                if (yamlName && yamlName !== fileStem) {
+                  result.yamlName = yamlName;
+                }
+                return resolve(result);
+              }
+            }
+          } catch (e) {}
+        }
+      }
+
+      // 3. Fallback: repository list search
+      try {
+        const allProxies = await this.proxiesList();
+        const baseNames = candidates.map((c) => c.replace(/\.(yaml|yml|json)$/i, ""));
+        const found = allProxies.find(
+          (p) =>
+            baseNames.includes(p.name) ||
+            baseNames.includes(p.name.replace(/-+/g, "-")) ||
+            (p.yamlName && baseNames.includes(p.yamlName)),
+        );
+        if (found) result = found;
+      } catch (e) {}
+
+      resolve(result);
+    });
+  }
+
+  public async loadProxy(
+    proxyRef: string | Proxy,
+    relativeDir?: string,
+  ): Promise<Proxy | undefined> {
+    return new Promise(async (resolve) => {
+      if (typeof proxyRef === "object" && proxyRef !== null) {
+        return resolve(proxyRef as Proxy);
+      }
+      if (typeof proxyRef === "string") {
+        let res = await this.proxyGet(proxyRef, relativeDir);
+        return resolve(res);
+      }
+      resolve(undefined);
+    });
+  }
+
+  public proxyImport(proxy: Proxy) {
+    fs.writeFileSync(this.proxiesPath + proxy.name + ".json", JSON.stringify(proxy, null, 2));
+  }
+
+  public templateImport(template: Template) {
+    fs.writeFileSync(
+      this.templatesPath + template.name + ".json",
+      JSON.stringify(template, null, 2),
+    );
+  }
+
+  public async featureGet(name: string, relativeDir?: string): Promise<Feature | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let result: Feature | undefined = undefined;
+      const candidates = this.getCandidateFilenames(name);
+
+      // 1. Local filesystem check
+      for (const candidate of candidates) {
+        const localPaths = [
+          ...(relativeDir ? [path.resolve(relativeDir, candidate), path.join(relativeDir, candidate)] : []),
+          path.join(this.featuresPath, candidate),
+          path.join("repository/features", candidate),
+          candidate,
+          path.resolve(process.cwd(), candidate),
+          path.join(process.cwd(), candidate),
+          path.join(import.meta.dirname, "../features", candidate),
+        ];
+
+        for (const lp of localPaths) {
+          if (fs.existsSync(lp) && !fs.statSync(lp).isDirectory()) {
+            try {
+              const content = fs.readFileSync(lp, "utf8");
+              if (candidate.endsWith(".json")) {
+                result = JSON.parse(content) as Feature;
+              } else {
+                result = YAML.parse(content) as Feature;
+              }
+              if (result) {
+                if (!result.name) {
+                  result.name = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                }
+                return resolve(result);
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      // 2. Direct HTTP / Raw repository fetch
+      if (name.startsWith("https://") || name.startsWith("http://")) {
+        try {
+          const res = await fetch(name, { headers: this.getGithubHeaders() });
+          if (res.status === 200) {
+            const text = await res.text();
+            result = name.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+            if (result) {
+              const fileStem = path.basename(name).replace(/\.(yaml|yml|json)$/i, "");
+              const yamlName = result.name;
+              result.name = fileStem;
+              if (yamlName && yamlName !== fileStem) {
+                result.yamlName = yamlName;
+              }
+              return resolve(result);
+            }
+          }
+        } catch (e) {}
+      } else {
+        const rawBaseUrl = this.getRepoRawBaseUrl(this.featuresRepository);
+        for (const candidate of candidates) {
+          try {
+            const res = await fetch(`${rawBaseUrl}${candidate}`, {
+              headers: this.getGithubHeaders(),
+            });
+            if (res.status === 200) {
+              const text = await res.text();
+              result = candidate.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+              if (result) {
+                const fileStem = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                const yamlName = result.name;
+                result.name = fileStem;
+                if (yamlName && yamlName !== fileStem) {
+                  result.yamlName = yamlName;
+                }
+                return resolve(result);
+              }
+            }
+          } catch (e) {}
+        }
+      }
+
+      // 3. Fallback: repository list search
+      try {
+        const allFeatures = await this.featuresList();
+        const baseNames = candidates.map((c) => c.replace(/\.(yaml|yml|json)$/i, ""));
+        const found = allFeatures.find(
+          (f) =>
+            baseNames.includes(f.name) ||
+            baseNames.includes(f.name.replace(/-+/g, "-")) ||
+            (f.yamlName && baseNames.includes(f.yamlName)) ||
+            (f.displayName && baseNames.includes(f.displayName.replace(/-+/g, "-"))),
+        );
+        if (found) result = found;
+      } catch (e) {}
+
+      resolve(result);
+    });
+  }
+
+  public async templateApplyFeature(
+    templateName: string,
+    featureName: string,
+    converter: ApigeeConverter,
+  ): Promise<Template | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let template: Template | undefined = await this.templateGet(templateName);
+      let feature = await this.featureGet(featureName);
+
+      if (!template || !feature) {
+        console.log(
+          `templateApplyFeature error: either ${templateName} or ${featureName} could not be loaded.`,
+        );
+        return undefined;
+      } else {
+        template = converter.templateApplyFeature(template, feature, featureName);
+      }
+
+      fs.writeFileSync(
+        this.templatesPath + templateName + ".json",
+        JSON.stringify(template, null, 2),
+      );
+
+      resolve(template);
+    });
+  }
+
+  public async templateRemoveFeature(
+    templateName: string,
+    featureName: string,
+    converter: ApigeeConverter,
+    id: string = "",
+  ): Promise<Template | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let template: Template | undefined = undefined;
+      template = await this.templateGet(templateName);
+      let feature = await this.featureGet(featureName);
+
+      if (!template || !feature) {
+        console.log(
+          `proxyApplyFeature error: either ${templateName} or ${featureName} could not be loaded.`,
+        );
+        return undefined;
+      } else {
+        template = converter.templateRemoveFeature(template, [], featureName, feature);
+      }
+
+      fs.writeFileSync(
+        this.templatesPath + templateName + ".json",
+        JSON.stringify(template, null, 2),
+      );
+
+      resolve(template);
+    });
+  }
+
+  public templateCreate(
+    name: string,
+    basePath: string | undefined,
+    targetUrl: string | undefined,
+    converter: ApigeeConverter,
+  ): Template {
+    let newTemplate = converter.templateCreate(name, basePath, targetUrl);
+
+    fs.writeFileSync(
+      this.templatesPath + newTemplate.name + ".json",
+      JSON.stringify(newTemplate, null, 2),
+    );
+
+    return newTemplate;
+  }
+
+  public featureImport(feature: Feature): Feature {
+    fs.writeFileSync(this.featuresPath + feature.name + ".json", JSON.stringify(feature, null, 2));
+
+    return feature;
+  }
+
+  public templateAddEndpoint(
+    templateName: string,
+    endpointName: string,
+    basePath: string,
+    targetName?: string,
+    targetUrl?: string,
+    targetRouteRule?: string,
+    targetAuth: string = "",
+    targetAud: string = "",
+    targetScopes: string[] = [],
+  ): Promise<Template | undefined> {
+    return new Promise(async (resolve) => {
+      let template: Template | undefined = undefined;
+      template = await this.templateGet(templateName);
+      if (template) {
+        template.endpoints.push({
+          name: endpointName,
+          basePath: basePath,
+          routes: [],
+        });
+
+        if (targetName) {
+          template.endpoints[template.endpoints.length - 1]?.routes.push({
+            name: targetName,
+            target: targetName,
+            condition: targetRouteRule ?? "",
+          });
+
+          if (targetUrl) {
+            template.targets.push({
+              name: targetName,
+              url: targetUrl,
+              auth: targetAuth,
+              aud: targetAud,
+              scopes: targetScopes,
+            });
+          }
+        }
+      }
+
+      resolve(template);
+    });
+  }
+
+  public templateDelete(templateName: string) {
+    if (fs.existsSync(this.templatesPath + templateName + ".json")) {
+      fs.rmSync(this.templatesPath + templateName + ".json");
+    }
+  }
+
+  public featureDelete(featureName: string) {
+    if (fs.existsSync(this.featuresPath + featureName + ".json")) {
+      fs.rmSync(this.featuresPath + featureName + ".json");
+    }
+  }
+
+  public async templateToProxy(
+    templateName: string,
+    converter: ApigeeConverter,
+    parameters: { [key: string]: string } = {},
+  ): Promise<Proxy | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let proxy: Proxy | undefined = undefined;
+      let template: Template | undefined = await this.templateGet(templateName);
+
+      if (template) {
+        proxy = await this.templateObjectToProxy(template, converter, parameters);
+      }
+
+      resolve(proxy);
+    });
+  }
+
+  public async templateObjectToProxy(
+    template: Template,
+    converter: ApigeeConverter,
+    parameters: { [key: string]: string } = {},
+    relativeDir?: string,
+  ): Promise<Proxy | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let proxy: Proxy | undefined = undefined;
+
+      if (template) {
+        let features: Feature[] = [];
+        if (template.features && Array.isArray(template.features)) {
+          for (let templateFeature of template.features) {
+            let loadedFeature = await this.loadFeature(templateFeature, relativeDir);
+            if (loadedFeature) {
+              features.push(loadedFeature);
+            } else {
+              // abort, could not load feature
+              console.error(`Could not load feature ${templateFeature}.`);
+              resolve(undefined);
+            }
+          }
+        }
+
+        proxy = converter.templateToProxy(template, features, parameters);
+      }
+
+      resolve(proxy);
+    });
+  }
+
+  public async loadFeature(
+    featureRef: string | Feature,
+    relativeDir?: string,
+  ): Promise<Feature | undefined> {
+    return new Promise(async (resolve, reject) => {
+      if (typeof featureRef === "object" && featureRef !== null) {
+        return resolve(featureRef as Feature);
+      }
+      if (typeof featureRef === "string") {
+        let featureName = featureRef;
+        let uId = "";
+        if (featureName.includes(":")) {
+          let parts = featureName.split(":");
+          if (parts.length === 2) {
+            uId = parts[0] ?? "";
+            featureName = parts[1] ?? featureName;
+          }
+        }
+        let feature = await this.featureGet(featureName, relativeDir);
+        if (!feature) {
+          console.error(`Could not load feature ${featureName}.`);
+          return resolve(undefined);
+        } else if (uId) {
+          // set dynamic uId
+          feature.uid = uId;
+        }
+
+        return resolve(feature);
+      }
+      resolve(undefined);
+    });
+  }
+
+  public apigeeOrgProxiesCache(apigeeOrg: string): string[] {
+    if (this.apigeeProxyListCache[apigeeOrg]) return this.apigeeProxyListCache[apigeeOrg];
+    else return [];
+  }
+
+  public async logApiError(
+    operation: string,
+    url: string,
+    response: Response,
+    customMessage?: string,
+  ): Promise<string> {
+    let responseText = "";
+    try {
+      responseText = await response.text();
+    } catch {
+      responseText = "";
+    }
+    const prefix = customMessage || `> Apigee ${operation} error: ${response.status}`;
+    console.log(
+      chalk.red.bold.italic(
+        `${prefix} from ${url}${responseText ? `\nResponse: ${responseText}` : ""}`,
+      ),
+    );
+    return responseText;
+  }
+
+  public async apigeeProxiesList(apigeeOrg: string, drz: string, token: string): Promise<any | undefined> {
+    return new Promise(async (resolve, reject) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apis?includeRevisions=true&includeMetaData=true`;
+      let response = await fetch(
+        url,
+        {
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        if (responseBody && responseBody.length) {
+          this.apigeeProxyListCache[apigeeOrg] = responseBody.map((x: any) => x.name);
+        }
+        resolve(responseBody);
+      } else {
+        await this.logApiError("proxies list", url, response, "Got response " + response.status);
+        resolve(undefined);
+      }
+    });
+  }
+
+  public async apigeeProxyGet(
+    proxyName: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string
+  ): Promise<string | undefined> {
+    return new Promise(async (resolve, reject) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apis/${proxyName}`;
+      let response = await fetch(
+        url,
+        {
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        let latestRevisionId = responseBody.latestRevisionId;
+        if (!latestRevisionId) resolve(undefined);
+
+        let bundleUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apis/${proxyName}/revisions/${latestRevisionId}?format=bundle`;
+        response = await fetch(bundleUrl, {
+          headers: {
+            Authorization: token,
+          },
+        });
+        if (response.status == 200) {
+          let arrayBuffer = await response.arrayBuffer();
+          fs.writeFileSync(this.tempPath + proxyName + ".zip", Buffer.from(arrayBuffer));
+          resolve(this.tempPath + proxyName + ".zip");
+        } else {
+          await this.logApiError("proxy revision bundle GET", bundleUrl, response);
+          resolve(undefined);
+        }
+      } else {
+        await this.logApiError("proxy GET", url, response, `> Apigee proxy GET response: ${response.status}`);
+        resolve(undefined);
+      }
+    });
+  }
+
+  public async apigeeSharedFlowList(
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<string[]> {
+    if (this.apigeeSharedFlowListCache[apigeeOrg]) return this.apigeeSharedFlowListCache[apigeeOrg];
+    const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/sharedflows`;
+    let response = await fetch(
+      url,
+      {
+        headers: {
+          Authorization: token,
+        },
+      },
+    );
+
+    if (response.status === 200) {
+      let responseBody: any = await response.json();
+      if (responseBody.sharedFlows) {
+        this.apigeeSharedFlowListCache[apigeeOrg] = responseBody.sharedFlows.map(
+          (x: any) => x.name,
+        );
+        return this.apigeeSharedFlowListCache[apigeeOrg];
+      }
+    } else {
+      if (response.status !== 404) {
+        await this.logApiError("SharedFlow list", url, response);
+      }
+    }
+    return [];
+  }
+
+  public async apigeeSharedFlowGet(
+    sharedFlowName: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<string | undefined> {
+    return new Promise(async (resolve, reject) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/sharedflows/${sharedFlowName}`;
+      let response = await fetch(
+        url,
+        {
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        let latestRevisionId = responseBody.latestRevisionId;
+        if (!latestRevisionId) resolve(undefined);
+
+        let bundleUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/sharedflows/${sharedFlowName}/revisions/${latestRevisionId}?format=bundle`;
+        response = await fetch(bundleUrl, {
+          headers: {
+            Authorization: token,
+          },
+        });
+        if (response.status == 200) {
+          let arrayBuffer = await response.arrayBuffer();
+          fs.writeFileSync(this.tempPath + sharedFlowName + ".zip", Buffer.from(arrayBuffer));
+          resolve(this.tempPath + sharedFlowName + ".zip");
+        } else {
+          await this.logApiError("SharedFlow revision bundle GET", bundleUrl, response);
+          resolve(undefined);
+        }
+      } else {
+        await this.logApiError("SharedFlow GET", url, response, `> Apigee shared flow GET response: ${response.status}`);
+        resolve(undefined);
+      }
+    });
+  }
+
+  public async apigeeSharedFlowExport(
+    sharedFlowName: string,
+    apigeeSharedFlowPath: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<string> {
+    return new Promise(async (resolve, reject) => {
+      const form = new FormData();
+      const data = fs.readFileSync(apigeeSharedFlowPath);
+      form.set("file", new Blob([data]), `${sharedFlowName + ".zip"}`);
+
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/sharedflows?name=${sharedFlowName}&action=import`;
+      let response = await fetch(
+        url,
+        {
+          method: "POST",
+          headers: {
+            Authorization: token,
+          },
+          body: form,
+        },
+      );
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        let latestRevisionId = responseBody.revision;
+        if (!latestRevisionId) resolve("");
+        else resolve(latestRevisionId);
+      } else {
+        await this.logApiError("SharedFlow EXPORT", url, response);
+        resolve("");
+      }
+    });
+  }
+
+  public async apigeeSharedFlowRevisionDeploy(
+    sharedFlowName: string,
+    sharedFlowRevision: string,
+    serviceAccountEmail: string,
+    apigeeEnvironment: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<string> {
+    return new Promise(async (resolve, reject) => {
+      let url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/environments/${apigeeEnvironment}/sharedflows/${sharedFlowName}/revisions/${sharedFlowRevision}/deployments?override=true`;
+      if (serviceAccountEmail) url += `&serviceAccount=${serviceAccountEmail}`;
+      let response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: token,
+        },
+      });
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        let latestRevisionId = responseBody.revision;
+        if (!latestRevisionId) resolve("");
+        else resolve(latestRevisionId);
+      } else {
+        await this.logApiError("SharedFlow DEPLOY", url, response);
+        resolve("");
+      }
+    });
+  }
+
+  public async apigeeSharedFlowImportFeature(
+    sharedFlowName: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+    converter: ApigeeConverter,
+  ): Promise<Feature | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let apigeeSharedFlowPath = await this.apigeeSharedFlowGet(
+        sharedFlowName,
+        apigeeOrg,
+        drz,
+        token,
+      );
+      if (apigeeSharedFlowPath) {
+        let feature = await converter.apigeeSharedFlowZipToFeature(
+          sharedFlowName,
+          apigeeSharedFlowPath,
+        );
+        fs.rmSync(apigeeSharedFlowPath);
+        resolve(feature);
+      } else {
+        resolve(undefined);
+      }
+    });
+  }
+
+  public async apigeeSharedFlowDelete(
+    sharedFlowName: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<boolean> {
+    return new Promise(async (resolve, reject) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/sharedflows/${sharedFlowName}`;
+      let response = await fetch(
+        url,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+      if (response.status === 200) resolve(true);
+      else {
+        await this.logApiError("SharedFlow DELETE", url, response);
+        resolve(false);
+      }
+    });
+  }
+
+  // imports an apigee proxy as template
+  public async apigeeProxyImportTemplate(
+    proxyName: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+    converter: ApigeeConverter,
+  ): Promise<Template | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let template: Template | undefined = undefined;
+      let apigeeProxyPath = await this.apigeeProxyGet(proxyName, apigeeOrg, drz, token);
+
+      if (apigeeProxyPath) {
+        let proxy = await converter.apigeeZipToProxy(proxyName, apigeeProxyPath);
+        if (proxy) {
+          template = converter.proxyToTemplate(proxy);
+        }
+        fs.rmSync(apigeeProxyPath);
+      }
+
+      resolve(template);
+    });
+  }
+
+  public async apigeeProxyExport(
+    proxyName: string,
+    apigeeProxyPath: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<string> {
+    return new Promise(async (resolve, reject) => {
+      const form = new FormData();
+      const data = fs.readFileSync(apigeeProxyPath);
+      form.set("file", new Blob([data]), `${proxyName + ".zip"}`);
+
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apis?name=${proxyName}&action=import`;
+      let response = await fetch(
+        url,
+        {
+          method: "POST",
+          headers: {
+            Authorization: token,
+          },
+          body: form,
+        },
+      );
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        let latestRevisionId = responseBody.revision;
+        if (!latestRevisionId) resolve("");
+        else resolve(latestRevisionId);
+      } else {
+        await this.logApiError("proxy EXPORT", url, response);
+        resolve("");
+      }
+    });
+  }
+
+  public async apigeeProxyRevisionDeploy(
+    proxyName: string,
+    proxyRevision: string,
+    serviceAccountEmail: string,
+    apigeeEnvironment: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<string> {
+    return new Promise(async (resolve, reject) => {
+      let url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/environments/${apigeeEnvironment}/apis/${proxyName}/revisions/${proxyRevision}/deployments?override=true`;
+      if (serviceAccountEmail) url += `&serviceAccount=${serviceAccountEmail}`;
+      let response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: token,
+        },
+      });
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        let latestRevisionId = responseBody.revision;
+        if (!latestRevisionId) resolve("");
+        else resolve(latestRevisionId);
+      } else {
+        await this.logApiError("proxy DEPLOY", url, response);
+        resolve("");
+      }
+    });
+  }
+
+  public async apigeeProxyDeploymentsGet(
+    proxyName: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<any[]> {
+    return new Promise(async (resolve) => {
+      try {
+        let response = await fetch(
+          `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apis/${proxyName}/deployments`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: token,
+            },
+          },
+        );
+        if (response.status === 200) {
+          let body: any = await response.json();
+          let deployments: any[] = [];
+          if (body.deployments && Array.isArray(body.deployments)) {
+            deployments = body.deployments;
+          } else if (body.environment && Array.isArray(body.environment)) {
+            for (let envObj of body.environment) {
+              if (envObj.revision && Array.isArray(envObj.revision)) {
+                for (let revObj of envObj.revision) {
+                  deployments.push({
+                    environment: envObj.name,
+                    revision: revObj.name,
+                  });
+                }
+              }
+            }
+          }
+          return resolve(deployments);
+        }
+      } catch (e) {}
+      resolve([]);
+    });
+  }
+
+  public async apigeeProxyUndeploy(
+    proxyName: string,
+    environment: string,
+    revision: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<boolean> {
+    return new Promise(async (resolve) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/environments/${environment}/apis/${proxyName}/revisions/${revision}/deployments`;
+      let response = await fetch(
+        url,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+      if (response.status === 200) resolve(true);
+      else {
+        await this.logApiError("proxy UNDEPLOY", url, response);
+        resolve(false);
+      }
+    });
+  }
+
+  public async apigeeProxyDelete(
+    proxyName: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<boolean> {
+    return new Promise(async (resolve) => {
+      // 1. Undeploy all active deployments
+      try {
+        let deployments = await this.apigeeProxyDeploymentsGet(proxyName, apigeeOrg, drz, token);
+        if (deployments && deployments.length > 0) {
+          for (let dep of deployments) {
+            let env = dep.environment || dep.environmentName;
+            let rev = dep.revision || dep.revisionName;
+            if (env && rev) {
+              await this.apigeeProxyUndeploy(proxyName, env, rev, apigeeOrg, drz, token);
+            }
+          }
+        }
+      } catch (e) {}
+
+      // 2. Delete the proxy
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apis/${proxyName}`;
+      let response = await fetch(
+        url,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        if (this.apigeeProxyListCache[apigeeOrg]) {
+          delete this.apigeeProxyListCache[apigeeOrg];
+        }
+        resolve(true);
+      } else {
+        await this.logApiError("proxy DELETE", url, response);
+        resolve(false);
+      }
+    });
+  }
+
+  public async apigeeConfigGet(apigeeOrg: string, drz: string, token: string): Promise<ApigeeConfig> {
+    return new Promise(async (resolve, reject) => {
+      let apigeeConfig: ApigeeConfig = {
+        org: undefined,
+        environments: [],
+        environmentGroups: [],
+      };
+
+      const orgUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}`;
+      let response = await fetch(orgUrl, {
+        method: "GET",
+        headers: {
+          Authorization: token,
+        },
+      });
+
+      if (response.status === 200) {
+        apigeeConfig.org = await response.json();
+      } else {
+        await this.logApiError("get org config", orgUrl, response);
+      }
+
+      const envsUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/environments`;
+      response = await fetch(envsUrl, {
+        method: "GET",
+        headers: {
+          Authorization: token,
+        },
+      });
+
+      if (response.status === 200) {
+        apigeeConfig.environments = await response.json();
+      } else {
+        await this.logApiError("get env config", envsUrl, response);
+      }
+
+      const envgroupsUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/envgroups`;
+      response = await fetch(envgroupsUrl, {
+        method: "GET",
+        headers: {
+          Authorization: token,
+        },
+      });
+
+      if (response.status === 200) {
+        let groups: any = await response.json();
+        if (groups && groups.environmentGroups) {
+          apigeeConfig.environmentGroups = groups.environmentGroups;
+          if (apigeeConfig.environmentGroups && apigeeConfig.environmentGroups.length > 0) {
+            for (let group of apigeeConfig.environmentGroups) {
+              const attachUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/envgroups/${group.name}/attachments`;
+              response = await fetch(attachUrl, {
+                method: "GET",
+                headers: {
+                  Authorization: token,
+                },
+              });
+
+              if (response.status === 200) {
+                let groupAttachments: any = await response.json();
+                if (groupAttachments && groupAttachments.environmentGroupAttachments)
+                  group.attachments = groupAttachments.environmentGroupAttachments;
+              } else {
+                await this.logApiError("get envGroups attachment config", attachUrl, response);
+              }
+            }
+          }
+        }
+      } else {
+        await this.logApiError("get envGroups config", envgroupsUrl, response);
+      }
+
+      resolve(apigeeConfig);
+    });
+  }
+
+  public productImport(product: Product) {
+    if (!fs.existsSync(this.productsPath)) fs.mkdirSync(this.productsPath, { recursive: true });
+    let productString = JSON.stringify(product, null, 2);
+    fs.writeFileSync(path.join(this.productsPath, product.name + ".json"), productString);
+    this.productListCache = [];
+    const cachePath = this.getCachePath("products");
+    if (fs.existsSync(cachePath)) {
+      try {
+        fs.rmSync(cachePath);
+      } catch (e) {}
+    }
+  }
+
+  public productDelete(productName: string): boolean {
+    let deleted = false;
+    let jsonPath = path.join(this.productsPath, productName + ".json");
+    let yamlPath = path.join(this.productsPath, productName + ".yaml");
+    if (fs.existsSync(jsonPath)) {
+      fs.unlinkSync(jsonPath);
+      deleted = true;
+    }
+    if (fs.existsSync(yamlPath)) {
+      fs.unlinkSync(yamlPath);
+      deleted = true;
+    }
+    this.productListCache = [];
+    const cachePath = this.getCachePath("products");
+    if (fs.existsSync(cachePath)) {
+      try {
+        fs.rmSync(cachePath);
+      } catch (e) {}
+    }
+    return deleted;
+  }
+
+  public async productsList(forceRefresh: boolean = false): Promise<Product[]> {
+    return new Promise(async (resolve, reject) => {
+      let products: Product[] = [];
+      if (fs.existsSync(this.productsPath)) {
+        let productNames: string[] = fs.readdirSync(this.productsPath);
+        for (let productPath of productNames) {
+          if (productPath.endsWith(".json")) {
+            let product: Product = JSON.parse(
+              fs.readFileSync(path.join(this.productsPath, productPath), "utf8"),
+            );
+            products.push(product);
+          } else if (productPath.endsWith(".yaml") || productPath.endsWith(".yml")) {
+            let product: Product = YAML.parse(
+              fs.readFileSync(path.join(this.productsPath, productPath), "utf8"),
+            );
+            products.push(product);
+          }
+        }
+      }
+
+      if (this.productsPath !== "./data/products/") {
+        return resolve(products);
+      }
+
+      if (!forceRefresh) {
+        const cached = this.readCache<Product>("products");
+        if (cached && cached.length > 0) {
+          for (const item of cached) {
+            if (!products.some((p) => p.name === item.name)) {
+              products.push(item);
+            }
+          }
+          this.productListCache = products.map((x) => x.name);
+          return resolve(products);
+        }
+      }
+
+      const repoUrl = this.productsRepository;
+      try {
+        const apiUrl = this.getRepoApiUrl(repoUrl);
+        const response = await fetch(apiUrl, {
+          headers: this.getGithubHeaders(),
+        });
+
+        if (response.status === 200) {
+          const remoteProducts: any = await response.json();
+          if (Array.isArray(remoteProducts) && remoteProducts.length > 0) {
+            for (const item of remoteProducts) {
+              if (
+                item &&
+                item.name &&
+                (item.name.endsWith(".json") || item.name.endsWith(".yaml") || item.name.endsWith(".yml"))
+              ) {
+                if (item.download_url) {
+                  try {
+                    const downloadResponse = await fetch(item.download_url);
+                    if (downloadResponse.status === 200) {
+                      const text = await downloadResponse.text();
+                      let remoteProduct: Product;
+                      if (item.name.endsWith(".yaml") || item.name.endsWith(".yml")) {
+                        remoteProduct = YAML.parse(text) as Product;
+                      } else {
+                        remoteProduct = JSON.parse(text) as Product;
+                      }
+                      if (remoteProduct) {
+                        remoteProduct.name = item.name.replace(/\.(json|yaml|yml)$/, "");
+                        const idx = products.findIndex((x) => x.name === remoteProduct.name);
+                        if (idx === -1) products.push(remoteProduct);
+                      }
+                    }
+                  } catch (e) {}
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      if (products && products.length > 0) {
+        this.writeCache("products", products);
+        this.productListCache = products.map((x) => x.name);
+      } else {
+        const stale = this.readStaleCache<Product>("products");
+        if (stale && stale.length > 0) {
+          products = stale;
+          this.productListCache = products.map((x) => x.name);
+        }
+      }
+
+      resolve(products);
+    });
+  }
+
+  public async loadProduct(
+    productRef: string | Product,
+    relativeDir?: string,
+  ): Promise<Product | undefined> {
+    return new Promise(async (resolve) => {
+      if (typeof productRef === "object" && productRef !== null) {
+        return resolve(productRef as Product);
+      }
+      if (typeof productRef === "string") {
+        let res = await this.productGet(productRef, relativeDir);
+        return resolve(res);
+      }
+      resolve(undefined);
+    });
+  }
+
+  public async productGet(name: string, relativeDir?: string): Promise<Product | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let result: Product | undefined = undefined;
+      const candidates = this.getCandidateFilenames(name);
+
+      // 1. Local filesystem check
+      for (const candidate of candidates) {
+        const localPaths = [
+          ...(relativeDir ? [path.resolve(relativeDir, candidate), path.join(relativeDir, candidate)] : []),
+          path.join(this.productsPath, candidate),
+          path.join("repository/products", candidate),
+          candidate,
+          path.resolve(process.cwd(), candidate),
+          path.join(process.cwd(), candidate),
+          path.join(import.meta.dirname, "../products", candidate),
+        ];
+
+        for (const lp of localPaths) {
+          if (fs.existsSync(lp) && !fs.statSync(lp).isDirectory()) {
+            try {
+              const content = fs.readFileSync(lp, "utf8");
+              if (candidate.endsWith(".json")) {
+                result = JSON.parse(content) as Product;
+              } else {
+                result = YAML.parse(content) as Product;
+              }
+              if (result) {
+                if (!result.name) {
+                  result.name = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                }
+                return resolve(result);
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      // 2. Direct HTTP / Raw repository fetch
+      if (name.startsWith("https://") || name.startsWith("http://")) {
+        try {
+          const res = await fetch(name, { headers: this.getGithubHeaders() });
+          if (res.status === 200) {
+            const text = await res.text();
+            result = name.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+            if (result) {
+              if (!result.name) {
+                result.name = path.basename(name).replace(/\.(yaml|yml|json)$/i, "");
+              }
+              return resolve(result);
+            }
+          }
+        } catch (e) {}
+      } else {
+        const rawBaseUrl = this.getRepoRawBaseUrl(this.productsRepository);
+        for (const candidate of candidates) {
+          try {
+            const res = await fetch(`${rawBaseUrl}${candidate}`, {
+              headers: this.getGithubHeaders(),
+            });
+            if (res.status === 200) {
+              const text = await res.text();
+              result = candidate.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+              if (result) {
+                if (!result.name) {
+                  result.name = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                }
+                return resolve(result);
+              }
+            }
+          } catch (e) {}
+        }
+      }
+
+      // 3. Fallback: repository list search
+      try {
+        const allProducts = await this.productsList();
+        const baseNames = candidates.map((c) => c.replace(/\.(yaml|yml|json)$/i, ""));
+        const found = allProducts.find(
+          (p) =>
+            baseNames.includes(p.name) ||
+            baseNames.includes(p.name.replace(/-+/g, "-")) ||
+            (p.displayName && baseNames.includes(p.displayName.replace(/-+/g, "-"))),
+        );
+        if (found) result = found;
+      } catch (e) {}
+
+      resolve(result);
+    });
+  }
+
+  public async apigeeProductsList(
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<any | undefined> {
+    return new Promise(async (resolve, reject) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apiproducts?expand=true`;
+      let response = await fetch(
+        url,
+        {
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        resolve(responseBody);
+      } else {
+        await this.logApiError("products list", url, response, "Got response " + response.status);
+        resolve(undefined);
+      }
+    });
+  }
+
+  public async apigeeProductGet(
+    productName: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<any | undefined> {
+    return new Promise(async (resolve, reject) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apiproducts/${productName}`;
+      let response = await fetch(
+        url,
+        {
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        resolve(responseBody);
+      } else {
+        await this.logApiError("product GET", url, response, `> Apigee product GET response: ${response.status}`);
+        resolve(undefined);
+      }
+    });
+  }
+
+  public async apigeeProductExport(
+    product: Product | any,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<boolean> {
+    return new Promise(async (resolve, reject) => {
+      let converter = new ApigeeConverter();
+      let payload =
+        product.type === "product" ? converter.productToApigeeProduct(product) : product;
+      let productName = payload.name;
+
+      if (!productName) {
+        console.log(chalk.red.bold.italic(" > Error: Product name is required for export."));
+        resolve(false);
+        return;
+      }
+
+      let checkResponse = await fetch(
+        `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apiproducts/${productName}`,
+        {
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      let method = "POST";
+      let url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apiproducts`;
+
+      if (checkResponse.status === 200) {
+        method = "PUT";
+        url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apiproducts/${productName}`;
+      }
+
+      let response = await fetch(url, {
+        method: method,
+        headers: {
+          Authorization: token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.status === 200 || response.status === 201) {
+        resolve(true);
+      } else {
+        await this.logApiError(`product ${method}`, url, response);
+        resolve(false);
+      }
+    });
+  }
+
+  public async apigeeProductDelete(
+    productName: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<boolean> {
+    return new Promise(async (resolve, reject) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/apiproducts/${productName}`;
+      let response = await fetch(
+        url,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        resolve(true);
+      } else {
+        await this.logApiError("product DELETE", url, response);
+        resolve(false);
+      }
+    });
+  }
+
+  public userImport(user: User) {
+    if (!fs.existsSync(this.usersPath)) {
+      fs.mkdirSync(this.usersPath, { recursive: true });
+    }
+    fs.writeFileSync(
+      path.join(this.usersPath, (user.name || user.email) + ".json"),
+      JSON.stringify(user, null, 2),
+    );
+    this.userListCache = [];
+    const cachePath = this.getCachePath("users");
+    if (fs.existsSync(cachePath)) {
+      try {
+        fs.rmSync(cachePath);
+      } catch (e) {}
+    }
+  }
+
+  public userDelete(name: string): boolean {
+    let deleted = false;
+    let jsonPath = path.join(this.usersPath, name + ".json");
+    let yamlPath = path.join(this.usersPath, name + ".yaml");
+    if (fs.existsSync(jsonPath)) {
+      fs.unlinkSync(jsonPath);
+      deleted = true;
+    }
+    if (fs.existsSync(yamlPath)) {
+      fs.unlinkSync(yamlPath);
+      deleted = true;
+    }
+    this.userListCache = [];
+    const cachePath = this.getCachePath("users");
+    if (fs.existsSync(cachePath)) {
+      try {
+        fs.rmSync(cachePath);
+      } catch (e) {}
+    }
+    return deleted;
+  }
+
+  public async usersList(forceRefresh: boolean = false): Promise<User[]> {
+    return new Promise(async (resolve, reject) => {
+      let users: User[] = [];
+      if (fs.existsSync(this.usersPath)) {
+        let userNames: string[] = fs.readdirSync(this.usersPath);
+        for (let userPath of userNames) {
+          if (userPath.endsWith(".json")) {
+            let user: User = JSON.parse(
+              fs.readFileSync(path.join(this.usersPath, userPath), "utf8"),
+            );
+            users.push(user);
+          } else if (userPath.endsWith(".yaml") || userPath.endsWith(".yml")) {
+            let user: User = YAML.parse(
+              fs.readFileSync(path.join(this.usersPath, userPath), "utf8"),
+            );
+            users.push(user);
+          }
+        }
+      }
+
+      if (this.usersPath !== "./data/users/") {
+        return resolve(users);
+      }
+
+      if (!forceRefresh) {
+        const cached = this.readCache<User>("users");
+        if (cached && cached.length > 0) {
+          for (const item of cached) {
+            if (!users.some((u) => u.name === item.name)) {
+              users.push(item);
+            }
+          }
+          this.userListCache = users.map((x) => x.name);
+          return resolve(users);
+        }
+      }
+
+      const repoUrl = this.usersRepository;
+      try {
+        const apiUrl = this.getRepoApiUrl(repoUrl);
+        const response = await fetch(apiUrl, {
+          headers: this.getGithubHeaders(),
+        });
+
+        if (response.status === 200) {
+          const remoteUsers: any = await response.json();
+          if (Array.isArray(remoteUsers) && remoteUsers.length > 0) {
+            for (const item of remoteUsers) {
+              if (
+                item &&
+                item.name &&
+                (item.name.endsWith(".json") || item.name.endsWith(".yaml") || item.name.endsWith(".yml"))
+              ) {
+                if (item.download_url) {
+                  try {
+                    const downloadResponse = await fetch(item.download_url);
+                    if (downloadResponse.status === 200) {
+                      const text = await downloadResponse.text();
+                      let remoteUser: User;
+                      if (item.name.endsWith(".yaml") || item.name.endsWith(".yml")) {
+                        remoteUser = YAML.parse(text) as User;
+                      } else {
+                        remoteUser = JSON.parse(text) as User;
+                      }
+                      if (remoteUser) {
+                        if (!remoteUser.name && !remoteUser.userName && !remoteUser.email) {
+                          remoteUser.name = item.name.replace(/\.(json|yaml|yml)$/, "");
+                        }
+                        const idx = users.findIndex((x) => x.name === remoteUser.name);
+                        if (idx === -1) users.push(remoteUser);
+                      }
+                    }
+                  } catch (e) {}
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      if (users && users.length > 0) {
+        this.writeCache("users", users);
+        this.userListCache = users.map((x) => x.name);
+      } else {
+        const stale = this.readStaleCache<User>("users");
+        if (stale && stale.length > 0) {
+          users = stale;
+          this.userListCache = users.map((x) => x.name);
+        }
+      }
+
+      resolve(users);
+    });
+  }
+
+  public async loadUser(
+    userRef: string | User,
+    relativeDir?: string,
+  ): Promise<User | undefined> {
+    return new Promise(async (resolve) => {
+      if (typeof userRef === "object" && userRef !== null) {
+        return resolve(userRef as User);
+      }
+      if (typeof userRef === "string") {
+        let res = await this.userGet(userRef, relativeDir);
+        return resolve(res);
+      }
+      resolve(undefined);
+    });
+  }
+
+  public async userGet(name: string, relativeDir?: string): Promise<User | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let result: User | undefined = undefined;
+      const candidates = this.getCandidateFilenames(name);
+
+      // 1. Local filesystem check
+      for (const candidate of candidates) {
+        const localPaths = [
+          ...(relativeDir ? [path.resolve(relativeDir, candidate), path.join(relativeDir, candidate)] : []),
+          path.join(this.usersPath, candidate),
+          path.join("repository/users", candidate),
+          candidate,
+          path.resolve(process.cwd(), candidate),
+          path.join(process.cwd(), candidate),
+          path.join(import.meta.dirname, "../users", candidate),
+        ];
+
+        for (const lp of localPaths) {
+          if (fs.existsSync(lp) && !fs.statSync(lp).isDirectory()) {
+            try {
+              const content = fs.readFileSync(lp, "utf8");
+              if (candidate.endsWith(".json")) {
+                result = JSON.parse(content) as User;
+              } else {
+                result = YAML.parse(content) as User;
+              }
+              if (result) {
+                if (!result.name && !result.userName && !result.email) {
+                  result.name = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                }
+                return resolve(result);
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      // 2. Direct HTTP / Raw repository fetch
+      if (name.startsWith("https://") || name.startsWith("http://")) {
+        try {
+          const res = await fetch(name, { headers: this.getGithubHeaders() });
+          if (res.status === 200) {
+            const text = await res.text();
+            result = name.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+            if (result) {
+              if (!result.name && !result.userName && !result.email) {
+                result.name = path.basename(name).replace(/\.(yaml|yml|json)$/i, "");
+              }
+              return resolve(result);
+            }
+          }
+        } catch (e) {}
+      } else {
+        const rawBaseUrl = this.getRepoRawBaseUrl(this.usersRepository);
+        for (const candidate of candidates) {
+          try {
+            const res = await fetch(`${rawBaseUrl}${candidate}`, {
+              headers: this.getGithubHeaders(),
+            });
+            if (res.status === 200) {
+              const text = await res.text();
+              result = candidate.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+              if (result) {
+                if (!result.name && !result.userName && !result.email) {
+                  result.name = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                }
+                return resolve(result);
+              }
+            }
+          } catch (e) {}
+        }
+      }
+
+      // 3. Fallback: repository list search
+      try {
+        const allUsers = await this.usersList();
+        const baseNames = candidates.map((c) => c.replace(/\.(yaml|yml|json)$/i, ""));
+        const found = allUsers.find(
+          (u) =>
+            baseNames.includes(u.name) ||
+            baseNames.includes(u.name.replace(/-+/g, "-")) ||
+            (u.displayName && baseNames.includes(u.displayName.replace(/-+/g, "-"))) ||
+            (u.email && baseNames.includes(u.email)) ||
+            (u.userName && baseNames.includes(u.userName)),
+        );
+        if (found) result = found;
+      } catch (e) {}
+
+      resolve(result);
+    });
+  }
+
+  public async deploymentsList(forceRefresh: boolean = false): Promise<Deployment[]> {
+    return new Promise(async (resolve, reject) => {
+      if (!forceRefresh) {
+        const cached = this.readCache<Deployment>("deployments");
+        if (cached && cached.length > 0) {
+          this.deploymentListCache = cached.map((x) => x.name);
+          return resolve(cached);
+        }
+      }
+
+      let deployments: Deployment[] = [];
+
+      // 1. Local filesystem
+      if (fs.existsSync(this.deploymentsPath)) {
+        let deploymentNames: string[] = fs.readdirSync(this.deploymentsPath);
+        for (let deploymentPath of deploymentNames) {
+          const fullPath = path.join(this.deploymentsPath, deploymentPath);
+          if (fs.statSync(fullPath).isDirectory()) continue;
+          try {
+            if (deploymentPath.endsWith(".json")) {
+              deployments.push(JSON.parse(fs.readFileSync(fullPath, "utf8")));
+            } else if (deploymentPath.endsWith(".yaml") || deploymentPath.endsWith(".yml")) {
+              deployments.push(YAML.parse(fs.readFileSync(fullPath, "utf8")));
+            }
+          } catch (e) {}
+        }
+      }
+
+      // 2. Remote repository
+      try {
+        const repoUrl = this.getRepoApiUrl(this.deploymentsRepository);
+        const res = await fetch(repoUrl, { headers: this.getGithubHeaders() });
+        if (res.status === 200) {
+          const items: any = await res.json();
+          if (Array.isArray(items)) {
+            for (const item of items) {
+              if (
+                item &&
+                item.name &&
+                (item.name.endsWith(".json") || item.name.endsWith(".yaml") || item.name.endsWith(".yml")) &&
+                item.download_url
+              ) {
+                try {
+                  const dl = await fetch(item.download_url, { headers: this.getGithubHeaders() });
+                  if (dl.status === 200) {
+                    const text = await dl.text();
+                    const parsed: Deployment = item.name.endsWith(".json")
+                      ? JSON.parse(text)
+                      : (YAML.parse(text) as Deployment);
+                    if (parsed) {
+                      const fileStem = item.name.replace(/\.(yaml|yml|json)$/i, "");
+                      if (!parsed.name) parsed.name = fileStem;
+                      deployments.push(parsed);
+                    }
+                  }
+                } catch (e) {}
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      if (deployments && deployments.length > 0) {
+        this.writeCache("deployments", deployments);
+        this.deploymentListCache = deployments.map((x) => x.name);
+      } else {
+        const stale = this.readStaleCache<Deployment>("deployments");
+        if (stale && stale.length > 0) {
+          deployments = stale;
+          this.deploymentListCache = deployments.map((x) => x.name);
+        }
+      }
+
+      resolve(deployments);
+    });
+  }
+
+  public async deploymentGet(name: string, relativeDir?: string): Promise<Deployment | undefined> {
+    return new Promise(async (resolve, reject) => {
+      let result: Deployment | undefined = undefined;
+      const candidates = this.getCandidateFilenames(name);
+
+      // 1. Local filesystem check
+      for (const candidate of candidates) {
+        const localPaths = [
+          ...(relativeDir ? [path.resolve(relativeDir, candidate), path.join(relativeDir, candidate)] : []),
+          path.join(this.deploymentsPath, candidate),
+          path.join("repository/deployments", candidate),
+          candidate,
+          path.resolve(process.cwd(), candidate),
+          path.join(process.cwd(), candidate),
+          path.join(import.meta.dirname, "../deployments", candidate),
+        ];
+
+        for (const lp of localPaths) {
+          if (fs.existsSync(lp) && !fs.statSync(lp).isDirectory()) {
+            try {
+              const content = fs.readFileSync(lp, "utf8");
+              if (candidate.endsWith(".json")) {
+                result = JSON.parse(content) as Deployment;
+              } else {
+                result = YAML.parse(content) as Deployment;
+              }
+              if (result) {
+                if (!result.name) {
+                  result.name = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                }
+                return resolve(result);
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      // 2. Direct HTTP / Raw repository fetch
+      if (name.startsWith("https://") || name.startsWith("http://")) {
+        try {
+          const res = await fetch(name, { headers: this.getGithubHeaders() });
+          if (res.status === 200) {
+            const text = await res.text();
+            result = name.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+            if (result) {
+              if (!result.name) {
+                result.name = path.basename(name).replace(/\.(yaml|yml|json)$/i, "");
+              }
+              return resolve(result);
+            }
+          }
+        } catch (e) {}
+      } else {
+        const rawBaseUrl = this.getRepoRawBaseUrl(this.deploymentsRepository);
+        for (const candidate of candidates) {
+          try {
+            const res = await fetch(`${rawBaseUrl}${candidate}`, {
+              headers: this.getGithubHeaders(),
+            });
+            if (res.status === 200) {
+              const text = await res.text();
+              result = candidate.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+              if (result) {
+                if (!result.name) {
+                  result.name = candidate.replace(/\.(yaml|yml|json)$/i, "");
+                }
+                return resolve(result);
+              }
+            }
+          } catch (e) {}
+        }
+      }
+
+      // 3. Fallback: repository list search
+      try {
+        const allDeployments = await this.deploymentsList();
+        const baseNames = candidates.map((c) => c.replace(/\.(yaml|yml|json)$/i, ""));
+        const found = allDeployments.find(
+          (d) =>
+            baseNames.includes(d.name) ||
+            baseNames.includes(d.name.replace(/-+/g, "-")) ||
+            (d.displayName && baseNames.includes(d.displayName.replace(/-+/g, "-"))),
+        );
+        if (found) result = found;
+      } catch (e) {}
+
+      resolve(result);
+    });
+  }
+
+  public async loadDeployment(
+    deploymentRef: string | Deployment,
+    relativeDir?: string,
+  ): Promise<Deployment | undefined> {
+    return new Promise(async (resolve) => {
+      if (typeof deploymentRef === "object" && deploymentRef !== null) {
+        return resolve(deploymentRef as Deployment);
+      }
+      if (typeof deploymentRef === "string") {
+        let res = await this.deploymentGet(deploymentRef, relativeDir);
+        return resolve(res);
+      }
+      resolve(undefined);
+    });
+  }
+
+  public async deploymentResolveAssets(
+    deployment: Deployment,
+    relativeDir?: string,
+  ): Promise<{
+    templates: Template[];
+    proxies: Proxy[];
+    features: Feature[];
+    products: Product[];
+    users: User[];
+  }> {
+    const templates: Template[] = [];
+    const proxies: Proxy[] = [];
+    const features: Feature[] = [];
+    const products: Product[] = [];
+    const users: User[] = [];
+
+    if (deployment.templates && Array.isArray(deployment.templates)) {
+      for (const tRef of deployment.templates) {
+        const t = await this.loadTemplate(tRef, relativeDir);
+        if (t) templates.push(t);
+      }
+    }
+
+    if (deployment.proxies && Array.isArray(deployment.proxies)) {
+      for (const pRef of deployment.proxies) {
+        const p = await this.loadProxy(pRef, relativeDir);
+        if (p) proxies.push(p);
+      }
+    }
+
+    if (deployment.features && Array.isArray(deployment.features)) {
+      for (const fRef of deployment.features) {
+        const f = await this.loadFeature(fRef, relativeDir);
+        if (f) features.push(f);
+      }
+    }
+
+    if (deployment.products && Array.isArray(deployment.products)) {
+      for (const prodRef of deployment.products) {
+        const prod = await this.loadProduct(prodRef, relativeDir);
+        if (prod) products.push(prod);
+      }
+    }
+
+    if (deployment.users && Array.isArray(deployment.users)) {
+      for (const uRef of deployment.users) {
+        const u = await this.loadUser(uRef, relativeDir);
+        if (u) users.push(u);
+      }
+    }
+
+    return { templates, proxies, features, products, users };
+  }
+
+  public async repositoryGet(name: string): Promise<{
+    type: "template" | "feature" | "product" | "user" | "proxy" | "deployment";
+    data: Template | Feature | Product | User | Proxy | Deployment;
+  } | undefined> {
+    // Check templates, features, deployments, proxies, products, users in that order
+    let template = await this.templateGet(name);
+    if (template) return { type: "template", data: template };
+
+    let feature = await this.featureGet(name);
+    if (feature) return { type: "feature", data: feature };
+
+    let deployment = await this.deploymentGet(name);
+    if (deployment) return { type: "deployment", data: deployment };
+
+    let proxy = await this.proxyGet(name);
+    if (proxy) return { type: "proxy", data: proxy };
+
+    let product = await this.productGet(name);
+    if (product) return { type: "product", data: product };
+
+    let user = await this.userGet(name);
+    if (user) return { type: "user", data: user };
+
+    return undefined;
+  }
+
+  public async apigeeUsersList(
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<any | undefined> {
+    return new Promise(async (resolve, reject) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers?expand=true`;
+      let response = await fetch(
+        url,
+        {
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        let responseBody: any = await response.json();
+        resolve(responseBody);
+      } else {
+        await this.logApiError("users list", url, response, "Got response " + response.status);
+        resolve(undefined);
+      }
+    });
+  }
+
+  public async apigeeUserGet(
+    developerEmail: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<any | undefined> {
+    return new Promise(async (resolve, reject) => {
+      const devUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(developerEmail)}`;
+      let response = await fetch(
+        devUrl,
+        {
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        let dev: any = await response.json();
+        const appsUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(developerEmail)}/apps?expand=true`;
+        let appsResponse = await fetch(
+          appsUrl,
+          {
+            headers: {
+              Authorization: token,
+            },
+          },
+        );
+        let apps: any[] = [];
+        if (appsResponse.status === 200) {
+          let appsBody: any = await appsResponse.json();
+          apps = appsBody.app || [];
+        } else {
+          await this.logApiError("developer apps GET", appsUrl, appsResponse);
+        }
+        let converter = new ApigeeConverter();
+        resolve(converter.apigeeToUser(dev, apps));
+      } else {
+        await this.logApiError("developer GET", devUrl, response, `> Apigee developer GET response: ${response.status}`);
+        resolve(undefined);
+      }
+    });
+  }
+
+  public async apigeeUserExport(
+    user: User | any,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<boolean> {
+    return new Promise(async (resolve, reject) => {
+      let converter = new ApigeeConverter();
+      let devPayload = converter.userToApigeeDeveloper(user);
+      let email = devPayload.email;
+
+      if (!email) {
+        console.log(chalk.red.bold.italic(" > Error: Developer email is required for user export."));
+        resolve(false);
+        return;
+      }
+
+      let checkResponse = await fetch(
+        `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(email)}`,
+        {
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      let method = "POST";
+      let url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers`;
+
+      if (checkResponse.status === 200) {
+        method = "PUT";
+        url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(email)}`;
+      }
+
+      let response = await fetch(url, {
+        method: method,
+        headers: {
+          Authorization: token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(devPayload),
+      });
+
+      if (response.status !== 200 && response.status !== 201) {
+        await this.logApiError(`developer ${method}`, url, response);
+        resolve(false);
+        return;
+      }
+
+      let apps = converter.userToApigeeApps(user);
+      for (let app of apps) {
+        let appName = app.name;
+        if (!appName) continue;
+
+        let checkAppResponse = await fetch(
+          `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(email)}/apps/${encodeURIComponent(appName)}`,
+          {
+            headers: {
+              Authorization: token,
+            },
+          },
+        );
+
+        let appMethod = "POST";
+        let appUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(email)}/apps`;
+
+        if (checkAppResponse.status === 200) {
+          appMethod = "PUT";
+          appUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(email)}/apps/${encodeURIComponent(appName)}`;
+        }
+
+        let appResp = await fetch(appUrl, {
+          method: appMethod,
+          headers: {
+            Authorization: token,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name: app.name,
+            apiProducts: app.apiProducts || [],
+            callbackUrl: app.callbackUrl || "",
+            keyExpiresIn: app.keyExpiresIn || "-1",
+            scopes: app.scopes || [],
+            attributes: app.attributes || [],
+          }),
+        });
+
+        if (appResp.status !== 200 && appResp.status !== 201) {
+          await this.logApiError(`app ${appMethod}`, appUrl, appResp);
+        }
+
+        if (app.credentials && Array.isArray(app.credentials)) {
+          for (let cred of app.credentials) {
+            let key = cred.consumerKey || cred.key;
+            let secret = cred.consumerSecret || cred.secret;
+            if (key && secret) {
+              const keyUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(email)}/apps/${encodeURIComponent(appName)}/keys/${encodeURIComponent(key)}`;
+              const createKeyUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(email)}/apps/${encodeURIComponent(appName)}/keys/create`;
+
+              // First, check if the key already exists on this app
+              let checkKeyResp = await fetch(keyUrl, {
+                headers: { Authorization: token },
+              });
+
+              if (checkKeyResp.status === 200) {
+                // Key already exists: attempt overwrite by deleting existing key and recreating
+                try {
+                  const delResp = await fetch(keyUrl, {
+                    method: "DELETE",
+                    headers: { Authorization: token },
+                  });
+                  if (delResp.status === 200 || delResp.status === 204) {
+                    await fetch(createKeyUrl, {
+                      method: "POST",
+                      headers: {
+                        Authorization: token,
+                        "Content-Type": "application/json",
+                      },
+                      body: JSON.stringify({
+                        consumerKey: key,
+                        consumerSecret: secret,
+                      }),
+                    });
+                  }
+                } catch (e) {
+                  // Ignore error since it is ok if it already exists
+                }
+              } else {
+                // Key does not exist yet: create it
+                let keyResp = await fetch(
+                  createKeyUrl,
+                  {
+                    method: "POST",
+                    headers: {
+                      Authorization: token,
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      consumerKey: key,
+                      consumerSecret: secret,
+                    }),
+                  },
+                );
+
+                if (keyResp.status !== 200 && keyResp.status !== 201) {
+                  let errText = "";
+                  try {
+                    errText = await keyResp.clone().text();
+                  } catch (e) {}
+
+                  const isAlreadyExists =
+                    keyResp.status === 409 ||
+                    errText.toLowerCase().includes("already exists") ||
+                    errText.toLowerCase().includes("conflict") ||
+                    errText.includes("ConsumerKeyAlreadyExists");
+
+                  if (isAlreadyExists) {
+                    // Attempt overwrite: delete and recreate
+                    try {
+                      const delResp = await fetch(keyUrl, {
+                        method: "DELETE",
+                        headers: { Authorization: token },
+                      });
+                      if (delResp.status === 200 || delResp.status === 204) {
+                        await fetch(createKeyUrl, {
+                          method: "POST",
+                          headers: {
+                            Authorization: token,
+                            "Content-Type": "application/json",
+                          },
+                          body: JSON.stringify({
+                            consumerKey: key,
+                            consumerSecret: secret,
+                          }),
+                        });
+                      }
+                    } catch (e) {
+                      // Ignore error since it is ok if it already exists
+                    }
+                  } else {
+                    await this.logApiError("app credential CREATE", createKeyUrl, keyResp);
+                  }
+                }
+              }
+
+              if (cred.products || cred.apiProducts) {
+                const assocKeyUrl = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(email)}/apps/${encodeURIComponent(appName)}/keys/${encodeURIComponent(key)}`;
+                let assocResp = await fetch(
+                  assocKeyUrl,
+                  {
+                    method: "POST",
+                    headers: {
+                      Authorization: token,
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      apiProducts: cred.products || cred.apiProducts,
+                    }),
+                  },
+                );
+                if (assocResp.status !== 200 && assocResp.status !== 201) {
+                  let assocErrText = "";
+                  try {
+                    assocErrText = await assocResp.clone().text();
+                  } catch (e) {}
+                  const isAlreadyAssoc =
+                    assocResp.status === 409 ||
+                    assocErrText.toLowerCase().includes("already exists") ||
+                    assocErrText.toLowerCase().includes("already associated") ||
+                    assocErrText.toLowerCase().includes("conflict");
+                  if (!isAlreadyAssoc) {
+                    await this.logApiError("app credential association", assocKeyUrl, assocResp);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      resolve(true);
+    });
+  }
+
+  public async apigeeUserDelete(
+    developerEmail: string,
+    apigeeOrg: string,
+    drz: string,
+    token: string,
+  ): Promise<boolean> {
+    return new Promise(async (resolve, reject) => {
+      const url = `https://apigee${drz ? "." + drz + ".rep" : ""}.googleapis.com/v1/organizations/${apigeeOrg}/developers/${encodeURIComponent(developerEmail)}`;
+      let response = await fetch(
+        url,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: token,
+          },
+        },
+      );
+
+      if (response.status === 200) {
+        resolve(true);
+      } else {
+        await this.logApiError("developer DELETE", url, response);
+        resolve(false);
+      }
+    });
+  }
+}

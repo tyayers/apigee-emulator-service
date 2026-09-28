@@ -1,5 +1,5 @@
-# Go binary
-apigee-emulator-service
+# Node & Bun
+node_modules/
 
 # Build & deployment artifacts
 dist/

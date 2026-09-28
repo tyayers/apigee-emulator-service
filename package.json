@@ -1,0 +1,27 @@
+{
+  "name": "apigee-emulator-service",
+  "version": "1.0.0",
+  "description": "Apigee Emulator Service in Bun TypeScript",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts",
+    "test": "bun test",
+    "deploy": "bun run src/index.ts --deploy"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "google-auth-library": "^11.1.0",
+    "jsonpath-plus": "^10.2.0",
+    "xml-js": "^1.6.11",
+    "yaml": "^2.7.0",
+    "yauzl": "^3.2.0",
+    "yazl": "^2.5.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^2.4.5"
+  }
+}
