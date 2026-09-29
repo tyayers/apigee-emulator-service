@@ -3285,7 +3285,9 @@ export class ApigeeConverter {
             for (let o of ops) {
               const opApiSource = (typeof o === "object" && o.apiSource) ? o.apiSource : apiSource;
               const opName = typeof o === "string" ? o : o.name || o.resource || "/";
-              const opMethods = typeof o === "object" && o.methods ? o.methods : ["GET"];
+              const opMethods = typeof o === "object" && Array.isArray(o.methods) && o.methods.length > 0
+                ? o.methods
+                : ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
               const opQuota = typeof o === "object" && o.quota ? o.quota : op.quota;
               const opAttrs = typeof o === "object" && o.attributes ? o.attributes : op.attributes;
               let singleConfig: any = {
@@ -3303,7 +3305,9 @@ export class ApigeeConverter {
             apiSource: apiSource,
             operations: ops.map((o: any) => ({
               resource: typeof o === "string" ? o : o.name || o.resource || "/",
-              methods: (typeof o === "object" && o.methods) ? o.methods : ["GET"],
+              methods: (typeof o === "object" && Array.isArray(o.methods) && o.methods.length > 0)
+                ? o.methods
+                : ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
             })),
           };
           if (op.quota) config.quota = op.quota;
@@ -3315,7 +3319,9 @@ export class ApigeeConverter {
             operations: [
               {
                 resource: (op as any).name || op.resource,
-                methods: op.methods || ["GET"],
+                methods: Array.isArray(op.methods) && op.methods.length > 0
+                  ? op.methods
+                  : ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
               },
             ],
           };
@@ -3325,6 +3331,7 @@ export class ApigeeConverter {
         }
       }
       apigeeProduct.operationGroup = {
+        operationConfigType: "proxy",
         operationConfigs: operationConfigs,
       };
     }
@@ -3400,6 +3407,7 @@ export class ApigeeConverter {
         }
       }
       apigeeProduct.llmOperationGroup = {
+        operationConfigType: "proxy",
         operationConfigs: operationConfigs,
       };
     }
@@ -3904,10 +3912,24 @@ export class ApigeeConverter {
     };
   }
 
+  public deterministicAppId(email: string, appName: string): string {
+    const crypto = require("crypto");
+    const hash = crypto.createHash("sha1").update(`${email}:${appName}`).digest("hex");
+    return [
+      hash.substring(0, 8),
+      hash.substring(8, 12),
+      "5" + hash.substring(13, 16),
+      ((parseInt(hash.substring(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, "0") + hash.substring(18, 20),
+      hash.substring(20, 32),
+    ].join("-");
+  }
+
   public userToApigeeApps(user: User): any[] {
+    let dev = this.userToApigeeDeveloper(user);
     let apps: any[] = [];
     for (let app of user.apps || []) {
       let appPayload: any = {
+        appId: (app as any).appId || (app as any).id || this.deterministicAppId(dev.email || "developer", app.name || "app"),
         name: app.name,
         displayName: app.displayName || app.name,
         description: app.description || "",
@@ -3936,7 +3958,23 @@ export class ApigeeConverter {
       let creds = app.credentials || app.keys || [];
       if (creds && creds.length > 0) {
         for (let c of creds) {
-          let credProducts = c.products || c.apiProducts || apiProducts;
+          let rawCredProducts = c.products || c.apiProducts;
+          let credProducts: any[] = [];
+          if (!rawCredProducts || rawCredProducts.length === 0) {
+            credProducts = [...apiProducts];
+          } else {
+            credProducts = [...rawCredProducts];
+            const existingNames = new Set(
+              credProducts.map((p: any) => (typeof p === "string" ? p : p.apiproduct || p.name))
+            );
+            for (const ap of apiProducts) {
+              const apName = typeof ap === "string" ? ap : ap.name;
+              if (apName && !existingNames.has(apName)) {
+                credProducts.push(ap);
+                existingNames.add(apName);
+              }
+            }
+          }
           let mappedCredProducts = credProducts.map((p: any) => {
             if (typeof p === "object" && p && p.apiproduct) return p;
             return {
@@ -3977,6 +4015,7 @@ export class ApigeeConverter {
       }
 
       let appPayload: any = {
+        appId: (app as any).appId || (app as any).id || this.deterministicAppId(dev.email || "developer", app.name || "app"),
         name: app.name,
         displayName: app.displayName || app.name,
         developerEmail: dev.email,

@@ -88,11 +88,11 @@ function getDockerCqlExecutor(): CassandraExecutor | null {
 }
 
 async function getCassandraExecutor(): Promise<CassandraExecutor | null> {
-  const native = await getNativeDriverExecutor();
-  if (native) {
-    return native;
+  const dockerExec = getDockerCqlExecutor();
+  if (dockerExec) {
+    return dockerExec;
   }
-  return getDockerCqlExecutor();
+  return await getNativeDriverExecutor();
 }
 
 export async function syncCassandraDeveloperAppKeys(
@@ -126,12 +126,14 @@ export async function syncCassandraDeveloperAppKeys(
       if (id && name) appMap[name] = id;
     }
 
-    // Ensure products in Cassandra have the proxies set so the runtime VerifyAPIKey policy allows requests
+    // Ensure REST products in Cassandra have proxies and api_res set so the runtime VerifyAPIKey policy allows requests
     const defaultProxies = ["REST-AI-Completions", "REST-AI-GenerateContent", "REST-AI-Interactions", "REST-AI-Messages", "REST-AI-Embeddings"];
     const proxiesSetLiteral = "{" + defaultProxies.map((p) => `'${p}'`).join(", ") + "}";
+    const apiResLiteral = "{'/', '/*', '/**', '/v1/chat/completions', '/v1/chat/completions/**', '/v1beta/interactions', '/v1beta/interactions/**', '/v1/messages', '/v1/messages/**', '/v1/projects', '/v1/projects/**', '/v1/embeddings', '/v1/embeddings/**'}";
     for (const [pName, pId] of Object.entries(prodMap)) {
+      if (pName.toLowerCase().includes("mcp")) continue;
       try {
-        await executor.execute(`UPDATE kms_hybrid_hybrid.api_product SET proxies = ${proxiesSetLiteral} WHERE tid = 'hybrid' AND id = ${pId};`);
+        await executor.execute(`UPDATE kms_hybrid_hybrid.api_product SET proxies = ${proxiesSetLiteral}, api_res = ${apiResLiteral} WHERE tid = 'hybrid' AND id = ${pId};`);
       } catch (err) {
         console.warn(`[CassandraSync] Could not update proxies for product ${pName}:`, err);
       }
@@ -237,13 +239,20 @@ export async function syncCassandraDeveloperAppKeys(
         if (!ckey) continue;
 
         let credProdMapStr = defaultProdMapStr;
-        const targetProds = cred.apiProducts || app.apiProducts || [];
-        if (Array.isArray(targetProds) && targetProds.length > 0) {
+        const matchedProductIds: string[] = [];
+        const credProdList = (cred.apiProducts || []).map((c: any) =>
+          typeof c === "string" ? c : c.apiproduct || c.name,
+        );
+        const appProdList = (app.apiProducts || []).map((p: any) =>
+          typeof p === "string" ? p : p.apiproduct || p.name,
+        );
+        const allTargetProds = Array.from(new Set([...credProdList, ...appProdList])).filter(Boolean);
+        if (allTargetProds.length > 0) {
           const matchedEntries: string[] = [];
-          for (const item of targetProds) {
-            const pName = typeof item === "string" ? item : item.apiproduct || item.name;
+          for (const pName of allTargetProds) {
             if (pName && prodMap[pName]) {
               matchedEntries.push(`${prodMap[pName]}: 'APPROVED'`);
+              matchedProductIds.push(prodMap[pName]);
             }
           }
           if (matchedEntries.length > 0) {
@@ -259,6 +268,14 @@ export async function syncCassandraDeveloperAppKeys(
           await executor.execute(q1);
           await executor.execute(q2);
           await executor.execute(q3);
+          for (const pid of matchedProductIds) {
+            try {
+              await executor.execute(`INSERT INTO kms_hybrid_hybrid.app_and_api_product_mapper (tid, api_prdt_id, app_id, app_cred_id) VALUES ('hybrid', ${pid}, ${appID}, '${ckey}');`);
+              await executor.execute(`INSERT INTO kms_hybrid_hybrid.app_and_api_product_mapper_idx (key, rid) VALUES ('app_id=${appID}&tid=hybrid', 'api_prdt_id=${pid}:tid=hybrid');`);
+            } catch (e) {
+              console.warn(`[CassandraSync] Error inserting app_and_api_product_mapper for ${ckey} -> ${pid}:`, e);
+            }
+          }
           syncedCount++;
         } catch (e) {
           console.warn(`[CassandraSync] Error inserting credential for ${ckey}:`, e);

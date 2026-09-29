@@ -5,6 +5,10 @@ node_modules/
 dist/
 .cloudrun_url
 .cloudrun_trace_session
+.local_url
+.local_trace_session
+.local_server.pid
+.local_server.log
 
 # Editor & OS files
 .DS_Store
@@ -21,3 +25,5 @@ tests.json
 proxies
 data/proxies/
 .env
+lab-participants.json
+lab-usage.json

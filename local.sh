@@ -60,11 +60,55 @@ PORT="${PORT:-8082}"
 EMULATOR_MGMT_URL="${EMULATOR_MGMT_URL:-http://127.0.0.1:8080}"
 EMULATOR_RUNTIME_URL="${EMULATOR_RUNTIME_URL:-http://127.0.0.1:8998}"
 CONTAINER_NAME="${EMULATOR_CONTAINER_NAME:-apigee}"
+EMULATOR_TIMEOUT="${EMULATOR_TIMEOUT:-60}"
 URL_FILE="$ROOT_DIR/.local_url"
 SESSION_FILE="$ROOT_DIR/.local_trace_session"
+PID_FILE="$ROOT_DIR/.local_server.pid"
+LOG_FILE="$ROOT_DIR/.local_server.log"
+CUSTOM_PORT_SET="false"
 
 # Parameter mappings
 declare -A ALL_PARAMS_MAP
+
+# ------------------------------------------------------------------------------
+# Port Resolution
+# ------------------------------------------------------------------------------
+is_tester_service() {
+  local p="$1"
+  local res
+  res=$(curl -s -f --max-time 1 "http://localhost:${p}/tester/api/status" 2>/dev/null || true)
+  if [[ "$res" =~ \"online\":[[:space:]]*true ]]; then
+    return 0
+  fi
+  return 1
+}
+
+resolve_active_port() {
+  if [ "$CUSTOM_PORT_SET" = "true" ]; then
+    return 0
+  fi
+  if [ -f "$URL_FILE" ]; then
+    local saved_url saved_port
+    saved_url=$(cat "$URL_FILE" 2>/dev/null || true)
+    saved_port=$( (echo "$saved_url" | grep -oE ':[0-9]+' | tr -d ':') || true)
+    if [ -n "$saved_port" ]; then
+      if is_tester_service "$saved_port"; then
+        PORT="$saved_port"
+        return 0
+      fi
+    fi
+  fi
+  if ! is_tester_service "$PORT"; then
+    local p
+    for ((p=8082; p<=8092; p++)); do
+      if is_tester_service "$p"; then
+        PORT="$p"
+        return 0
+      fi
+    done
+  fi
+  return 0
+}
 
 # ------------------------------------------------------------------------------
 # GCP Context Resolution
@@ -161,8 +205,111 @@ check_prereqs() {
 }
 
 # ------------------------------------------------------------------------------
-# Emulator Container Lifecycle
+# Emulator Container Lifecycle & Readiness
 # ------------------------------------------------------------------------------
+check_emulator_ready() {
+  local code
+  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$EMULATOR_MGMT_URL/v1/emulator/tree" 2>/dev/null || echo "000")
+  if [ "$code" = "200" ]; then
+    return 0
+  fi
+  return 1
+}
+
+wait_for_emulator_ready() {
+  local max_seconds="${1:-$EMULATOR_TIMEOUT}"
+  local elapsed=0
+
+  while [ "$elapsed" -lt "$max_seconds" ]; do
+    if check_emulator_ready; then
+      echo -ne "\r\033[K"
+      return 0
+    fi
+
+    # Check if container died mid-boot
+    if ! docker ps --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
+      echo -e "\n${YELLOW}Notice: Container stopped during boot. Attempting docker start...${NC}"
+      docker start "$CONTAINER_NAME" 2>/dev/null || true
+    fi
+
+    sleep 1
+    elapsed=$((elapsed + 1))
+    echo -ne "\r${BLUE}Waiting for Apigee Emulator to become ready... (${elapsed}s / ${max_seconds}s)${NC}  "
+  done
+  echo -ne "\r\033[K"
+  return 1
+}
+
+diagnose_emulator_failure() {
+  echo -e "\n${RED}======================================================${NC}"
+  echo -e "${RED}  Apigee Emulator Readiness Failure Diagnostics        ${NC}"
+  echo -e "${RED}======================================================${NC}"
+  echo -e "• Target Management URL: ${CYAN}$EMULATOR_MGMT_URL/v1/emulator/tree${NC}"
+
+  # 1. Container status
+  local container_status
+  container_status=$(docker inspect -f '{{.State.Status}} (ExitCode: {{.State.ExitCode}})' "$CONTAINER_NAME" 2>/dev/null || echo "not found")
+  echo -e "• Container Status:      ${YELLOW}$container_status${NC}"
+
+  # 2. Port 8080 listener check
+  local port_holder
+  port_holder=$( (lsof -i :8080 2>/dev/null || ss -tulpn | grep 8080 2>/dev/null) | head -n 2 || true)
+  if [ -n "$port_holder" ]; then
+    echo -e "• Port 8080 Listener:\n$port_holder"
+  fi
+
+  # 3. HTTP response code
+  local resp_code
+  resp_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$EMULATOR_MGMT_URL/v1/emulator/tree" 2>/dev/null || echo "Connection failed / refused")
+  echo -e "• Last HTTP Status Code: ${YELLOW}$resp_code${NC}"
+
+  # 4. Recent container logs
+  echo -e "\n${BOLD}Recent Container Logs (last 20 lines):${NC}"
+  docker logs --tail 20 "$CONTAINER_NAME" 2>&1 || true
+
+  echo -e "\n${BOLD}Remediation Suggestions:${NC}"
+  echo -e "  1) Run ${CYAN}./local.sh recreate${NC} to destroy and recreate the container cleanly."
+  echo -e "  2) Restart container manually: ${CYAN}docker restart $CONTAINER_NAME${NC}"
+  echo -e "  3) Inspect full logs: ${CYAN}docker logs $CONTAINER_NAME${NC}"
+  echo -e "  4) If the machine is slow or busy, increase timeout: ${CYAN}EMULATOR_TIMEOUT=90 ./local.sh up${NC}"
+  echo -e "${RED}======================================================${NC}\n"
+}
+
+configure_emulator_container() {
+  docker exec "$CONTAINER_NAME" sh -c '
+    if [ -f /opt/apigee/apigee-emulator/conf/keymanagement.properties ]; then
+      sed -i "s/kms_cache_memory_element_enable=true/kms_cache_memory_element_enable=false/" /opt/apigee/apigee-emulator/conf/keymanagement.properties
+      grep -q "kms_entity_cache_ttl_seconds" /opt/apigee/apigee-emulator/conf/keymanagement.properties || echo -e "\nkms_entity_cache_ttl_seconds=0" >> /opt/apigee/apigee-emulator/conf/keymanagement.properties
+    fi
+  ' 2>/dev/null || true
+}
+
+recreate_emulator() {
+  check_prereqs
+  echo -e "${YELLOW}Recreating Apigee Emulator container '${CONTAINER_NAME}'...${NC}"
+  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+  if [ -f "$ROOT_DIR/create.sh" ]; then
+    echo -e "${BLUE}Creating container using ./create.sh...${NC}"
+    "$ROOT_DIR/create.sh"
+  else
+    echo -e "${BLUE}Creating container ${CONTAINER_NAME}...${NC}"
+    docker create --name "$CONTAINER_NAME" \
+      -p 8080:8080 \
+      -p 8998:8998 \
+      -p 9042:9042 \
+      gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1
+  fi
+  echo -e "${BLUE}Starting container ${CONTAINER_NAME}...${NC}"
+  docker start "$CONTAINER_NAME" >/dev/null
+  configure_emulator_container
+  if wait_for_emulator_ready "$EMULATOR_TIMEOUT"; then
+    echo -e "${GREEN}✓ Apigee Emulator container recreated and ready.${NC}"
+  else
+    diagnose_emulator_failure
+    exit 1
+  fi
+}
+
 ensure_emulator_running() {
   check_prereqs
 
@@ -183,6 +330,7 @@ ensure_emulator_running() {
       docker create --name "$CONTAINER_NAME" \
         -p 8080:8080 \
         -p 8998:8998 \
+        -p 9042:9042 \
         gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1
     fi
   fi
@@ -190,20 +338,34 @@ ensure_emulator_running() {
   # Check if container is running
   if ! docker ps --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
     echo -e "${BLUE}Starting container ${CONTAINER_NAME}...${NC}"
-    docker start "$CONTAINER_NAME"
-    echo -e "${BLUE}Waiting for Apigee Emulator to become ready...${NC}"
-    local tries=0
-    local max_tries=30
-    while ! curl -s -f "$EMULATOR_MGMT_URL/v1/emulator/health" &>/dev/null; do
-      sleep 1
-      tries=$((tries + 1))
-      if [ "$tries" -ge "$max_tries" ]; then
-        echo -e "${RED}Timeout waiting for Apigee Emulator to respond at $EMULATOR_MGMT_URL${NC}" >&2
-        exit 1
-      fi
-    done
-    echo -e "${GREEN}Apigee Emulator container is ready.${NC}"
+    docker start "$CONTAINER_NAME" >/dev/null
+    configure_emulator_container
   fi
+
+  # Check if emulator is already responding
+  if check_emulator_ready; then
+    return 0
+  fi
+
+  echo -e "${BLUE}Waiting for Apigee Emulator to become ready...${NC}"
+  if wait_for_emulator_ready "$EMULATOR_TIMEOUT"; then
+    echo -e "${GREEN}✓ Apigee Emulator container is ready.${NC}"
+    return 0
+  fi
+
+  # First attempt timed out: Attempt automatic restart retry
+  echo -e "\n${YELLOW}Emulator not responding within ${EMULATOR_TIMEOUT}s. Attempting automatic container restart...${NC}"
+  docker restart "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+  if wait_for_emulator_ready "$EMULATOR_TIMEOUT"; then
+    echo -e "${GREEN}✓ Apigee Emulator recovered and is ready.${NC}"
+    return 0
+  fi
+
+  # Failed after retry: Print diagnostics
+  diagnose_emulator_failure
+  echo -e "${RED}Timeout waiting for Apigee Emulator to respond at $EMULATOR_MGMT_URL/v1/emulator/tree${NC}" >&2
+  exit 1
 }
 
 # ------------------------------------------------------------------------------
@@ -214,16 +376,82 @@ start_server() {
   ensure_emulator_running
   resolve_gcp_context
 
-  echo -e "${BOLD}Starting Apigee Emulator Service on port ${PORT}...${NC}"
+  # Check if tester service is already running
+  if [ -f "$PID_FILE" ]; then
+    local old_pid
+    old_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+      resolve_active_port
+      echo -e "${YELLOW}Apigee Emulator Service is already running (PID: $old_pid).${NC}"
+      echo -e "  • ${BOLD}Web UI:${NC}  ${GREEN}http://localhost:${PORT}/tester/${NC}"
+      echo -e "  • ${BOLD}Hint:${NC}    Call ${CYAN}./local.sh stop${NC} to stop all services.\n"
+      return 0
+    fi
+  fi
+
+  rm -f "$URL_FILE"
+
+  echo -e "${BOLD}Starting Apigee Emulator Service...${NC}"
   if [ -n "$PROJECT_ID" ]; then
     echo -e "  • ${BOLD}Project:${NC} ${CYAN}$PROJECT_ID${NC}"
   fi
-  echo -e "  • ${BOLD}Web UI:${NC}  ${GREEN}http://localhost:${PORT}/tester/${NC}\n"
+  echo -e "  • ${BOLD}Waiting for service to bind and start...${NC}"
 
   if [ "$dev_mode" = "true" ]; then
-    PORT="$PORT" bun --watch run src/index.ts
+    setsid env PORT="$PORT" bun --watch run src/index.ts </dev/null > "$LOG_FILE" 2>&1 &
   else
-    PORT="$PORT" bun run src/index.ts
+    setsid env PORT="$PORT" bun run src/index.ts </dev/null > "$LOG_FILE" 2>&1 &
+  fi
+  local bun_pid=$!
+  echo "$bun_pid" > "$PID_FILE"
+
+  local tries=0
+  local max_tries=100
+  local final_url=""
+
+  while [ $tries -lt $max_tries ]; do
+    if ! kill -0 "$bun_pid" 2>/dev/null; then
+      echo -e "${RED}Error: Server process exited unexpectedly.${NC}" >&2
+      if [ -f "$LOG_FILE" ]; then
+        echo -e "${YELLOW}Server logs:${NC}" >&2
+        tail -n 25 "$LOG_FILE" >&2
+      fi
+      rm -f "$URL_FILE" "$PID_FILE"
+      return 1
+    fi
+
+    if [ -f "$URL_FILE" ]; then
+      final_url="$(cat "$URL_FILE" 2>/dev/null || true)"
+      if [ -n "$final_url" ]; then
+        break
+      fi
+    fi
+
+    # Fallback port check if URL_FILE was not written yet
+    local p
+    for ((p=PORT; p<=PORT+10; p++)); do
+      if is_tester_service "$p"; then
+        final_url="http://localhost:${p}/tester/"
+        echo "$final_url" > "$URL_FILE" 2>/dev/null || true
+        break 2
+      fi
+    done
+
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+
+  if [ -n "$final_url" ]; then
+    local final_port
+    final_port=$( (echo "$final_url" | grep -oE ':[0-9]+' | tr -d ':') || echo "$PORT")
+    PORT="$final_port"
+    echo -e "\n${GREEN}✓ Apigee Emulator Service is running in the background.${NC}"
+    echo -e "  • ${BOLD}Web UI:${NC}  ${GREEN}${final_url}${NC}"
+    echo -e "  • ${BOLD}Logs:${NC}    tail -f ${LOG_FILE}"
+    echo -e "  • ${BOLD}Hint:${NC}    Call ${CYAN}./local.sh stop${NC} to stop all services (emulator and tester).\n"
+  else
+    echo -e "\n${YELLOW}Warning: Could not confirm server startup URL within timeout.${NC}"
+    echo -e "  • ${BOLD}Hint:${NC}    Call ${CYAN}./local.sh stop${NC} to stop all services.\n"
   fi
 }
 
@@ -233,6 +461,7 @@ deploy_resource() {
 
   ensure_emulator_running
   resolve_gcp_context
+  resolve_active_port
 
   if [ -z "$target" ]; then
     target="data/deployments/deployment-1.yaml"
@@ -284,6 +513,7 @@ deploy_all() {
 run_tests() {
   local proxy_name="$1"
   resolve_gcp_context
+  resolve_active_port
 
   echo -e "${BOLD}Running tests against local Apigee Emulator...${NC}"
 
@@ -311,9 +541,22 @@ run_tests() {
 
 check_status() {
   resolve_gcp_context
+  resolve_active_port
+
+  local tester_pid=""
+  if [ -f "$PID_FILE" ]; then
+    tester_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [ -n "$tester_pid" ] && ! kill -0 "$tester_pid" 2>/dev/null; then
+      tester_pid=""
+    fi
+  fi
+  if [ -z "$tester_pid" ]; then
+    tester_pid=$(pgrep -f "bun.*src/index\.ts" 2>/dev/null | head -n 1 || true)
+  fi
 
   echo -e "${BOLD}Local Apigee Emulator Status:${NC}"
   echo -e "  • ${BOLD}Docker Container:${NC} " $(docker ps --filter "name=${CONTAINER_NAME}" --format '{{.Status}}' 2>/dev/null || echo "Not running")
+  echo -e "  • ${BOLD}Tester Service:${NC}   " $([ -n "$tester_pid" ] && echo "Running (PID: $tester_pid)" || echo "Not running")
   echo -e "  • ${BOLD}Management API:${NC}   $EMULATOR_MGMT_URL"
   echo -e "  • ${BOLD}Runtime Port:${NC}     $EMULATOR_RUNTIME_URL"
   echo -e "  • ${BOLD}Tester Port:${NC}      http://localhost:${PORT}/tester/"
@@ -322,25 +565,25 @@ check_status() {
   fi
 
   # Check health
-  local health
-  health=$(curl -s "$EMULATOR_MGMT_URL/v1/emulator/health" 2>/dev/null || true)
-  if [ -n "$health" ]; then
-    echo -e "\n${BOLD}Emulator Health:${NC} ${GREEN}$health${NC}"
+  local health_code
+  health_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$EMULATOR_MGMT_URL/v1/emulator/tree" 2>/dev/null || echo "000")
+  if [ "$health_code" = "200" ]; then
+    echo -e "\n${BOLD}Emulator Health:${NC} ${GREEN}Online (Management API ready)${NC}"
   else
-    echo -e "\n${YELLOW}Emulator management API is offline.${NC}"
+    echo -e "\n${YELLOW}Emulator management API is offline or not responding (HTTP ${health_code}).${NC}"
   fi
 
   # Query Tester API if server is up
   local tester_status
-  tester_status=$(curl -s "http://localhost:${PORT}/tester/api/status" 2>/dev/null || true)
+  tester_status=$(curl -s --max-time 2 "http://localhost:${PORT}/tester/api/status" 2>/dev/null || true)
   if [ -n "$tester_status" ]; then
     echo -e "\n${BOLD}Deployed Proxies & Bundles (from Tester Service):${NC}"
     echo "$tester_status" | jq -r '.bundles[] | "  • \(.proxyName) (Deployed: \(.isDeployed), Routes: \(.targetRoutes | join(", ")))"' 2>/dev/null || true
   else
     # Query Emulator directly for deployment tree
     local tree
-    tree=$(curl -s "$EMULATOR_MGMT_URL/v1/emulator/deployments" 2>/dev/null || true)
-    if [ -n "$tree" ]; then
+    tree=$(curl -s --max-time 2 "$EMULATOR_MGMT_URL/v1/emulator/tree" 2>/dev/null || true)
+    if [ -n "$tree" ] && [ "$tree" != "[]" ]; then
       echo -e "\n${BOLD}Emulator Deployment Tree:${NC}"
       echo "$tree" | jq . 2>/dev/null || echo "$tree"
     fi
@@ -354,9 +597,59 @@ reset_emulator() {
 }
 
 stop_all() {
+  echo -e "${YELLOW}Stopping all local services...${NC}"
+
+  # 1. Stop local tester service via PID file if present
+  local stopped_tester="false"
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo -e "${YELLOW}Stopping Apigee Emulator Tester service (PID: $pid)...${NC}"
+      kill -TERM "$pid" 2>/dev/null || true
+      local w=0
+      while [ $w -lt 30 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.1
+        w=$((w + 1))
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+      stopped_tester="true"
+    fi
+    rm -f "$PID_FILE"
+  fi
+
+  # 2. Kill any other local tester service processes running bun src/index.ts
+  local remaining_pids
+  remaining_pids=$(pgrep -f "bun.*src/index\.ts" 2>/dev/null || true)
+  if [ -n "$remaining_pids" ]; then
+    echo -e "${YELLOW}Stopping remaining local tester service processes ($remaining_pids)...${NC}"
+    for rpid in $remaining_pids; do
+      kill -TERM "$rpid" 2>/dev/null || true
+    done
+    sleep 0.5
+    for rpid in $remaining_pids; do
+      if kill -0 "$rpid" 2>/dev/null; then
+        kill -9 "$rpid" 2>/dev/null || true
+      fi
+    done
+    stopped_tester="true"
+  fi
+
+  rm -f "$URL_FILE" "$PID_FILE"
+
+  if [ "$stopped_tester" = "true" ]; then
+    echo -e "${GREEN}✓ Local tester service stopped.${NC}"
+  else
+    echo -e "${BLUE}Local tester service was not running.${NC}"
+  fi
+
+  # 3. Stop Apigee Emulator Docker container
   echo -e "${YELLOW}Stopping Apigee Emulator container...${NC}"
   docker stop "$CONTAINER_NAME" 2>/dev/null || true
-  echo -e "${GREEN}Stopped.${NC}"
+  echo -e "${GREEN}✓ Emulator container stopped.${NC}"
+  echo -e "${GREEN}All local services stopped.${NC}"
 }
 
 start_trace() {
@@ -367,10 +660,10 @@ start_trace() {
   fi
   echo -e "${BLUE}Starting debug trace session for ${BOLD}$proxy_name${NC}...${NC}"
   local session
-  session=$(curl -s -X POST "$EMULATOR_MGMT_URL/v1/emulator/environments/test/apiproxies/$proxy_name/trace/sessions")
+  session=$(curl -s -X POST "$EMULATOR_MGMT_URL/v1/emulator/trace?proxyName=${proxy_name}")
   echo "$session" > "$SESSION_FILE"
   local session_id
-  session_id=$(echo "$session" | jq -r '.id // empty' 2>/dev/null || true)
+  session_id=$(echo "$session" | jq -r '.name // .id // empty' 2>/dev/null || true)
   if [ -n "$session_id" ]; then
     echo -e "${GREEN}Trace session active:${NC} $session_id"
     echo -e "Send traffic to http://localhost:8998 and then run: ${CYAN}./local.sh trace-stop${NC}"
@@ -387,22 +680,18 @@ stop_trace() {
   local session_data
   session_data=$(cat "$SESSION_FILE")
   local session_id
-  session_id=$(echo "$session_data" | jq -r '.id // empty' 2>/dev/null || true)
-  local proxy_name
-  proxy_name=$(echo "$session_data" | jq -r '.apiproxy // empty' 2>/dev/null || true)
+  session_id=$(echo "$session_data" | jq -r '.name // .id // empty' 2>/dev/null || true)
 
-  if [ -z "$session_id" ] || [ -z "$proxy_name" ]; then
+  if [ -z "$session_id" ]; then
     echo -e "${RED}Invalid session data in $SESSION_FILE${NC}" >&2
     return 1
   fi
 
-  echo -e "${BLUE}Stopping trace session $session_id for $proxy_name...${NC}"
-  curl -s -X POST "$EMULATOR_MGMT_URL/v1/emulator/environments/test/apiproxies/$proxy_name/trace/sessions/$session_id/stop" >/dev/null || true
-
-  echo -e "${BLUE}Downloading recorded trace transactions...${NC}"
-  curl -s "$EMULATOR_MGMT_URL/v1/emulator/environments/test/apiproxies/$proxy_name/trace/sessions/$session_id/transactions" > trace.json
+  echo -e "${BLUE}Downloading recorded trace transactions for session $session_id...${NC}"
+  curl -s "$EMULATOR_MGMT_URL/v1/emulator/trace/transactions?sessionid=$session_id" > trace.json
   rm -f "$SESSION_FILE"
   echo -e "${GREEN}Transactions saved to trace.json.${NC}"
+  resolve_active_port
   echo -e "Open ${CYAN}http://localhost:${PORT}/tester/${NC} to visualize."
 }
 
@@ -414,7 +703,7 @@ show_help() {
   echo "  ./local.sh [COMMAND] [OPTIONS] [FILE.yaml...]"
   echo ""
   echo -e "${BOLD}Commands:${NC}"
-  echo "  up, start              Start Apigee container and launch Bun server"
+  echo "  up, start              Start Apigee container and launch local tester service in background"
   echo "  deploy [FILE...]       Deploy a deployment YAML or bundle (default: deployment-1.yaml)"
   echo "  test [PROXY]           Run proxy tests against local runtime"
   echo "  status                 Check container health, deployed proxies, and tester UI"
@@ -422,8 +711,10 @@ show_help() {
   echo "  trace-start [PROXY]    Start trace recording session for a proxy"
   echo "  trace-stop             Stop trace session and download trace.json"
   echo "  reset                  Reset local emulator state"
+  echo "  recreate               Destroy and recreate emulator container with fresh state"
+  echo "  clean                  Remove generated assets, reset emulator, or start fresh (clean.sh)"
   echo "  logs                   View Docker container logs"
-  echo "  stop                   Stop Apigee container"
+  echo "  stop                   Stop all services (emulator container & local tester)"
   echo ""
   echo -e "${BOLD}Options:${NC}"
   echo "  -a, --all              Deploy all deployments in 'data/deployments/'"
@@ -461,17 +752,19 @@ interactive_menu() {
     echo -e "  Current GCP Project: ${CYAN}$PROJECT_ID${NC}"
   fi
   echo ""
-  echo "  1) Start Local Server & Emulator (up)"
+  echo "  1) Start Local Server & Emulator in Background (up)"
   echo "  2) Deploy deployment-1.yaml"
   echo "  3) Deploy all deployments (--all)"
   echo "  4) Run Test Suite"
   echo "  5) Check Status & Deployed Proxies"
   echo "  6) Open Tester Web UI in Browser"
-  echo "  7) Reset Emulator State"
-  echo "  8) Stop Emulator Container"
-  echo "  9) Exit"
+  echo "  7) Reset Emulator State (API reset)"
+  echo "  8) Recreate Emulator Container (Fresh State)"
+  echo "  9) Clean Generated Assets & Reset Emulator (clean.sh)"
+  echo "  10) Stop All Services (Emulator & Tester)"
+  echo "  11) Exit"
   echo ""
-  read -rp "Select an option [1-9] (default: 1): " choice
+  read -rp "Select an option [1-11] (default: 1): " choice
   choice="${choice:-1}"
 
   case "$choice" in
@@ -481,6 +774,7 @@ interactive_menu() {
     4) run_tests ;;
     5) check_status ;;
     6)
+      resolve_active_port
       local url="http://localhost:${PORT}/tester/"
       echo -e "Opening ${CYAN}$url${NC}..."
       if command -v xdg-open &>/dev/null; then
@@ -490,8 +784,10 @@ interactive_menu() {
       fi
       ;;
     7) reset_emulator ;;
-    8) stop_all ;;
-    9) exit 0 ;;
+    8) recreate_emulator ;;
+    9) "$ROOT_DIR/clean.sh" ;;
+    10) stop_all ;;
+    11) exit 0 ;;
     *) echo -e "${RED}Invalid choice.${NC}" ;;
   esac
 }
@@ -531,6 +827,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     reset)
       COMMAND="reset"
+      shift
+      ;;
+    recreate)
+      COMMAND="recreate"
+      shift
+      ;;
+    clean)
+      COMMAND="clean"
       shift
       ;;
     stop)
@@ -587,6 +891,7 @@ while [[ $# -gt 0 ]]; do
     --port)
       shift
       PORT="$1"
+      CUSTOM_PORT_SET="true"
       export PORT
       shift
       ;;
@@ -627,6 +932,7 @@ case "$COMMAND" in
     check_status
     ;;
   ui)
+    resolve_active_port
     echo -e "Web UI URL: ${CYAN}http://localhost:${PORT}/tester/${NC}"
     if command -v xdg-open &>/dev/null; then
       xdg-open "http://localhost:${PORT}/tester/" 2>/dev/null || true
@@ -636,6 +942,12 @@ case "$COMMAND" in
     ;;
   reset)
     reset_emulator
+    ;;
+  recreate)
+    recreate_emulator
+    ;;
+  clean)
+    exec "$ROOT_DIR/clean.sh" "$@"
     ;;
   stop)
     stop_all

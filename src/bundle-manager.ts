@@ -9,6 +9,21 @@ const authRegex = /<Authentication\b[^>]*>[\s\S]*?<\/Authentication>/g;
 const envVarRegex = /env\.([a-zA-Z0-9_]+)/g;
 const envBracesRegex = /\{([a-zA-Z0-9_]+)\}/g;
 
+export const DEFAULT_AI_DATA_COLLECTORS = [
+  { name: "dc_ai_model", type: "STRING" },
+  { name: "dc_ai_user", type: "STRING" },
+  { name: "dc_ai_provider", type: "STRING" },
+  { name: "dc_ai_cost_center", type: "STRING" },
+  { name: "dc_ai_response_type", type: "STRING" },
+  { name: "dc_ai_total_token_count", type: "INTEGER" },
+  { name: "dc_ai_prompt_token_count", type: "INTEGER" },
+  { name: "dc_ai_response_token_count", type: "INTEGER" },
+  { name: "dc_ai_time_first_token", type: "INTEGER" },
+  { name: "dc_ai_request_cost", type: "FLOAT" },
+  { name: "dc_ai_response_cost", type: "FLOAT" },
+  { name: "dc_ai_total_cost", type: "FLOAT" },
+];
+
 export class BundleManager {
   public dataDir: string;
   public rootDir: string;
@@ -209,12 +224,15 @@ export class BundleManager {
 
   public getDataCollectors(): any[] {
     const p = this.findDataFile("datacollectors", "datacollectors.json");
-    if (!p || !fs.existsSync(p)) return [];
-    try {
-      return JSON.parse(fs.readFileSync(p, "utf-8"));
-    } catch {
-      return [];
+    if (p && fs.existsSync(p)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(p, "utf-8"));
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {
+        // fallback to defaults
+      }
     }
+    return DEFAULT_AI_DATA_COLLECTORS;
   }
 
   public getKVMSecretValues(): string[] {
@@ -472,6 +490,8 @@ export class BundleManager {
 
   const opGroup = p.operationGroup || { operationConfigType: "proxy", operationConfigs: [] };
   const llmGroup = p.llmOperationGroup || { operationConfigType: "proxy", operationConfigs: [] };
+  opGroup.operationConfigType = "proxy";
+  llmGroup.operationConfigType = "proxy";
 
   const opConfigs = Array.isArray(opGroup.operationConfigs) ? opGroup.operationConfigs : [];
   const llmConfigs = Array.isArray(llmGroup.operationConfigs) ? llmGroup.operationConfigs : [];
@@ -479,6 +499,7 @@ export class BundleManager {
   // 1. Split regular operation configs so each config has only 1 operation
   const splitOps: any[] = [];
   const existingOps = new Set<string>();
+  const ALL_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
 
   for (const cfg of opConfigs) {
     const src = cfg.apiSource || "";
@@ -487,28 +508,102 @@ export class BundleManager {
     const rawOps = Array.isArray(cfg.operations) ? cfg.operations : [];
     if (rawOps.length > 1) {
       for (const op of rawOps) {
+        const methods = Array.isArray(op.methods) && op.methods.length > 0 ? op.methods : ALL_METHODS;
+        const resource = op.resource || op.name || "/";
         splitOps.push({
           apiSource: src,
-          operations: [op],
+          operations: [{ ...op, resource, methods }],
           quota,
         });
       }
+    } else if (rawOps.length === 1) {
+      const op = rawOps[0];
+      const methods = Array.isArray(op.methods) && op.methods.length > 0 ? op.methods : ALL_METHODS;
+      const resource = op.resource || op.name || "/";
+      splitOps.push({
+        apiSource: src,
+        operations: [{ ...op, resource, methods }],
+        quota,
+      });
     } else {
       splitOps.push(cfg);
     }
   }
 
-  for (const pr of proxyNames) {
-    if (!existingOps.has(pr)) {
-      splitOps.push({
-        apiSource: pr,
-        operations: [{ resource: "/" }],
-        quota: {},
-      });
-      existingOps.add(pr);
+  // Helper to determine basePaths for a proxy
+  const getBasePathsForProxy = (proxyName: string): string[] => {
+    const known: Record<string, string[]> = {
+      "REST-AI-Completions": ["/v1/chat/completions"],
+      "REST-AI-Completions-Anonymized": ["/v1/chat/completions/sdp"],
+      "REST-AI-Completions-Screened": ["/v1/chat/completions/modelarmor"],
+      "REST-AI-Interactions": ["/v1beta/interactions"],
+      "REST-AI-Messages": ["/v1/messages"],
+      "REST-AI-GenerateContent": ["/v1/projects"],
+      "REST-AI-Embeddings": ["/v1/embeddings"],
+      "MCP-CustomerService": ["/customerservice"],
+      "TestProxy": ["/testproxy"],
+    };
+    if (known[proxyName]) return known[proxyName];
+    try {
+      const pFile = path.join(process.cwd(), "data", "proxies", `${proxyName}.yaml`);
+      if (fs.existsSync(pFile)) {
+        const content = fs.readFileSync(pFile, "utf-8");
+        const m = content.match(/basePath:\s*([^\s\n]+)/);
+        if (m && m[1]) return [m[1].trim()];
+      }
+    } catch (_) {}
+    return ["/" + proxyName.toLowerCase()];
+  };
+
+  const hasPayloadOps = Boolean(
+    (p.payloadOperationGroup && p.payloadOperationGroup.operationConfigs?.length > 0) ||
+    (Array.isArray(p.payloadOperations) && p.payloadOperations.length > 0)
+  );
+
+  if (!hasPayloadOps) {
+    // Standard operations should ONLY include standard REST proxies:
+    // 1. Proxies explicitly referenced in standard operations (existingOps)
+    // 2. Or, if NO standard operations and NO LLM operations are defined, fallback to product proxies
+    const standardTargetProxies = new Set<string>();
+    for (const pr of existingOps) {
+      if (!pr.toLowerCase().includes("mcp")) standardTargetProxies.add(pr);
     }
+    if (standardTargetProxies.size === 0 && llmConfigs.length === 0) {
+      const fallbackList = Array.isArray(p.proxies) && p.proxies.length > 0 ? p.proxies : proxyNames;
+      for (const pr of fallbackList) {
+        if (!pr.toLowerCase().includes("mcp")) standardTargetProxies.add(pr);
+      }
+    }
+
+    for (const pr of standardTargetProxies) {
+      const existingForProxy = splitOps.filter((o) => o.apiSource === pr);
+      const existingResources = new Set(existingForProxy.map((o) => o.operations?.[0]?.resource));
+
+      const candidateResources = ["/", "/**"];
+      const basePaths = getBasePathsForProxy(pr);
+      for (const bp of basePaths) {
+        if (bp && bp !== "/") {
+          candidateResources.push(bp);
+          candidateResources.push(bp.endsWith("/") ? `${bp}**` : `${bp}/**`);
+        }
+      }
+
+      for (const res of candidateResources) {
+        if (!existingResources.has(res)) {
+          splitOps.push({
+            apiSource: pr,
+            operations: [{ resource: res, methods: ALL_METHODS }],
+            quota: {},
+          });
+          existingResources.add(res);
+        }
+      }
+    }
+    opGroup.operationConfigs = splitOps;
+    p.operationGroup = opGroup;
+  } else {
+    delete p.operationGroup;
   }
-  opGroup.operationConfigs = splitOps;
 
   // 2. Normalize LLM operation configs: exactly ONE entity per operationConfig
   const normalizedLLMConfigs: any[] = [];
@@ -524,65 +619,87 @@ export class BundleManager {
     const rawOps = Array.isArray(cfg.llmOperations) ? cfg.llmOperations : [];
     for (const op of rawOps) {
       const m = op.model || "";
-      const r = op.resource || "/";
-      const k = `${src}:${m}:${r}`;
-      if (!seenLLMOps.has(k)) {
-        normalizedLLMConfigs.push({
-          apiSource: src,
-          llmOperations: [op],
-          llmTokenQuota: quota,
-        });
-        seenLLMOps.add(k);
+      const rawRes = op.resource || op.name || "/";
+      const candidatePaths = (!rawRes || rawRes === "/" || rawRes === "/**")
+        ? ["/", "/**"]
+        : [rawRes];
+      const methods = Array.isArray(op.methods) && op.methods.length > 0 ? op.methods : ["POST"];
+      for (const r of candidatePaths) {
+        const k = `${src}:${m}:${r}`;
+        if (!seenLLMOps.has(k) && normalizedLLMConfigs.length < 48) {
+          normalizedLLMConfigs.push({
+            apiSource: src,
+            llmOperations: [{ ...op, resource: r, methods }],
+            llmTokenQuota: quota,
+          });
+          seenLLMOps.add(k);
+        }
       }
     }
   }
 
-  // Ensure root resource "/" is authorized for each (apiSource, model)
-  for (const cfg of [...normalizedLLMConfigs]) {
-    const src = cfg.apiSource || "";
-    const quota = cfg.llmTokenQuota;
-    const op = cfg.llmOperations?.[0];
-    if (op) {
-      const m = op.model || "";
-      const kRoot = `${src}:${m}:/`;
-      if (!seenLLMOps.has(kRoot)) {
-        normalizedLLMConfigs.push({
-          apiSource: src,
-          llmOperations: [
-            {
-              resource: "/",
-              methods: ["POST"],
-              model: m,
+  // If product lists AI proxies in p.proxies but has no explicit llmOperations for them,
+  // ensure they are included in normalizedLLMConfigs so requests to them are authorized.
+  const existingLLMSources = new Set(normalizedLLMConfigs.map((c) => c.apiSource));
+  const productProxies = Array.isArray(p.proxies) ? p.proxies : [];
+  for (const pr of productProxies) {
+    if (pr.startsWith("REST-AI-") && !existingLLMSources.has(pr)) {
+      const defaultModel = "gemini-3.5-flash-lite";
+      for (const r of ["/", "/**"]) {
+        const k = `${pr}:${defaultModel}:${r}`;
+        if (!seenLLMOps.has(k) && normalizedLLMConfigs.length < 48) {
+          normalizedLLMConfigs.push({
+            apiSource: pr,
+            llmOperations: [
+              {
+                resource: r,
+                methods: ["POST"],
+                model: defaultModel,
+              },
+            ],
+            llmTokenQuota: {
+              limit: "50000",
+              interval: "1",
+              timeUnit: "minute",
             },
-          ],
-          llmTokenQuota: quota,
-        });
-        seenLLMOps.add(kRoot);
+          });
+          seenLLMOps.add(k);
+        }
       }
+      existingLLMSources.add(pr);
     }
   }
+
   llmGroup.operationConfigs = normalizedLLMConfigs;
 
-  p.operationGroup = opGroup;
-  p.llmOperationGroup = llmGroup;
-
-  // In Apigee Emulator: if operationGroup or llmOperationGroup is present,
-  // API resources or proxies should NOT be set
-  if (splitOps.length > 0 || normalizedLLMConfigs.length > 0) {
+  if (hasPayloadOps) {
+    // Pure payload/MCP product: keep payloadOperationGroup and remove REST/LLM groups, proxies, apiResources
+    delete p.operationGroup;
+    delete p.llmOperationGroup;
     delete p.proxies;
     delete p.apiResources;
   } else {
-    const prodProxies: string[] = Array.isArray(p.proxies) ? [...p.proxies] : [];
-    for (const pr of proxyNames) {
-      if (!prodProxies.includes(pr)) prodProxies.push(pr);
-    }
-    p.proxies = prodProxies;
+    p.operationGroup = opGroup;
+    p.llmOperationGroup = llmGroup;
 
-    const apiRes: string[] = Array.isArray(p.apiResources) ? [...p.apiResources] : [];
-    for (const r of ["/", "/*", "/**"]) {
-      if (!apiRes.includes(r)) apiRes.push(r);
+    // In Apigee Emulator: if operationGroup or llmOperationGroup is present,
+    // API resources or proxies should NOT be set
+    if (splitOps.length > 0 || normalizedLLMConfigs.length > 0) {
+      delete p.proxies;
+      delete p.apiResources;
+    } else {
+      const prodProxies: string[] = Array.isArray(p.proxies) ? [...p.proxies] : [];
+      for (const pr of proxyNames) {
+        if (!prodProxies.includes(pr)) prodProxies.push(pr);
+      }
+      p.proxies = prodProxies;
+
+      const apiRes: string[] = Array.isArray(p.apiResources) ? [...p.apiResources] : [];
+      for (const r of ["/", "/*", "/**"]) {
+        if (!apiRes.includes(r)) apiRes.push(r);
+      }
+      p.apiResources = apiRes;
     }
-    p.apiResources = apiRes;
   }
 
   return p;

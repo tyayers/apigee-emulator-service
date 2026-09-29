@@ -103,8 +103,31 @@ export class EmulatorServer {
       throw new Error(`Failed to bind to any port between ${this.port} and ${currentPort}`);
     }
 
+    const webUiUrl = `http://localhost:${this.port}/tester/`;
+    try {
+      fs.writeFileSync(path.join(process.cwd(), ".local_url"), webUiUrl, "utf-8");
+    } catch (_) {}
+
+    const cleanup = () => {
+      try {
+        const urlFile = path.join(process.cwd(), ".local_url");
+        if (fs.existsSync(urlFile)) {
+          fs.unlinkSync(urlFile);
+        }
+      } catch (_) {}
+    };
+    process.once("exit", cleanup);
+    process.once("SIGINT", () => {
+      cleanup();
+      process.exit(0);
+    });
+    process.once("SIGTERM", () => {
+      cleanup();
+      process.exit(0);
+    });
+
     console.log(`[Server] Apigee Emulator Manager running on port ${this.port}`);
-    console.log(`[Server] Web UI: http://localhost:${this.port}/tester/`);
+    console.log(`[Server] Web UI: ${webUiUrl}`);
     console.log(`[Server] Skills Labs: http://localhost:${this.port}/labs/`);
 
     // Auto-deploy in background if emulator is already online
@@ -117,6 +140,12 @@ export class EmulatorServer {
     if (this.serverInstance) {
       this.serverInstance.stop();
     }
+    try {
+      const urlFile = path.join(process.cwd(), ".local_url");
+      if (fs.existsSync(urlFile)) {
+        fs.unlinkSync(urlFile);
+      }
+    } catch (_) {}
   }
 
   public async autoDeploy(): Promise<void> {

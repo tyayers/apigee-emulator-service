@@ -1772,14 +1772,17 @@
                 ${ops.map(cfg => {
                   const proxy = cfg.apiSource || '-';
                   const opList = cfg.operations || [];
-                  return opList.map(op => `
+                  return opList.map(op => {
+                    const quotaText = cfg.quota && cfg.quota.limit ? `${cfg.quota.limit}/${cfg.quota.interval || '1'} ${cfg.quota.timeUnit || 'month'}` : 'Product Default';
+                    return `
                     <tr>
                       <td><code>${escapeHtml(proxy)}</code></td>
                       <td><code>${escapeHtml(op.resource || '/')}</code></td>
                       <td>${(op.methods || ['ALL']).map(m => `<span class="badge method-badge-${(m||'all').toLowerCase()}">${escapeHtml(m)}</span>`).join(' ')}</td>
-                      <td>${cfg.quota ? `${cfg.quota.limit}/${cfg.quota.interval} ${cfg.quota.timeUnit}` : 'Default'}</td>
+                      <td>${escapeHtml(quotaText)}</td>
                     </tr>
-                  `).join('');
+                  `;
+                  }).join('');
                 }).join('')}
               </tbody>
             </table>
@@ -1799,7 +1802,7 @@
               <tbody>
                 ${llmConfigs.map(cfg => {
                   const src = cfg.apiSource || '-';
-                  const quotaInfo = cfg.llmTokenQuota ? `${cfg.llmTokenQuota.limit} tokens / ${cfg.llmTokenQuota.interval} ${cfg.llmTokenQuota.timeUnit}` : 'Unlimited';
+                  const quotaInfo = cfg.llmTokenQuota && cfg.llmTokenQuota.limit ? `${cfg.llmTokenQuota.limit} tokens / ${cfg.llmTokenQuota.interval || '1'} ${cfg.llmTokenQuota.timeUnit || 'minute'}` : 'Product Default / Unlimited';
                   const opsList = cfg.llmOperations || [];
                   return opsList.map(op => `
                     <tr>
@@ -2107,11 +2110,12 @@
                       const cls = mUpper === 'GET' ? 'method-badge-get' : mUpper === 'POST' ? 'method-badge-post' : mUpper === 'PUT' ? 'method-badge-put' : mUpper === 'DELETE' ? 'method-badge-delete' : 'method-badge-all';
                       return `<span class="method-badge ${cls}">${escapeHtml(mUpper)}</span>`;
                     }).join(' ');
-                    const quotaOverride = op.quota ? `${op.quota.limit} / ${op.quota.interval} ${op.quota.timeUnit}` : '-';
+                    const pathResource = (op.operations || []).map(o => o.resource || o.name).filter(Boolean).join(', ') || op.maskPath || '/';
+                    const quotaOverride = op.quota && op.quota.limit ? `${op.quota.limit} / ${op.quota.interval || '1'} ${op.quota.timeUnit || 'month'}` : '-';
                     return `
                       <tr>
                         <td><strong>${escapeHtml(op.apiSource || '-')}</strong></td>
-                        <td><code>${escapeHtml(op.maskPath || '/')}</code></td>
+                        <td><code>${escapeHtml(pathResource)}</code></td>
                         <td>${methodsBadges}</td>
                         <td>${escapeHtml(quotaOverride)}</td>
                       </tr>

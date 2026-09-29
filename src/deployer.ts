@@ -5,7 +5,7 @@ import { ApigeeConverter } from "./lib/converter.ts";
 import { ApigeeTemplaterService } from "./lib/service.ts";
 import { Deployment, Parameter } from "./lib/interfaces.ts";
 import { EmulatorClient } from "./emulator.ts";
-import { BundleManager } from "./bundle-manager.ts";
+import { BundleManager, DEFAULT_AI_DATA_COLLECTORS } from "./bundle-manager.ts";
 import { syncCassandraDeveloperAppKeys } from "./cassandra-sync.ts";
 import { DeployedProxy, DeployResponse } from "./types.ts";
 
@@ -113,9 +113,15 @@ export class DeploymentDeployer {
     const devDir = path.join(this.dataDir, "developers");
     const devAppsDir = path.join(this.dataDir, "developerapps");
     const mapsDir = path.join(this.dataDir, "maps");
+    const dcDir = path.join(this.dataDir, "datacollectors");
 
-    for (const dir of [bundlesDir, proxiesDir, productsDir, devDir, devAppsDir, mapsDir]) {
+    for (const dir of [bundlesDir, proxiesDir, productsDir, devDir, devAppsDir, mapsDir, dcDir]) {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    }
+
+    const dcFile = path.join(dcDir, "datacollectors.json");
+    if (!fs.existsSync(dcFile)) {
+      fs.writeFileSync(dcFile, JSON.stringify(DEFAULT_AI_DATA_COLLECTORS, null, 2), "utf-8");
     }
 
     console.log(`[Deployer] Converting ${resolved.templates.length} templates, ${resolved.proxies.length} proxies, ${resolved.features.length} features...`);
@@ -134,7 +140,7 @@ export class DeploymentDeployer {
 
         const zipPath = await this.converter.proxyToApigeeZip(tProxy);
         const destZip = path.join(bundlesDir, `${tProxy.name}.zip`);
-        if (path.resolve(zipPath) !== path.resolve(destZip)) {
+        if (path.resolve(zipPath) !== path.resolve(destZip) && fs.existsSync(zipPath)) {
           fs.copyFileSync(zipPath, destZip);
           if (fs.existsSync(zipPath)) fs.rmSync(zipPath);
         }
@@ -149,7 +155,7 @@ export class DeploymentDeployer {
 
       const zipPath = await this.converter.proxyToApigeeZip(p);
       const destZip = path.join(bundlesDir, `${p.name}.zip`);
-      if (path.resolve(zipPath) !== path.resolve(destZip)) {
+      if (path.resolve(zipPath) !== path.resolve(destZip) && fs.existsSync(zipPath)) {
         fs.copyFileSync(zipPath, destZip);
         if (fs.existsSync(zipPath)) fs.rmSync(zipPath);
       }
@@ -164,7 +170,7 @@ export class DeploymentDeployer {
 
         const zipPath = await this.converter.proxyToApigeeZip(fProxy);
         const destZip = path.join(bundlesDir, `${fProxy.name}.zip`);
-        if (path.resolve(zipPath) !== path.resolve(destZip)) {
+        if (path.resolve(zipPath) !== path.resolve(destZip) && fs.existsSync(zipPath)) {
           fs.copyFileSync(zipPath, destZip);
           if (fs.existsSync(zipPath)) fs.rmSync(zipPath);
         }
@@ -173,6 +179,8 @@ export class DeploymentDeployer {
 
     // 4. Convert and export products in emulator JSON format
     const emulatorProducts: any[] = [];
+    const companionMcpProducts: Record<string, string> = {};
+
     for (const prod of resolved.products) {
       this.converter.productUpdateParameters(prod, paramDict);
       const emProd = this.converter.productToApigeeEmulatorProduct(
@@ -180,8 +188,49 @@ export class DeploymentDeployer {
         allProxyNames,
         deployment.environments || [environment],
       );
-      const normalized = this.bundleManager.normalizeProductForEmulator(emProd, allProxyNames);
-      emulatorProducts.push(normalized);
+
+      // Check if product mixes payloadOperationGroup with operations or llmOperations
+      const hasPayload =
+        (emProd.payloadOperationGroup?.operationConfigs?.length > 0) ||
+        ((prod as any).payloadOperations?.length > 0);
+      const hasRestOrLlm =
+        (emProd.operationGroup?.operationConfigs?.length > 0) ||
+        (emProd.llmOperationGroup?.operationConfigs?.length > 0) ||
+        ((prod as any).operations?.length > 0) ||
+        ((prod as any).llmOperations?.length > 0);
+
+      if (hasPayload && hasRestOrLlm) {
+        console.log(
+          `[Deployer] Product '${emProd.name}' combines MCP payload operations with REST/LLM operations. Apigee runtime requires payload operations in a separate product; splitting into companion product '${emProd.name}-mcp'.`,
+        );
+        const mcpName = `${emProd.name}-mcp`;
+        companionMcpProducts[emProd.name] = mcpName;
+
+        const mcpProd = {
+          ...emProd,
+          name: mcpName,
+          displayName: `${emProd.displayName || emProd.name} (MCP)`,
+          proxies: Array.isArray(emProd.proxies)
+            ? emProd.proxies.filter((pr: string) => pr.toLowerCase().includes("mcp"))
+            : [],
+          operationGroup: undefined,
+          llmOperationGroup: undefined,
+          operations: undefined,
+          llmOperations: undefined,
+        };
+        delete emProd.payloadOperationGroup;
+        delete (emProd as any).payloadOperations;
+        if (Array.isArray(emProd.proxies)) {
+          emProd.proxies = emProd.proxies.filter((pr: string) => !pr.toLowerCase().includes("mcp"));
+        }
+
+        const normMain = this.bundleManager.normalizeProductForEmulator(emProd, allProxyNames);
+        const normMcp = this.bundleManager.normalizeProductForEmulator(mcpProd, allProxyNames);
+        emulatorProducts.push(normMain, normMcp);
+      } else {
+        const normalized = this.bundleManager.normalizeProductForEmulator(emProd, allProxyNames);
+        emulatorProducts.push(normalized);
+      }
     }
     if (emulatorProducts.length > 0) {
       fs.writeFileSync(
@@ -200,6 +249,43 @@ export class DeploymentDeployer {
       emulatorDevelopers.push(dev);
 
       const apps = this.converter.userToApigeeEmulatorApps(u);
+      // Auto-attach companion MCP products to apps if needed
+      for (const app of apps) {
+        const extraProducts: string[] = [];
+        const appProds = app.apiProducts || [];
+        for (const p of appProds) {
+          const pName = typeof p === "string" ? p : p.apiproduct || p.name;
+          if (companionMcpProducts[pName]) {
+            extraProducts.push(companionMcpProducts[pName]);
+          }
+          if (pName) {
+            extraProducts.push(pName);
+          }
+        }
+        for (const cred of app.credentials || []) {
+          for (const cp of cred.apiProducts || []) {
+            const cpName = typeof cp === "string" ? cp : cp.apiproduct || cp.name;
+            if (companionMcpProducts[cpName] && !extraProducts.includes(companionMcpProducts[cpName])) {
+              extraProducts.push(companionMcpProducts[cpName]);
+            }
+          }
+        }
+        if (extraProducts.length > 0) {
+          for (const ep of extraProducts) {
+            if (!app.apiProducts.includes(ep)) {
+              app.apiProducts.push(ep);
+            }
+            for (const cred of app.credentials || []) {
+              const credProds = (cred.apiProducts || []).map((c: any) =>
+                typeof c === "string" ? c : c.apiproduct,
+              );
+              if (!credProds.includes(ep)) {
+                cred.apiProducts.push({ apiproduct: ep, status: "approved" });
+              }
+            }
+          }
+        }
+      }
       emulatorApps.push(...apps);
     }
     if (emulatorDevelopers.length > 0) {
