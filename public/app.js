@@ -210,10 +210,8 @@
     // Analytics Header & Toolbar
     btnRefreshAnalytics: document.getElementById('btn-refresh-analytics'),
     iconRefreshAnalytics: document.getElementById('icon-refresh-analytics'),
-    btnSeedAnalytics: document.getElementById('btn-seed-analytics'),
     btnExportCsv: document.getElementById('btn-export-csv'),
     btnExportJson: document.getElementById('btn-export-json'),
-    chkAnalyticsAutorefresh: document.getElementById('chk-analytics-autorefresh'),
     analyticsDbTag: document.getElementById('analytics-db-tag'),
 
     // KPI Summary elements
@@ -4601,7 +4599,6 @@
     records: [],
     filteredRecords: [],
     loading: false,
-    autoRefreshInterval: null,
     sortField: 'timestamp',
     sortAsc: false,
     pageSize: 50,
@@ -5707,31 +5704,6 @@
     analyticsState.selectedRecord = null;
   }
 
-  // Seed sample demo records
-  async function seedDemoAnalytics() {
-    if (el.btnSeedAnalytics) {
-      el.btnSeedAnalytics.disabled = true;
-      el.btnSeedAnalytics.textContent = 'Seeding...';
-    }
-    try {
-      const resp = await fetch(`${API_BASE}/analytics/seed`, { method: 'POST' });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || 'Failed to seed');
-      showToast(data.message || `Seeded ${data.count} demo analytics records!`);
-      await fetchAnalyticsData();
-    } catch (err) {
-      alert('Error seeding demo analytics: ' + err.message);
-    } finally {
-      if (el.btnSeedAnalytics) {
-        el.btnSeedAnalytics.disabled = false;
-        el.btnSeedAnalytics.innerHTML = `
-          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-          Seed Demo Data
-        `;
-      }
-    }
-  }
-
   // Export records to CSV
   function exportAnalyticsCsv() {
     const records = analyticsState.filteredRecords;
@@ -5799,33 +5771,12 @@
       el.btnRefreshAnalytics.addEventListener('click', fetchAnalyticsData);
     }
 
-    // Seed Demo Data button
-    if (el.btnSeedAnalytics) {
-      el.btnSeedAnalytics.addEventListener('click', seedDemoAnalytics);
-    }
-
     // Export buttons
     if (el.btnExportCsv) {
       el.btnExportCsv.addEventListener('click', exportAnalyticsCsv);
     }
     if (el.btnExportJson) {
       el.btnExportJson.addEventListener('click', exportAnalyticsJson);
-    }
-
-    // Auto-refresh checkbox
-    if (el.chkAnalyticsAutorefresh) {
-      el.chkAnalyticsAutorefresh.addEventListener('change', () => {
-        if (el.chkAnalyticsAutorefresh.checked) {
-          analyticsState.autoRefreshInterval = setInterval(() => {
-            if (!document.hidden && el.viewAnalytics && !el.viewAnalytics.classList.contains('hidden')) {
-              fetchAnalyticsData();
-            }
-          }, 15000);
-        } else {
-          clearInterval(analyticsState.autoRefreshInterval);
-          analyticsState.autoRefreshInterval = null;
-        }
-      });
     }
 
     // Search input
