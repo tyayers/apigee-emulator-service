@@ -421,17 +421,42 @@
     setTimeout(() => promptOnboarding(true), 120);
   }
 
+  // Extract clean trace identifier from test execution result or trace data
+  function extractTraceId(result, traceData) {
+    if (result) {
+      if (result.traceSessionId && result.traceSessionId !== 'None' && result.traceSessionId !== 'Captured inline') {
+        return result.traceSessionId;
+      }
+      const trackingId = result.headers?.['x-apigee-tracking-id'] || result.headers?.['x-request-id'] || result.headers?.['x-apigee-message-id'];
+      if (trackingId) return trackingId;
+    }
+    if (traceData) {
+      if (traceData.sessionId) return traceData.sessionId;
+      if (traceData.session?.SessionId) return traceData.session.SessionId;
+      if (traceData.name) return traceData.name;
+      if (Array.isArray(traceData.transactions) && traceData.transactions[0]?.id) {
+        return traceData.transactions[0].id;
+      }
+      if (Array.isArray(traceData.Messages) && traceData.Messages[0]?.id) {
+        return traceData.Messages[0].id;
+      }
+    }
+    const currentTest = state.tests[state.currentStepIndex];
+    const prefix = currentTest?.name || 'trace';
+    return `${prefix}-${Date.now()}`;
+  }
+
   // Open Trace in External Apigee Trace Viewer (directly in new tab)
-  async function openTraceInViewer(traceData) {
+  async function openTraceInViewer(traceData, result) {
     if (!traceData) {
       showToast('No trace data available to open', 'warning');
       return;
     }
 
-    const userRaw = (state.participant?.name || 'user').trim().toLowerCase();
-    const user = encodeURIComponent(userRaw || 'user');
+    const traceIdRaw = extractTraceId(result, traceData);
+    const traceId = encodeURIComponent(traceIdRaw);
     const viewerBase = 'https://apigee-trace-viewer-323709580283.europe-west1.run.app';
-    const viewerUrl = `${viewerBase}/${user}`;
+    const viewerUrl = `${viewerBase}/${traceId}`;
 
     const openBtn = document.getElementById('btn-open-trace');
     const openBtnLabel = document.getElementById('btn-open-trace-label');
@@ -447,7 +472,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          user: userRaw,
+          traceId: traceIdRaw,
           traceData,
         }),
       });
@@ -466,7 +491,7 @@
       } else {
         window.open(targetUrl, '_blank');
       }
-      showToast('Opening Apigee Trace Viewer in new tab...', 'success');
+      showToast(`Opening Apigee Trace Viewer (${traceIdRaw})...`, 'success');
     } catch (err) {
       if (newTab) newTab.close();
       console.error('Error posting trace to viewer:', err);
@@ -1283,11 +1308,28 @@
     if (downloadTraceBtn && result.traceData) {
       downloadTraceBtn.style.display = 'inline-flex';
       downloadTraceBtn.onclick = () => {
-        const blob = new Blob([JSON.stringify(result.traceData, null, 2)], { type: 'application/json' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `apigee_trace_${test.name}.json`;
-        a.click();
+        try {
+          const currentTest = state.tests[state.currentStepIndex] || {};
+          const testName = currentTest.name || result.testName || 'test';
+          const traceId = extractTraceId(result, result.traceData);
+          const filename = `apigee_trace_${testName}_${traceId}.json`;
+          const blob = new Blob([JSON.stringify(result.traceData, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.style.display = 'none';
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => {
+            if (a.parentNode) a.parentNode.removeChild(a);
+            URL.revokeObjectURL(url);
+          }, 150);
+          showToast(`Downloaded ${filename}`, 'success');
+        } catch (err) {
+          console.error('Error downloading trace:', err);
+          showToast('Failed to download trace JSON', 'danger');
+        }
       };
     } else if (downloadTraceBtn) {
       downloadTraceBtn.style.display = 'none';
@@ -1295,7 +1337,7 @@
 
     if (openTraceBtn && result.traceData) {
       openTraceBtn.style.display = 'inline-flex';
-      openTraceBtn.onclick = () => openTraceInViewer(result.traceData);
+      openTraceBtn.onclick = () => openTraceInViewer(result.traceData, result);
     } else if (openTraceBtn) {
       openTraceBtn.style.display = 'none';
     }

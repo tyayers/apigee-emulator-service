@@ -667,7 +667,7 @@ deploy_cloudrun_service() {
 
           python3 -c "
 import json, os
-for fname, subdir in [('products.json', 'products'), ('developers.json', 'developers'), ('developerapps.json', 'developerapps')]:
+for fname, subdir in [('products.json', 'products'), ('developers.json', 'developers'), ('developerapps.json', 'developerapps'), ('datacollectors.json', 'datacollectors')]:
     src = os.path.join('$tmp_dep_dir', fname)
     dst_data = os.path.join('$ROOT_DIR', 'data', subdir, fname)
     if os.path.exists(src):
@@ -711,6 +711,7 @@ for fname, subdir in [('products.json', 'products'), ('developers.json', 'develo
           if [ -f "$tmp_dep_dir/datacollectors.json" ]; then
             cp "$tmp_dep_dir/datacollectors.json" "$ROOT_DIR/data/datacollectors/datacollectors.json"
           fi
+          cp "$tmp_dep_dir"/dc_*.json "$ROOT_DIR/data/datacollectors/" 2>/dev/null || true
         fi
         rm -rf "$tmp_dep_dir"
       fi

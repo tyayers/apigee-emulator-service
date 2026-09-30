@@ -576,7 +576,7 @@ convert_deployments_to_assets() {
       python3 -c "
 import json, os
 
-for fname, subdir in [('products.json', 'products'), ('developers.json', 'developers'), ('developerapps.json', 'developerapps')]:
+for fname, subdir in [('products.json', 'products'), ('developers.json', 'developers'), ('developerapps.json', 'developerapps'), ('datacollectors.json', 'datacollectors')]:
     src = os.path.join('$tmp_dep_dir', fname)
     if os.path.exists(src):
         try:
@@ -629,6 +629,8 @@ for fname, subdir in [('products.json', 'products'), ('developers.json', 'develo
         cp "$tmp_dep_dir/datacollectors.json" "$ROOT_DIR/data/datacollectors/datacollectors.json"
         cp "$tmp_dep_dir/datacollectors.json" "$DIST_DIR/datacollectors.json"
       fi
+      cp "$tmp_dep_dir"/dc_*.json "$ROOT_DIR/data/datacollectors/" 2>/dev/null || true
+      cp "$tmp_dep_dir"/dc_*.json "$DIST_DIR/" 2>/dev/null || true
     else
       echo -e "${RED}Failed to convert $dep_file with aft${NC}" >&2
     fi
@@ -916,7 +918,7 @@ except:
       # Merge products, developers, apps into data/ subdirectories and DIST_DIR
       python3 -c "
 import json, os
-for fname, subdir in [('products.json', 'products'), ('developers.json', 'developers'), ('developerapps.json', 'developerapps')]:
+for fname, subdir in [('products.json', 'products'), ('developers.json', 'developers'), ('developerapps.json', 'developerapps'), ('datacollectors.json', 'datacollectors')]:
     src = os.path.join('$TMP_DEP_DIR', fname)
     dst_dist = os.path.join('$DIST_DIR', fname)
     dst_data = os.path.join('$ROOT_DIR', 'data', subdir, fname)
@@ -965,6 +967,8 @@ for fname, subdir in [('products.json', 'products'), ('developers.json', 'develo
         cp "$TMP_DEP_DIR/datacollectors.json" "$ROOT_DIR/data/datacollectors/datacollectors.json"
         cp "$TMP_DEP_DIR/datacollectors.json" "$DIST_DIR/datacollectors.json"
       fi
+      cp "$TMP_DEP_DIR"/dc_*.json "$ROOT_DIR/data/datacollectors/" 2>/dev/null || true
+      cp "$TMP_DEP_DIR"/dc_*.json "$DIST_DIR/" 2>/dev/null || true
     else
       echo -e "${RED}Error: Failed to compile deployment $YAML_FILE with aft.${NC}" >&2
       rm -rf "$TMP_DEP_DIR"

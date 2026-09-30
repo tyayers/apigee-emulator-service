@@ -412,7 +412,14 @@
               <span id="trace-session-id" class="mono-text">None</span>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <button class="btn btn-secondary btn-sm" id="btn-download-trace" style="display: none;">Download JSON</button>
+              <button class="btn btn-secondary btn-sm" id="btn-download-trace" style="display: none;">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                <span>Download Trace</span>
+              </button>
               <button class="btn btn-primary btn-sm" id="btn-open-trace" style="display: none;">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;">
                   <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>

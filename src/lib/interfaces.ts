@@ -409,8 +409,67 @@ export class Deployment {
   products?: (string | Product)[] = [];
   users?: (string | User)[] = [];
   kvms?: Kvm[] = [];
+  dataCollectors?: (string | DataCollector)[] = [];
+  reports?: (string | CustomReport)[] = [];
   tests?: Test[] = [];
 }
 
 export class Deployments extends Deployment {}
 
+export class DataCollector {
+  constructor() {
+    this.gateway = "apigee";
+    this.schemaVersion = "1.0.0";
+  }
+  name: string = "";
+  displayName?: string = "";
+  uid?: string;
+  type: string = "datacollector";
+  gateway: string = "apigee";
+  schemaVersion: string = "1.0.0";
+  priority?: number;
+  description: string = "";
+  collectorType?: "STRING" | "INTEGER" | "FLOAT" | "BOOLEAN" | "LONG" | string = "STRING";
+  dataType?: string;
+  createdAt?: string;
+  lastModifiedAt?: string;
+}
+
+export class DataCollectors extends DataCollector {}
+
+export class ReportMetric {
+  name: string = "";
+  function?: "sum" | "avg" | "min" | "max" | string = "sum";
+  alias?: string;
+  operator?: string;
+  value?: string;
+}
+
+export class CustomReport {
+  constructor() {
+    this.gateway = "apigee";
+    this.schemaVersion = "1.0.0";
+  }
+  name: string = "";
+  displayName?: string = "";
+  uid?: string;
+  type: string = "report";
+  gateway: string = "apigee";
+  schemaVersion: string = "1.0.0";
+  priority?: number;
+  description: string = "";
+  chartType?: "LINE" | "COLUMN" | "BAR" | string = "COLUMN";
+  metrics: ReportMetric[] = [];
+  dimensions: string[] = [];
+  filter?: string;
+  sortBy?: string;
+  sortOrder?: "ASC" | "DESC" | string = "DESC";
+  topk?: number = 10;
+  timeUnit?: "minute" | "hour" | "day" | "week" | "month" | string;
+  createdAt?: string;
+  lastModifiedAt?: string;
+}
+
+export class CustomReports extends CustomReport {}
+export class Report extends CustomReport {}
+export class Reports extends CustomReport {}

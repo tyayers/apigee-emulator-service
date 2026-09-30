@@ -317,7 +317,29 @@ export class DeploymentDeployer {
       "utf-8",
     );
 
-    // 7. Reset emulator if requested
+    // 7. Convert and export data collectors
+    const rawDataCollectors =
+      (resolved as any).dataCollectors || deployment.dataCollectors || (deployment as any).datacollectors || [];
+    if (rawDataCollectors && rawDataCollectors.length > 0) {
+      const emulatorDataCollectors: any[] = [];
+      for (const dc of rawDataCollectors) {
+        this.converter.dataCollectorUpdateParameters(dc, paramDict);
+        const emDc = this.converter.dataCollectorToApigeeDataCollector(dc);
+        emulatorDataCollectors.push(emDc);
+        fs.writeFileSync(
+          path.join(dcDir, `${dc.name}.json`),
+          JSON.stringify(emDc, null, 2),
+          "utf-8",
+        );
+      }
+      fs.writeFileSync(
+        dcFile,
+        JSON.stringify(emulatorDataCollectors, null, 2),
+        "utf-8",
+      );
+    }
+
+    // 8. Reset emulator if requested
     if (reset) {
       try {
         console.log("[Deployer] Resetting emulator state...");
@@ -327,19 +349,17 @@ export class DeploymentDeployer {
       }
     }
 
-    // 8. Build testdata.zip and upload to emulator
+    // 9. Build testdata.zip and upload to emulator
     console.log("[Deployer] Uploading test data bundle to emulator...");
-    const testDataZip = await this.bundleManager.BuildTestDataBundle
-      ? await this.bundleManager.buildTestDataBundle(allProxyNames)
-      : await this.bundleManager.buildTestDataBundle(allProxyNames);
+    const testDataZip = await this.bundleManager.buildTestDataBundle(allProxyNames);
     await this.emulatorClient.setupTestData(testDataZip);
 
-    // 9. Build environment bundle zip and deploy
+    // 10. Build environment bundle zip and deploy
     console.log(`[Deployer] Deploying ${allProxyNames.length} proxies to environment '${environment}'...`);
     const { zipBuffer, deployedProxyNames } = await this.bundleManager.buildEnvironmentBundle(allProxyNames);
     const revision = await this.emulatorClient.deployBundle(environment, zipBuffer);
 
-    // 10. Sync Cassandra keys
+    // 11. Sync Cassandra keys
     await syncCassandraDeveloperAppKeys(this.dataDir);
 
     const activeProxies = await this.emulatorClient.getDeploymentTree();

@@ -1178,11 +1178,11 @@ export class EmulatorServer {
     if ((subPath === "labs/publish-trace" || subPath === "labs/open-trace") && method === "POST") {
       try {
         const body = await req.json();
-        const rawUser = body.user || body.userName || body.name || "user";
-        const user = encodeURIComponent(String(rawUser).trim().toLowerCase() || "user");
+        const rawIdentifier = body.traceId || body.id || body.sessionId || body.user || body.userName || body.name || "trace";
+        const traceIdentifier = encodeURIComponent(String(rawIdentifier).trim() || "trace");
         const traceData = body.traceData || body.trace || {};
         const viewerBase = process.env.APIGEE_TRACE_VIEWER_URL || "https://apigee-trace-viewer-323709580283.europe-west1.run.app";
-        const viewerUrl = `${viewerBase.replace(/\/+$/, "")}/${user}`;
+        const viewerUrl = `${viewerBase.replace(/\/+$/, "")}/${traceIdentifier}`;
 
         console.log(`[TraceViewer] Forwarding trace data to: ${viewerUrl}`);
         const upstreamRes = await fetch(viewerUrl, {

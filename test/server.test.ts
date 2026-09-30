@@ -59,6 +59,22 @@ describe("HTTP server endpoints", () => {
     expect(data.url).toBe("https://apigee-trace-viewer-323709580283.europe-west1.run.app/testuser");
   });
 
+  test("POST /api/labs/publish-trace prioritizes traceId over user name", async () => {
+    const res = await fetch(`http://127.0.0.1:${testPort}/api/labs/publish-trace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        traceId: "tx-session-12345",
+        user: "john-doe",
+        traceData: { testTrace: true, timestamp: Date.now() },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.url).toBe("https://apigee-trace-viewer-323709580283.europe-west1.run.app/tx-session-12345");
+  });
+
   test("POST /tester/api/tests/warmup triggers proxy warmup", async () => {
     const res = await fetch(`http://127.0.0.1:${testPort}/tester/api/tests/warmup`, {
       method: "POST",
