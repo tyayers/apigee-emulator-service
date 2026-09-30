@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { hasAuthorizationBearerToken, injectGoogleAccessToken, googleAuthService } from "../src/google-auth.ts";
+import {
+  hasAuthorizationBearerToken,
+  injectGoogleAccessToken,
+  googleAuthService,
+  containsGoogleTokenPlaceholder,
+  hasGoogleTokenPlaceholder,
+  replacePlaceholdersInString,
+} from "../src/google-auth.ts";
 
 describe("google-auth", () => {
   test("hasAuthorizationBearerToken detects bearer token and rejects placeholders", () => {
@@ -9,8 +16,35 @@ describe("google-auth", () => {
     expect(hasAuthorizationBearerToken({ Authorization: "Bearer $token" })).toBe(false);
     expect(hasAuthorizationBearerToken({ Authorization: "Bearer auto" })).toBe(false);
     expect(hasAuthorizationBearerToken({ Authorization: "Bearer " })).toBe(false);
+    expect(hasAuthorizationBearerToken({ Authorization: "Bearer {GoogleAccessCode}" })).toBe(false);
+    expect(hasAuthorizationBearerToken({ Authorization: "Bearer {GoogleAccessToken}" })).toBe(false);
     expect(hasAuthorizationBearerToken({ "x-api-key": "123" })).toBe(false);
     expect(hasAuthorizationBearerToken({})).toBe(false);
+  });
+
+  test("containsGoogleTokenPlaceholder detects various token placeholders", () => {
+    expect(containsGoogleTokenPlaceholder("{GoogleAccessCode}")).toBe(true);
+    expect(containsGoogleTokenPlaceholder("Bearer {GoogleAccessCode}")).toBe(true);
+    expect(containsGoogleTokenPlaceholder("{GoogleAccessToken}")).toBe(true);
+    expect(containsGoogleTokenPlaceholder("${GoogleAccessToken}")).toBe(true);
+    expect(containsGoogleTokenPlaceholder("{GOOGLE_ACCESS_TOKEN}")).toBe(true);
+    expect(containsGoogleTokenPlaceholder("Bearer sample-token-12345")).toBe(false);
+    expect(containsGoogleTokenPlaceholder("")).toBe(false);
+  });
+
+  test("hasGoogleTokenPlaceholder checks header values", () => {
+    expect(hasGoogleTokenPlaceholder({ Authorization: "Bearer {GoogleAccessCode}" })).toBe(true);
+    expect(hasGoogleTokenPlaceholder({ "x-api-key": "123", Authorization: "Bearer sample-token-12345" })).toBe(false);
+  });
+
+  test("replacePlaceholdersInString replaces tokens, api keys, and project IDs", () => {
+    const text = "Bearer {GoogleAccessCode} for {GoogleCloudProject} with {GeminiApiKey}";
+    const replaced = replacePlaceholdersInString(text, {
+      googleToken: "token-abc-123",
+      geminiApiKey: "AIzaSyTestKey",
+      projectId: "my-test-proj",
+    });
+    expect(replaced).toBe("Bearer token-abc-123 for my-test-proj with AIzaSyTestKey");
   });
 
   test("injectGoogleAccessToken adds Authorization header if missing", () => {
@@ -28,9 +62,9 @@ describe("google-auth", () => {
   test("googleAuthService provides ADC token", async () => {
     const token = await googleAuthService.getAccessToken();
     expect(typeof token).toBe("string");
-    // If environment has credentials, verify it returns a non-empty token
     if (token) {
       expect(token.length).toBeGreaterThan(10);
     }
   });
 });
+

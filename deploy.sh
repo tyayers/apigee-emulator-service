@@ -271,6 +271,18 @@ collect_parameters() {
     export GCP_PROJECT="$PROJECT_ID"
   fi
 
+  if [ -z "$GEMINI_API_KEY" ] && [ -f "$ROOT_DIR/.env" ]; then
+    local env_val
+    env_val=$(grep -E '^\s*GEMINI_API_KEY\s*=' "$ROOT_DIR/.env" | cut -d '=' -f2- | tr -d ' "\r\n' || true)
+    if [ -n "$env_val" ]; then
+      export GEMINI_API_KEY="$env_val"
+    fi
+  fi
+  if [ -n "$GEMINI_API_KEY" ]; then
+    ALL_PARAMS_MAP["GeminiApiKey"]="$GEMINI_API_KEY"
+    ALL_PARAMS_MAP["GEMINI_API_KEY"]="$GEMINI_API_KEY"
+  fi
+
   for param_entry in "${CLI_PARAMETERS[@]}"; do
     IFS=',' read -ra pairs <<< "$param_entry"
     for pair in "${pairs[@]}"; do
@@ -817,8 +829,13 @@ for item in "${TESTDATA_MAP[@]}"; do
   td="${item%%:*}"
   sub="${item##*:}"
   if [ ! -f "$ROOT_DIR/data/$sub/$td" ] && [ ! -f "$SCRIPT_DIR/$td" ]; then
-    echo -e "${RED}Error: Required test data file missing: data/$sub/$td${NC}" >&2
-    exit 1
+    if [ "$td" = "maps.json" ] || [ "$td" = "datacollectors.json" ]; then
+      mkdir -p "$ROOT_DIR/data/$sub"
+      echo "[]" > "$ROOT_DIR/data/$sub/$td"
+    else
+      echo -e "${RED}Error: Required test data file missing: data/$sub/$td${NC}" >&2
+      exit 1
+    fi
   fi
 done
 echo -e "${GREEN}✓ Test data files verified.${NC}"
@@ -1053,9 +1070,19 @@ for prod in products:
     else: envs = ['test']
     prod['environments'] = envs
 
+    has_payload_ops = bool(prod.get('payloadOperations') or prod.get('payloadOperationGroup') or 'mcp' in prod.get('name', '').lower())
+    if has_payload_ops:
+        prod.pop('operationGroup', None)
+        prod.pop('llmOperationGroup', None)
+        prod.pop('proxies', None)
+        prod.pop('apiResources', None)
+        continue
+
+    non_mcp_proxies = [p for p in proxies if 'mcp' not in p.lower() and 'customerservice' not in p.lower()]
+
     prod_proxies = prod.get('proxies', [])
     if not isinstance(prod_proxies, list): prod_proxies = []
-    for p in proxies:
+    for p in non_mcp_proxies:
         if p not in prod_proxies: prod_proxies.append(p)
     prod['proxies'] = prod_proxies
 
@@ -1076,7 +1103,7 @@ for prod in products:
         op_group['operationConfigs'] = existing_ops
     existing_sources = {c.get('apiSource') for c in existing_ops if isinstance(c, dict)}
 
-    llm_proxies = {p for p in proxies if 'ai' in p.lower() or 'completions' in p.lower()}
+    llm_proxies = {p for p in non_mcp_proxies if 'ai' in p.lower() or 'completions' in p.lower()}
 
     # Standard proxies in operationGroup (split so each config has exactly 1 operation)
     split_ops = []
@@ -1092,7 +1119,7 @@ for prod in products:
                 split_ops.append(c)
     existing_ops = split_ops
 
-    for p in proxies:
+    for p in non_mcp_proxies:
         if p not in existing_sources:
             existing_ops.append({
                 'apiSource': p,

@@ -90,4 +90,35 @@ describe("Labs Participant uniqueness and account deletion", () => {
       body: JSON.stringify({ name: testUser }),
     });
   }, 15000);
+
+  test("GET /api/labs/leaderboard reflects registered participant and usage", async () => {
+    const lbUser = "Leaderboard Runner " + Math.random().toString(36).slice(2, 6);
+    const regRes = await fetch(`http://127.0.0.1:${testPort}/api/labs/register-user`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: lbUser }),
+    });
+    const regData = await regRes.json();
+    expect(regData.success).toBe(true);
+    const key = regData.participant.consumerKey;
+
+    const res = await fetch(`http://127.0.0.1:${testPort}/api/labs/leaderboard?currentKey=${key}`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(Array.isArray(data.leaderboard)).toBe(true);
+
+    const me = data.leaderboard.find((e: any) => e.consumerKey === key);
+    expect(me).toBeDefined();
+    expect(me.name).toBe(lbUser);
+    expect(me.isCurrent).toBe(true);
+    expect(me.rank).toBe(1);
+
+    // Clean up
+    await fetch(`http://127.0.0.1:${testPort}/api/labs/delete-user`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: lbUser }),
+    });
+  }, 15000);
 });

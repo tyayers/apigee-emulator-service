@@ -6,11 +6,14 @@ export class GoogleAuthService {
   private cachedToken: string = "";
   private expiry: number = 0;
   private cachedProjectId: string = "";
-  private readonly scope: string = "https://www.googleapis.com/auth/cloud-platform";
+  private readonly scopes: string[] = [
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/generative-language",
+  ];
 
   constructor() {
     this.auth = new GoogleAuth({
-      scopes: [this.scope],
+      scopes: this.scopes,
     });
   }
 
@@ -81,9 +84,10 @@ export class GoogleAuthService {
     }
 
     // 3. Fallback: Compute / Cloud Run Metadata Server
+    const scopesParam = encodeURIComponent(this.scopes.join(" "));
     const metadataEndpoints = [
       "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-      `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=${encodeURIComponent(this.scope)}`,
+      `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=${scopesParam}`,
       "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
     ];
 
@@ -150,11 +154,57 @@ export class GoogleAuthService {
 
 export const googleAuthService = new GoogleAuthService();
 
+const GOOGLE_TOKEN_PLACEHOLDER_PATTERN = /\{(\$)?(GoogleAccessCode|GoogleAccessToken|googleAccessCode|googleAccessToken|GOOGLE_ACCESS_TOKEN|GOOGLE_ACCESS_CODE)\}|\$\{(GoogleAccessCode|GoogleAccessToken|googleAccessCode|googleAccessToken|GOOGLE_ACCESS_TOKEN|GOOGLE_ACCESS_CODE)\}/i;
+
+export function containsGoogleTokenPlaceholder(val: any): boolean {
+  if (!val || typeof val !== "string") return false;
+  return GOOGLE_TOKEN_PLACEHOLDER_PATTERN.test(val);
+}
+
+export function hasGoogleTokenPlaceholder(headers: { [key: string]: string } = {}): boolean {
+  for (const v of Object.values(headers)) {
+    if (containsGoogleTokenPlaceholder(v)) return true;
+  }
+  return false;
+}
+
+export function replacePlaceholdersInString(
+  text: string,
+  context: {
+    googleToken?: string;
+    geminiApiKey?: string;
+    projectId?: string;
+  }
+): string {
+  if (!text || typeof text !== "string") return text;
+  let res = text;
+  if (context.googleToken !== undefined) {
+    res = res.replace(
+      /\{(\$)?(GoogleAccessCode|GoogleAccessToken|googleAccessCode|googleAccessToken|GOOGLE_ACCESS_TOKEN|GOOGLE_ACCESS_CODE)\}|\$\{(GoogleAccessCode|GoogleAccessToken|googleAccessCode|googleAccessToken|GOOGLE_ACCESS_TOKEN|GOOGLE_ACCESS_CODE)\}/gi,
+      context.googleToken
+    );
+  }
+  if (context.geminiApiKey !== undefined) {
+    res = res.replace(
+      /\{(\$)?(GeminiApiKey|geminiApiKey|GEMINI_API_KEY)\}|\$\{(GeminiApiKey|geminiApiKey|GEMINI_API_KEY)\}/gi,
+      context.geminiApiKey
+    );
+  }
+  if (context.projectId !== undefined) {
+    res = res.replace(
+      /\{(\$)?(GoogleCloudProject|googleCloudProject|GOOGLE_CLOUD_PROJECT|projectId|PROJECT_ID)\}|\$\{(GoogleCloudProject|googleCloudProject|GOOGLE_CLOUD_PROJECT|projectId|PROJECT_ID)\}/gi,
+      context.projectId
+    );
+  }
+  return res;
+}
+
 export function hasAuthorizationBearerToken(headers: { [key: string]: string } = {}): boolean {
   for (const [k, v] of Object.entries(headers)) {
     if (k.toLowerCase() === "authorization") {
       const trimmed = String(v || "").trim();
       if (!trimmed) return false;
+      if (containsGoogleTokenPlaceholder(trimmed)) return false;
       const lower = trimmed.toLowerCase();
       if (lower.startsWith("bearer ")) {
         const token = trimmed.slice(7).trim();
@@ -165,7 +215,8 @@ export function hasAuthorizationBearerToken(headers: { [key: string]: string } =
           token.toLowerCase() === "auto" ||
           token.toLowerCase() === "your_token" ||
           token.toLowerCase() === "<access_token>" ||
-          token.toLowerCase() === "<google_token>"
+          token.toLowerCase() === "<google_token>" ||
+          containsGoogleTokenPlaceholder(token)
         ) {
           return false;
         }

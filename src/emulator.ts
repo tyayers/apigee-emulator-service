@@ -5,6 +5,7 @@ export class EmulatorClient {
   public mgmtUrl: string;
   public runtimeUrl: string;
   public kvmSecretProvider?: () => string[];
+  public activeConsumerKeysProvider?: () => string[];
 
   constructor(mgmtUrl?: string, runtimeUrl?: string) {
     this.mgmtUrl = (
@@ -17,6 +18,18 @@ export class EmulatorClient {
       process.env.EMULATOR_RUNTIME_URL ||
       "http://127.0.0.1:8998"
     ).replace(/\/$/, "");
+  }
+
+  public async getActiveConsumerKeys(): Promise<string[]> {
+    if (this.activeConsumerKeysProvider) {
+      try {
+        const keys = this.activeConsumerKeysProvider();
+        if (Array.isArray(keys) && keys.length > 0) return keys;
+      } catch {
+        // fallback
+      }
+    }
+    return ["test-api-key-12345"];
   }
 
   public async checkHealth(): Promise<EmulatorStatus> {

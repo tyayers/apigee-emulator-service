@@ -58,19 +58,72 @@ export class LabManager {
   }
 
   private initStorage() {
-    if (!fs.existsSync(this.participantsFile)) {
+    let existingParticipants: LabParticipant[] = [];
+    if (fs.existsSync(this.participantsFile)) {
       try {
-        fs.writeFileSync(this.participantsFile, JSON.stringify([], null, 2));
+        existingParticipants = JSON.parse(fs.readFileSync(this.participantsFile, "utf-8"));
       } catch {
-        // ignore
+        existingParticipants = [];
       }
     }
 
-    if (!fs.existsSync(this.usageFile)) {
+    // Filter out any mock/seed test participants from prior versions
+    const isMockUser = (p: LabParticipant) =>
+      !p ||
+      !p.name ||
+      p.id?.startsWith("part-seed-") ||
+      p.consumerKey === "starter-app-key-123" ||
+      p.consumerKey === "test-app-key-123" ||
+      p.name === "DevRel Demo" ||
+      p.name === "Security Architect" ||
+      p.name === "AI Engineer" ||
+      p.name === "Lab Tester" ||
+      p.name === "Starter App" ||
+      p.name === "Default Test User";
+
+    const filteredParticipants = Array.isArray(existingParticipants)
+      ? existingParticipants.filter((p) => !isMockUser(p))
+      : [];
+
+    if (!fs.existsSync(this.participantsFile) || filteredParticipants.length !== existingParticipants.length) {
       try {
-        fs.writeFileSync(this.usageFile, JSON.stringify([], null, 2));
+        fs.writeFileSync(this.participantsFile, JSON.stringify(filteredParticipants, null, 2));
+      } catch (e) {
+        console.warn("[LabManager] Error writing participants file:", e);
+      }
+    }
+
+    let existingUsage: UsageEvent[] = [];
+    if (fs.existsSync(this.usageFile)) {
+      try {
+        existingUsage = JSON.parse(fs.readFileSync(this.usageFile, "utf-8"));
       } catch {
-        // ignore
+        existingUsage = [];
+      }
+    }
+
+    // Filter out any mock/seed usage
+    const isMockUsage = (u: UsageEvent) =>
+      !u ||
+      u.participantId?.startsWith("part-seed-") ||
+      u.consumerKey === "starter-app-key-123" ||
+      u.consumerKey === "test-app-key-123" ||
+      u.participantName === "DevRel Demo" ||
+      u.participantName === "Security Architect" ||
+      u.participantName === "AI Engineer" ||
+      u.participantName === "Lab Tester" ||
+      u.participantName === "Starter App" ||
+      u.participantName === "Default Test User";
+
+    const filteredUsage = Array.isArray(existingUsage)
+      ? existingUsage.filter((u) => !isMockUsage(u))
+      : [];
+
+    if (!fs.existsSync(this.usageFile) || filteredUsage.length !== existingUsage.length) {
+      try {
+        fs.writeFileSync(this.usageFile, JSON.stringify(filteredUsage, null, 2));
+      } catch (e) {
+        console.warn("[LabManager] Error writing usage file:", e);
       }
     }
 
@@ -154,7 +207,7 @@ export class LabManager {
     return this.getParticipants().find((p) => p.consumerKey === consumerKey);
   }
 
-  public registerParticipant(rawName: string): LabParticipant {
+  public async registerParticipant(rawName: string): Promise<LabParticipant> {
     const name = (rawName || "").trim();
     if (!name) {
       throw new Error("Please enter your name");
@@ -197,7 +250,9 @@ export class LabManager {
     }
 
     // 2. Provision credential into Cassandra
-    this.syncCredentialToCassandra(consumerKey, consumerSecret, appName);
+    await syncSingleCredentialToCassandra(consumerKey, consumerSecret, appName, this.dataDir).catch((err) => {
+      console.warn("[LabManager] Notice during participant Cassandra sync:", err);
+    });
 
     return participant;
   }
@@ -266,12 +321,33 @@ export class LabManager {
     // Compute estimated cost: $0.00015 per 1k tokens
     const estimatedCost = Number(((totalTokens / 1000) * 0.00015).toFixed(6));
 
-    const participants = this.getParticipants();
-    const matchedPart = participants.find(
-      (p) => p.consumerKey === event.consumerKey && p.consumerKey !== "test-app-key-123" && p.name !== "Default Test User"
+    const isMockUser = (p: LabParticipant) =>
+      !p ||
+      !p.name ||
+      p.id?.startsWith("part-seed-") ||
+      p.consumerKey === "starter-app-key-123" ||
+      p.consumerKey === "test-app-key-123" ||
+      p.name === "DevRel Demo" ||
+      p.name === "Security Architect" ||
+      p.name === "AI Engineer" ||
+      p.name === "Lab Tester" ||
+      p.name === "Starter App" ||
+      p.name === "Default Test User";
+
+    const participants = this.getParticipants().filter((p) => !isMockUser(p));
+    let matchedPart = participants.find(
+      (p) => p.consumerKey === event.consumerKey
     );
+
+    // If still not matched, check by participantName if provided
+    if (!matchedPart && event.participantName) {
+      matchedPart = participants.find(
+        (p) => (p.name || "").trim().toLowerCase() === event.participantName!.trim().toLowerCase()
+      );
+    }
+
+    // Only record usage for registered lab participants
     if (!matchedPart) {
-      // Only record usage for real registered participants
       return null as any;
     }
 
@@ -324,10 +400,34 @@ export class LabManager {
       allUsage = [];
     }
 
-    // Only include real users who registered through the onboarding modal
-    const rawParticipants = this.getParticipants().filter(
-      (p) => p.consumerKey !== "test-app-key-123" && p.name !== "Default Test User"
-    );
+    const isMockUser = (p: LabParticipant) =>
+      !p ||
+      !p.name ||
+      p.id?.startsWith("part-seed-") ||
+      p.consumerKey === "starter-app-key-123" ||
+      p.consumerKey === "test-app-key-123" ||
+      p.name === "DevRel Demo" ||
+      p.name === "Security Architect" ||
+      p.name === "AI Engineer" ||
+      p.name === "Lab Tester" ||
+      p.name === "Starter App" ||
+      p.name === "Default Test User";
+
+    const isMockUsage = (u: UsageEvent) =>
+      !u ||
+      u.participantId?.startsWith("part-seed-") ||
+      u.consumerKey === "starter-app-key-123" ||
+      u.consumerKey === "test-app-key-123" ||
+      u.participantName === "DevRel Demo" ||
+      u.participantName === "Security Architect" ||
+      u.participantName === "AI Engineer" ||
+      u.participantName === "Lab Tester" ||
+      u.participantName === "Starter App" ||
+      u.participantName === "Default Test User";
+
+    // Only real registered participants
+    const rawParticipants = this.getParticipants().filter((p) => !isMockUser(p));
+
     // Deduplicate by name (case-insensitive) to ensure 1 entry per user
     const participants: LabParticipant[] = [];
     const seenNames = new Set<string>();
@@ -339,27 +439,34 @@ export class LabManager {
       }
     }
 
+    if (participants.length === 0) {
+      return [];
+    }
+
     const validPartMap = new Map<string, LabParticipant>();
-    const keyToCanonicalKey = new Map<string, string>();
+    for (const p of participants) {
+      validPartMap.set(p.consumerKey, p);
+    }
+    // Map duplicate keys to canonical participant
     for (const p of rawParticipants) {
       const canonical = participants.find((cp) => (cp.name || "").trim().toLowerCase() === (p.name || "").trim().toLowerCase()) || p;
       validPartMap.set(p.consumerKey, canonical);
-      keyToCanonicalKey.set(p.consumerKey, canonical.consumerKey);
     }
 
-    // Strictly filter to usage within the last 24 hours (last day) for registered users
+    // Filter out mock usage events
+    const realUsage = allUsage.filter((u) => !isMockUsage(u) && u.consumerKey && validPartMap.has(u.consumerKey));
+
+    // Filter to usage within the last 24 hours if any exists; fallback to all real usage
     const now = Date.now();
     const oneDayAgo = now - 24 * 60 * 60 * 1000;
-    const recentUsage = allUsage.filter((u) => {
-      if (!u.consumerKey || !validPartMap.has(u.consumerKey)) {
-        return false;
-      }
-      if (u.consumerKey === "test-app-key-123" || u.participantName === "Default Test User") {
-        return false;
-      }
+    let usageToCount = realUsage.filter((u) => {
       const t = new Date(u.timestamp).getTime();
       return !isNaN(t) && t >= oneDayAgo;
     });
+
+    if (usageToCount.length === 0 && realUsage.length > 0) {
+      usageToCount = realUsage;
+    }
 
     // Group usage by canonical participant consumerKey
     const stats: {
@@ -377,7 +484,23 @@ export class LabManager {
       };
     } = {};
 
-    for (const u of recentUsage) {
+    // Initialize stats for ALL known registered participants so they appear immediately
+    for (const p of participants) {
+      stats[p.consumerKey] = {
+        name: p.name,
+        email: p.email,
+        consumerKey: p.consumerKey,
+        calls: 0,
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalCost: 0,
+        latencies: [],
+        tests: new Set<string>(),
+      };
+    }
+
+    for (const u of usageToCount) {
       const p = validPartMap.get(u.consumerKey);
       if (!p) continue;
       const key = p.consumerKey;
@@ -406,35 +529,34 @@ export class LabManager {
       if (u.testName && u.statusCode === 200) stats[key].tests.add(u.testName);
     }
 
-    // Build array and sort by totalTokens descending
-    const list: LeaderboardEntry[] = Object.values(stats)
-      .filter((s) => s.calls > 0)
-      .map((s) => {
-        const avgLat = s.latencies.length > 0
-          ? Math.round(s.latencies.reduce((a, b) => a + b, 0) / s.latencies.length)
-          : 0;
+    // Build array: include ALL participants so newly registered users are visible
+    const list: LeaderboardEntry[] = Object.values(stats).map((s) => {
+      const avgLat = s.latencies.length > 0
+        ? Math.round(s.latencies.reduce((a, b) => a + b, 0) / s.latencies.length)
+        : 0;
 
-        return {
-          rank: 0,
-          name: s.name,
-          email: s.email,
-          consumerKey: s.consumerKey,
-          totalCalls: s.calls,
-          totalTokens: s.totalTokens,
-          promptTokens: s.promptTokens,
-          completionTokens: s.completionTokens,
-          estimatedCost: Number(s.totalCost.toFixed(6)),
-          estimatedCostFormatted: `$${s.totalCost.toFixed(5)}`,
-          avgLatencyMs: avgLat,
-          testsCompleted: Array.from(s.tests),
-          testsCompletedCount: s.tests.size,
-          isCurrent: Boolean(currentKey && s.consumerKey === currentKey),
-        };
-      });
+      return {
+        rank: 0,
+        name: s.name,
+        email: s.email,
+        consumerKey: s.consumerKey,
+        totalCalls: s.calls,
+        totalTokens: s.totalTokens,
+        promptTokens: s.promptTokens,
+        completionTokens: s.completionTokens,
+        estimatedCost: Number(s.totalCost.toFixed(6)),
+        estimatedCostFormatted: `$${s.totalCost.toFixed(5)}`,
+        avgLatencyMs: avgLat,
+        testsCompleted: Array.from(s.tests),
+        testsCompletedCount: s.tests.size,
+        isCurrent: Boolean(currentKey && s.consumerKey === currentKey),
+      };
+    });
 
     list.sort((a, b) => {
       if (b.totalTokens !== a.totalTokens) return b.totalTokens - a.totalTokens;
-      return b.totalCalls - a.totalCalls;
+      if (b.totalCalls !== a.totalCalls) return b.totalCalls - a.totalCalls;
+      return a.name.localeCompare(b.name);
     });
 
     list.forEach((entry, idx) => {

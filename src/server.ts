@@ -54,6 +54,18 @@ export class EmulatorServer {
     this.emulator = new EmulatorClient();
     this.bundleManager = new BundleManager(this.dataDir);
     this.emulator.kvmSecretProvider = () => this.bundleManager.getKVMSecretValues();
+    this.emulator.activeConsumerKeysProvider = () => {
+      const apps = this.bundleManager.getApps();
+      const keys: string[] = [];
+      for (const app of apps) {
+        if (app.credentials) {
+          for (const cred of app.credentials) {
+            if (cred.consumerKey) keys.push(cred.consumerKey);
+          }
+        }
+      }
+      return keys;
+    };
 
     this.deployer = new DeploymentDeployer(this.emulator, this.bundleManager, this.dataDir);
     this.deploymentManager = new DeploymentManager(this.dataDir);
@@ -182,6 +194,9 @@ export class EmulatorServer {
       console.log("[AutoDeploy] Auto-deployment and Cassandra sync completed successfully");
     } catch (err) {
       console.warn("[AutoDeploy] Auto-deployment warning:", err);
+    } finally {
+      // Always pre-warm proxies on initialization to eliminate first-call latency
+      setTimeout(() => this.warmupFirstTestPerProxy(), 500);
     }
   }
 
@@ -282,6 +297,31 @@ export class EmulatorServer {
     return new Response("Not Found", { status: 404 });
   }
 
+  private extractTokenUsage(bodyObj: any): { tokens: number; promptTokens: number; completionTokens: number } {
+    if (!bodyObj || typeof bodyObj !== "object") {
+      return { tokens: 0, promptTokens: 0, completionTokens: 0 };
+    }
+    const u = bodyObj.usage || bodyObj.usageMetadata || {};
+    const promptTokens =
+      u.prompt_tokens ??
+      u.promptTokenCount ??
+      u.input_tokens ??
+      u.total_input_tokens ??
+      u.raw_prompt_token ??
+      0;
+    const completionTokens =
+      u.completion_tokens ??
+      u.candidatesTokenCount ??
+      u.output_tokens ??
+      u.total_output_tokens ??
+      0;
+    let tokens = u.total_tokens ?? u.totalTokenCount ?? (promptTokens + completionTokens);
+    if (tokens === 0 && (promptTokens > 0 || completionTokens > 0)) {
+      tokens = promptTokens + completionTokens;
+    }
+    return { tokens, promptTokens, completionTokens };
+  }
+
   private async handleApi(subPath: string, req: Request, url: URL): Promise<Response> {
     const method = req.method.toUpperCase();
 
@@ -371,6 +411,7 @@ export class EmulatorServer {
           recordTrace: true,
           testName: tc.name,
           assertions: tc.assertions,
+          injectGoogleToken: tc.injectGoogleToken,
         };
 
         const resp = await this.proxyTester.execute(testReq);
@@ -405,6 +446,34 @@ export class EmulatorServer {
         this.testHistory.record(runResult);
         results.push(runResult);
 
+        // Record usage in LabManager for each test run
+        const apiKey = Object.entries(tc.headers || {}).find(
+          ([k]) => k.toLowerCase() === "x-api-key"
+        )?.[1] || "starter-app-key-123";
+        let tcTokens = 0;
+        let tcPromptTokens = 0;
+        let tcCompletionTokens = 0;
+        if (resp.body) {
+          try {
+            const bodyObj = typeof resp.body === "string" ? JSON.parse(resp.body) : resp.body;
+            const usage = this.extractTokenUsage(bodyObj);
+            tcTokens = usage.tokens;
+            tcPromptTokens = usage.promptTokens;
+            tcCompletionTokens = usage.completionTokens;
+          } catch {}
+        }
+        this.labManager.recordUsage({
+          consumerKey: apiKey,
+          testName: tc.name,
+          proxy: tc.proxy,
+          tokens: tcTokens,
+          promptTokens: tcPromptTokens,
+          completionTokens: tcCompletionTokens,
+          durationMs: resp.durationMs,
+          targetLatencyMs: resp.targetLatencyMs,
+          statusCode: resp.statusCode,
+        });
+
         if (resp.passed) passedCount++;
         else failedCount++;
       }
@@ -423,6 +492,7 @@ export class EmulatorServer {
     if ((subPath === "tests/warmup" || subPath === "warmup") && (method === "POST" || method === "GET")) {
       setTimeout(() => this.warmupFirstTestPerProxy(), 50);
       return this.jsonResponse({
+        success: true,
         status: "warmup_started",
         message: "Silently running first test for each proxy in background thread",
       });
@@ -524,6 +594,15 @@ export class EmulatorServer {
     if (subPath === "test" && method === "POST") {
       try {
         const testReq = (await req.json()) as TestRequest;
+        if (testReq.injectGoogleToken === undefined && testReq.testName) {
+          const allTests = this.deploymentManager.loadAllTests();
+          const match = allTests.find(
+            (t) => t.name.toLowerCase() === (testReq.testName || "").toLowerCase()
+          );
+          if (match && match.injectGoogleToken !== undefined) {
+            testReq.injectGoogleToken = match.injectGoogleToken;
+          }
+        }
         const resp = await this.proxyTester.execute(testReq);
 
         if (testReq.assertions && testReq.assertions.length > 0) {
@@ -556,18 +635,19 @@ export class EmulatorServer {
         this.testHistory.record(runResult);
 
         // Record usage in LabManager
-        const apiKey = testReq.headers?.["x-api-key"] || testReq.headers?.["X-API-KEY"] || "test-app-key-123";
+        const apiKey = Object.entries(testReq.headers || {}).find(
+          ([k]) => k.toLowerCase() === "x-api-key"
+        )?.[1] || "starter-app-key-123";
         let tokens = 0;
         let promptTokens = 0;
         let completionTokens = 0;
         if (resp.body) {
           try {
             const bodyObj = typeof resp.body === "string" ? JSON.parse(resp.body) : resp.body;
-            if (bodyObj?.usage) {
-              tokens = bodyObj.usage.total_tokens || bodyObj.usage.totalTokenCount || 0;
-              promptTokens = bodyObj.usage.prompt_tokens || bodyObj.usage.promptTokenCount || 0;
-              completionTokens = bodyObj.usage.completion_tokens || bodyObj.usage.candidatesTokenCount || 0;
-            }
+            const usage = this.extractTokenUsage(bodyObj);
+            tokens = usage.tokens;
+            promptTokens = usage.promptTokens;
+            completionTokens = usage.completionTokens;
           } catch {
             // ignore
           }
@@ -693,6 +773,7 @@ export class EmulatorServer {
 
         this.lastTestDataUpload = new Date().toISOString();
         this.lastTestDataStatus = "Successfully uploaded testdata.zip and synced credentials";
+        setTimeout(() => this.warmupFirstTestPerProxy(), 500);
 
         return this.jsonResponse({
           success: true,
@@ -716,6 +797,7 @@ export class EmulatorServer {
         } catch {}
 
         const synced = await syncCassandraDeveloperAppKeys(this.dataDir, undefined, appsOverride);
+        setTimeout(() => this.warmupFirstTestPerProxy(), 500);
         return this.jsonResponse({
           success: synced,
           message: synced
@@ -988,7 +1070,7 @@ export class EmulatorServer {
         if (!name) {
           return this.jsonResponse({ success: false, error: "Please enter your name" }, 400);
         }
-        const participant = this.labManager.registerParticipant(name);
+        const participant = await this.labManager.registerParticipant(name);
         return this.jsonResponse({
           success: true,
           participant,
@@ -1030,17 +1112,17 @@ export class EmulatorServer {
     if ((subPath === "labs/delete-user" || subPath === "labs/delete-account") && method === "POST") {
       try {
         const body = await req.json().catch(() => ({}));
-        const identifier = (body.consumerKey || body.name || body.id || "").trim();
+        const identifier = (body.consumerKey || body.name || body.id || body.identifier || "").trim();
         if (!identifier) {
           return this.jsonResponse({ success: false, error: "User identifier is required" }, 400);
         }
         const deleted = this.labManager.deleteParticipant(identifier);
-        if (!deleted) {
-          return this.jsonResponse({ success: false, error: "User not found or already deleted" }, 404);
-        }
         return this.jsonResponse({
           success: true,
-          message: "User account and all associated lab data deleted successfully.",
+          deleted,
+          message: deleted
+            ? "User account and all associated lab data deleted successfully."
+            : "User account already deleted or not found.",
         });
       } catch (err: any) {
         return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
@@ -1234,46 +1316,88 @@ export class EmulatorServer {
       const seen = new Set<string>();
       const warmupList: TestCase[] = [];
 
+      // Include all configured tests
       for (const tc of allTests) {
-        const p = (tc.proxy || "").trim();
-        if (p && !seen.has(p.toLowerCase())) {
-          seen.add(p.toLowerCase());
-          warmupList.push(tc);
-        }
+        warmupList.push(tc);
+        const p = (tc.proxy || "").trim().toLowerCase();
+        if (p) seen.add(p);
       }
 
-      // Also check any active proxies with no test
+      // Also check any active proxies with no explicit test
       const status = await this.emulator.checkHealth();
       for (const p of status.activeProxies) {
-        if (!seen.has(p.name.toLowerCase())) {
-          seen.add(p.name.toLowerCase());
+        const lowerName = p.name.toLowerCase();
+        if (!seen.has(lowerName)) {
+          seen.add(lowerName);
+          const isCompletion = lowerName.includes("completions");
           warmupList.push({
-            name: `warmup-${p.name.toLowerCase()}`,
+            name: `warmup-${lowerName}`,
             proxy: p.name,
-            verb: "GET",
-            path: p.basePath || `/${p.name.toLowerCase()}`,
+            verb: isCompletion ? "POST" : "GET",
+            path: p.basePath || (isCompletion ? "/v1/chat/completions" : `/${lowerName}`),
+            headers: isCompletion
+              ? {
+                  "Content-Type": "application/json",
+                  "x-api-key": "test-api-key-12345",
+                }
+              : {
+                  "x-api-key": "test-api-key-12345",
+                },
+            injectGoogleToken: isCompletion ? true : undefined,
+            payload: isCompletion
+              ? JSON.stringify({
+                  model: "google/gemini-2.5-flash",
+                  messages: [{ role: "user", content: "ping" }],
+                  max_tokens: 1,
+                })
+              : undefined,
           });
         }
       }
 
-      console.log(`[Warmup] Silently warming up ${warmupList.length} proxies...`);
-      for (const tc of warmupList) {
-        const testReq: TestRequest = {
-          proxy: tc.proxy,
-          method: tc.verb || "GET",
-          path: tc.path,
-          headers: tc.headers,
-          body: tc.payload || tc.body,
-          recordTrace: false,
-          testName: tc.name,
-        };
-        try {
-          const resp = await this.proxyTester.execute(testReq);
-          console.log(`[Warmup] Proxy '${tc.proxy}' warmed up (${resp.statusCode} in ${resp.durationMs}ms)`);
-        } catch {
-          // ignore warmup errors
-        }
-      }
+      const uniqueProxies = new Set(warmupList.map((t) => t.proxy).filter(Boolean));
+      console.log(`[Warmup] Silently pre-warming ${warmupList.length} test call(s) across ${uniqueProxies.size} proxies...`);
+
+      // Execute warmup requests concurrently
+      await Promise.allSettled(
+        warmupList.map(async (tc) => {
+          const effectiveHeaders: { [key: string]: string } = {};
+          if (tc.headers) {
+            for (const [k, v] of Object.entries(tc.headers)) {
+              if (k.trim()) effectiveHeaders[k.trim()] = String(v);
+            }
+          }
+          const hasApiKey = Object.keys(effectiveHeaders).some(
+            (k) => k.toLowerCase() === "x-api-key" || k.toLowerCase() === "x-ai-key"
+          );
+          if (!hasApiKey) {
+            effectiveHeaders["x-api-key"] = "test-api-key-12345";
+          }
+
+          const testReq: TestRequest = {
+            proxy: tc.proxy,
+            method: tc.verb || (tc.payload || tc.body ? "POST" : "GET"),
+            path: tc.path,
+            headers: effectiveHeaders,
+            body: tc.payload || tc.body,
+            recordTrace: false,
+            testName: tc.name,
+            injectGoogleToken: tc.injectGoogleToken,
+          };
+
+          try {
+            const resp = await this.proxyTester.execute(testReq);
+            console.log(
+              `[Warmup] Proxy '${tc.proxy}' test '${tc.name}' warmed up (${resp.statusCode} in ${resp.durationMs}ms)`
+            );
+          } catch (err: any) {
+            console.log(
+              `[Warmup] Proxy '${tc.proxy}' test '${tc.name}' error: ${err.message || String(err)}`
+            );
+          }
+        })
+      );
+
       console.log("[Warmup] Completed silent warmup");
     } finally {
       this.isWarmingUp = false;

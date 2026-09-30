@@ -690,7 +690,9 @@ export class BundleManager {
     } else {
       const prodProxies: string[] = Array.isArray(p.proxies) ? [...p.proxies] : [];
       for (const pr of proxyNames) {
-        if (!prodProxies.includes(pr)) prodProxies.push(pr);
+        if (!prodProxies.includes(pr) && !pr.toLowerCase().includes("mcp") && !pr.toLowerCase().includes("customerservice")) {
+          prodProxies.push(pr);
+        }
       }
       p.proxies = prodProxies;
 
@@ -745,14 +747,14 @@ export class BundleManager {
         developerEmail: email,
         callbackUrl: app.callbackUrl || "",
         expiryType: app.expiryType || "never",
-        apiProducts: prodNames.length > 0 ? prodNames : ["test-product"],
+        apiProducts: prodNames.length > 0 ? prodNames : ["ai-starter-package", "mcp-package"],
         credentials: creds.map((c: any) => {
           const credProds = Array.isArray(c.apiProducts) && c.apiProducts.length > 0
             ? c.apiProducts.map((p: any) => ({
                 apiproduct: typeof p === "string" ? p : p.apiproduct,
                 status: "approved",
               }))
-            : (prodNames.length > 0 ? prodNames : ["test-product"]).map((pn) => ({
+            : (prodNames.length > 0 ? prodNames : ["ai-starter-package", "mcp-package"]).map((pn) => ({
                 apiproduct: pn,
                 status: "approved",
               }));

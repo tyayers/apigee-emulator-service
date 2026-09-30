@@ -303,19 +303,19 @@ export class DeploymentDeployer {
       );
     }
 
-    // 6. Convert KVMs
+    // 6. Convert KVMs (default to empty array if none defined)
+    const emulatorMaps: any[] = [];
     if (deployment.kvms && Array.isArray(deployment.kvms)) {
-      const emulatorMaps: any[] = [];
       for (const k of deployment.kvms) {
         const m = this.converter.kvmToApigeeEmulatorMap(k, environment);
         emulatorMaps.push(m);
       }
-      fs.writeFileSync(
-        path.join(mapsDir, "maps.json"),
-        JSON.stringify(emulatorMaps, null, 2),
-        "utf-8",
-      );
     }
+    fs.writeFileSync(
+      path.join(mapsDir, "maps.json"),
+      JSON.stringify(emulatorMaps, null, 2),
+      "utf-8",
+    );
 
     // 7. Reset emulator if requested
     if (reset) {

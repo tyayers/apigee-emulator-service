@@ -1,5 +1,12 @@
 import { EmulatorClient } from "./emulator.ts";
-import { googleAuthService, hasAuthorizationBearerToken, injectGoogleAccessToken } from "./google-auth.ts";
+import {
+  googleAuthService,
+  hasAuthorizationBearerToken,
+  injectGoogleAccessToken,
+  containsGoogleTokenPlaceholder,
+  hasGoogleTokenPlaceholder,
+  replacePlaceholdersInString,
+} from "./google-auth.ts";
 import { TestRequest, TestResponse } from "./types.ts";
 
 export class ProxyTester {
@@ -14,7 +21,6 @@ export class ProxyTester {
     let path = (req.path || "").trim();
     if (!path.startsWith("/")) path = "/" + path;
 
-    const targetUrl = `${this.emulator.runtimeUrl}${path}`;
     let traceSessionId = "";
 
     // 1. Optionally start trace session
@@ -61,25 +67,99 @@ export class ProxyTester {
       effectiveHeaders["x-api-key"] = aiKey;
     }
 
-    // Always fetch & inject Google access token via ADC if no valid bearer token is present
-    if (!hasAuthorizationBearerToken(effectiveHeaders)) {
+    // Context detection
+    const proxyLower = (req.proxy || "").toLowerCase();
+    const pathLower = path.toLowerCase();
+    const isInteractions =
+      proxyLower.includes("interactions") || pathLower.includes("/interactions");
+    const isMcp =
+      proxyLower.includes("mcp") ||
+      proxyLower.includes("customerservice") ||
+      pathLower.includes("/customerservice");
+    const hasGoogApiKey = Boolean(
+      effectiveHeaders["x-goog-api-key"] ||
+      effectiveHeaders["X-Goog-Api-Key"] ||
+      effectiveHeaders["X-GOOG-API-KEY"]
+    );
+
+    // Check if test definition or request headers/body/path contain Google token placeholders
+    const hasGooglePlaceholder =
+      hasGoogleTokenPlaceholder(effectiveHeaders) ||
+      containsGoogleTokenPlaceholder(path) ||
+      (typeof req.body === "string" && containsGoogleTokenPlaceholder(req.body));
+
+    // Determine if we should provide a Google Access Token
+    let shouldProvideGoogleToken = false;
+    if (req.injectGoogleToken === true) {
+      shouldProvideGoogleToken = true;
+    } else if (req.injectGoogleToken === false) {
+      shouldProvideGoogleToken = false;
+    } else if (hasGooglePlaceholder) {
+      shouldProvideGoogleToken = true;
+    } else if (hasGoogApiKey || isInteractions || isMcp) {
+      // Do not inject Google bearer token when using Google API Key or calling non-Vertex AI endpoints
+      shouldProvideGoogleToken = false;
+    } else if (!hasAuthorizationBearerToken(effectiveHeaders)) {
+      // Default fallback for Vertex AI proxies if no authorization is explicitly provided
+      shouldProvideGoogleToken = true;
+    }
+
+    // Fetch token if needed
+    let googleToken = "";
+    if (shouldProvideGoogleToken) {
       try {
-        const token = await googleAuthService.getAccessToken();
-        if (token) {
-          effectiveHeaders = injectGoogleAccessToken(effectiveHeaders, token);
-        } else if (process.env.EMULATOR_FALLBACK_TOKEN) {
-          effectiveHeaders = injectGoogleAccessToken(effectiveHeaders, process.env.EMULATOR_FALLBACK_TOKEN);
-        }
+        googleToken =
+          (await googleAuthService.getAccessToken()) ||
+          process.env.EMULATOR_FALLBACK_TOKEN ||
+          "";
       } catch (err) {
         console.warn(`[ProxyTester] Notice: could not acquire Google access token:`, err);
-        if (process.env.EMULATOR_FALLBACK_TOKEN) {
-          effectiveHeaders = injectGoogleAccessToken(effectiveHeaders, process.env.EMULATOR_FALLBACK_TOKEN);
-        }
+        googleToken = process.env.EMULATOR_FALLBACK_TOKEN || "";
+      }
+    }
+
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GeminiApiKey || "";
+    const projectId =
+      process.env.GOOGLE_CLOUD_PROJECT ||
+      process.env.GCP_PROJECT ||
+      process.env.GCLOUD_PROJECT ||
+      "cloud32x";
+
+    const placeholderContext = {
+      googleToken,
+      geminiApiKey: geminiKey,
+      projectId,
+    };
+
+    // Replace placeholders in path, body, and headers
+    path = replacePlaceholdersInString(path, placeholderContext);
+    if (req.body && typeof req.body === "string") {
+      req.body = replacePlaceholdersInString(req.body, placeholderContext);
+    }
+
+    for (const [k, v] of Object.entries(effectiveHeaders)) {
+      effectiveHeaders[k] = replacePlaceholdersInString(v, placeholderContext);
+    }
+
+    // If Google token should be provided and no authorization header was set, inject it
+    if (shouldProvideGoogleToken && googleToken && !hasAuthorizationBearerToken(effectiveHeaders)) {
+      effectiveHeaders = injectGoogleAccessToken(effectiveHeaders, googleToken);
+    }
+
+    // Only inject Gemini API Key for Interactions or if x-goog-api-key was explicitly present
+    const hasExplicitGoogApiKeyHeader = Object.keys(effectiveHeaders).some(
+      (k) => k.toLowerCase() === "x-goog-api-key"
+    );
+    if (geminiKey && (isInteractions || hasExplicitGoogApiKeyHeader)) {
+      if (!effectiveHeaders["x-goog-api-key"] && !effectiveHeaders["X-Goog-Api-Key"]) {
+        effectiveHeaders["x-goog-api-key"] = geminiKey;
       }
     }
 
     // Synchronize req.headers with effective dispatched headers
     req.headers = { ...effectiveHeaders };
+
+    const targetUrl = `${this.emulator.runtimeUrl}${path}`;
 
     // 3. Send HTTP request
     let startTime = Date.now();
@@ -132,7 +212,7 @@ export class ProxyTester {
       }
 
       // Retry mechanism 2: If 401 occurs due to expired/invalid Google access token, refresh ADC token & retry once
-      if (res.status === 401 && body.includes("UNAUTHENTICATED")) {
+      if (res.status === 401 && body.includes("UNAUTHENTICATED") && shouldProvideGoogleToken) {
         try {
           googleAuthService.invalidateToken();
           const freshToken = await googleAuthService.getAccessToken();

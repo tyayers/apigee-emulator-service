@@ -888,6 +888,17 @@ a.table-link:hover {
   font-family: var(--font-mono);
 }
 
+.badge-product {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.25rem;
+  background-color: rgba(52, 168, 83, 0.15);
+  color: #34a853;
+  border: 1px solid rgba(52, 168, 83, 0.35);
+  font-family: var(--font-mono);
+}
+
 .active-test-desc {
   font-size: 0.8rem;
   color: var(--text-secondary);

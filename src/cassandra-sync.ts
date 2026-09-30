@@ -191,16 +191,17 @@ export async function syncCassandraDeveloperAppKeys(
         try {
           const participants = JSON.parse(fs.readFileSync(participantsFile, "utf-8"));
           if (Array.isArray(participants)) {
+            const targetProducts = ["ai-starter-package", "mcp-package"];
             for (const p of participants) {
               apps.push({
                 name: p.appName || `${p.name}'s Lab App`,
                 developerEmail: p.email,
-                apiProducts: ["test-product"],
+                apiProducts: targetProducts,
                 credentials: [
                   {
                     consumerKey: p.consumerKey,
                     consumerSecret: p.consumerSecret || "secret",
-                    apiProducts: ["test-product"],
+                    apiProducts: targetProducts,
                   },
                 ],
               });
@@ -240,12 +241,19 @@ export async function syncCassandraDeveloperAppKeys(
 
         let credProdMapStr = defaultProdMapStr;
         const matchedProductIds: string[] = [];
-        const credProdList = (cred.apiProducts || []).map((c: any) =>
+        let credProdList = (cred.apiProducts || []).map((c: any) =>
           typeof c === "string" ? c : c.apiproduct || c.name,
         );
-        const appProdList = (app.apiProducts || []).map((p: any) =>
+        let appProdList = (app.apiProducts || []).map((p: any) =>
           typeof p === "string" ? p : p.apiproduct || p.name,
         );
+        // Default to all products if missing or using placeholder test-product
+        if (credProdList.length === 0 || credProdList.includes("test-product")) {
+          credProdList = Object.keys(prodMap);
+        }
+        if (appProdList.length === 0 || appProdList.includes("test-product")) {
+          appProdList = Object.keys(prodMap);
+        }
         const allTargetProds = Array.from(new Set([...credProdList, ...appProdList])).filter(Boolean);
         if (allTargetProds.length > 0) {
           const matchedEntries: string[] = [];
@@ -257,6 +265,12 @@ export async function syncCassandraDeveloperAppKeys(
           }
           if (matchedEntries.length > 0) {
             credProdMapStr = "{" + matchedEntries.join(", ") + "}";
+          }
+        }
+        // Fallback: If no products matched, ensure all known product IDs are authorized
+        if (matchedProductIds.length === 0) {
+          for (const pid of Object.values(prodMap)) {
+            matchedProductIds.push(pid);
           }
         }
 
@@ -300,15 +314,20 @@ export async function syncSingleCredentialToCassandra(
   consumerSecret: string,
   appName?: string,
   dataDir?: string,
+  products?: string[],
 ): Promise<boolean> {
+  const targetProducts =
+    products && products.length > 0
+      ? products
+      : ["ai-starter-package", "mcp-package"];
   const dummyApp = {
     name: appName || "Participant App",
-    apiProducts: ["test-product"],
+    apiProducts: targetProducts,
     credentials: [
       {
         consumerKey,
         consumerSecret: consumerSecret || "secret",
-        apiProducts: ["test-product"],
+        apiProducts: targetProducts,
       },
     ],
   };

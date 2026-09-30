@@ -174,7 +174,7 @@ if [ -d "$DATA_DIR" ]; then
   for item in "$DATA_DIR"/*; do
     [ -e "$item" ] || continue
     base=$(basename "$item")
-    if [ "$base" != "deployments" ]; then
+    if [ "$base" != "deployments" ] && [ "$base" != "lab-participants.json" ] && [ "$base" != "lab-usage.json" ]; then
       rm -rf "$item"
       echo -e "  • Removed ${YELLOW}data/$base${NC}"
       deleted_count=$((deleted_count + 1))
@@ -185,7 +185,7 @@ if [ -d "$DATA_DIR" ]; then
   shopt -s nullglob
   for item in "$DATA_DIR"/.*; do
     base=$(basename "$item")
-    if [ "$base" != "." ] && [ "$base" != ".." ] && [ "$base" != "deployments" ]; then
+    if [ "$base" != "." ] && [ "$base" != ".." ] && [ "$base" != "deployments" ] && [ "$base" != "lab-participants.json" ] && [ "$base" != "lab-usage.json" ]; then
       rm -rf "$item"
       echo -e "  • Removed ${YELLOW}data/$base${NC}"
       deleted_count=$((deleted_count + 1))

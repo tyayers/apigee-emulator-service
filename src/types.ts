@@ -45,6 +45,8 @@ export interface TestCase {
   request?: string;
   assertions?: string[];
   deployment?: string;
+  injectGoogleToken?: boolean;
+  product?: string;
 }
 
 export interface DeploymentConfig {
@@ -65,6 +67,8 @@ export interface TestRequest {
   recordTrace?: boolean;
   testName?: string;
   assertions?: string[];
+  injectGoogleToken?: boolean;
+  product?: string;
 }
 
 export interface AssertionResult {

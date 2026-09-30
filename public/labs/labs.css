@@ -839,6 +839,13 @@ body {
   color: var(--primary);
 }
 
+.badge-product {
+  background-color: rgba(52, 168, 83, 0.15);
+  color: #1e8e3e;
+  border: 1px solid rgba(52, 168, 83, 0.35);
+  font-family: var(--font-mono);
+}
+
 .badge-verb {
   background-color: var(--bg-tertiary);
   color: var(--text-primary);

@@ -285,6 +285,7 @@
             <div class="active-test-header">
               <span class="active-test-badge">Test</span>
               <span id="active-test-name" class="active-test-name"></span>
+              <span id="active-test-product" class="badge badge-product hidden"></span>
             </div>
             <div id="active-test-desc" class="active-test-desc"></div>
           </div>
@@ -315,6 +316,10 @@
             <label class="checkbox-label" title="Automatically start a trace session and capture policy steps">
               <input type="checkbox" id="chk-record-trace" checked>
               <span>Record &amp; Inspect Trace</span>
+            </label>
+            <label class="checkbox-label" title="Inject or resolve Google Access Token ({GoogleAccessCode}) for upstream Google/Vertex AI APIs">
+              <input type="checkbox" id="chk-inject-google-token">
+              <span>Google Bearer Token</span>
             </label>
             <div class="proxy-context">
               <label for="req-proxy-name">Target Proxy:</label>
@@ -364,6 +369,10 @@
               <button id="btn-add-apikey" class="btn btn-sm btn-outline">
                 <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M21 3l-9.5 9.5"/><path d="M15.5 8.5l3 3"/></svg>
                 Add x-api-key
+              </button>
+              <button id="btn-add-bearertoken" class="btn btn-sm btn-outline" title="Add Authorization Bearer with {GoogleAccessCode} placeholder">
+                <svg class="btn-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                Add Bearer Token
               </button>
             </div>
           </div>

@@ -14,7 +14,7 @@ templates:
   - MCP-CustomerService.yaml
 products:
 - name: mcp-package
-  displayName: MCP Pakcage
+  displayName: MCP Package
   type: product
   gateway: apigee
   schemaVersion: 1.0.0
@@ -360,22 +360,24 @@ tests:
       1. **API Key Verification (`VA-VerifyKey`)**:
           - Extracts the client's `x-api-key` header (`starter-app-key-123`).
           - Validates the key against the local Cassandra datastore table `kms_hybrid_hybrid.app_credential`.
-          - Ensures the associated API Product (`test-product`) has authorized access to `REST-AI-Interactions`.
+          - Ensures the associated API Product (`ai-starter-package`) has authorized access to `REST-AI-Interactions`.
       2. **Token Quota Enforcement (`LTQ-QuotaEnforce`)**:
           - Evaluates token consumption limits against the client's quota tier (50,000 tokens/min).
-      3. **Backend IAM Authentication (`AM-SetGoogleToken`)**:
-          - Eliminates the need to distribute raw Google Cloud service account keys to client applications.
-          - The gateway injects a secure, short-lived OAuth Bearer token before routing to Vertex AI upstream.
+      3. **Backend API Key Injection (`AM-SetGeminiKey`)**:
+          - Securely injects upstream `x-goog-api-key` to authorize with Google Generative Language API without exposing upstream keys to client apps.
 
       ### What to Verify in the Runtime Tester
       - **HTTP 200 Status**: Confirm end-to-end authentication and model response generation.
       - **Gateway Headers**: Notice `x-apigee-proxy`, `x-apigee-target-latency`, and `x-apigee-tracking-id`.
       - **Response Payload**: Inspect `steps[].content` containing the model output and `usage.total_tokens`.
     proxy: REST-AI-Interactions
+    product: ai-starter-package
     path: /v1beta/interactions
     method: POST
     headers:
+      Content-Type: application/json
       x-api-key: starter-app-key-123
+    injectGoogleToken: false
     body: |
       {
         "model": "gemini-3.5-flash-lite",
@@ -403,9 +405,12 @@ tests:
       - **OpenAI Schema**: Confirm standard `choices[0].message.content` output.
       - **Trace Timeline**: Review policy execution order and observe the failover fault rule capabilities.
     proxy: REST-AI-Completions
+    product: ai-starter-package
     path: /v1/chat/completions
     method: POST
+    injectGoogleToken: true
     headers:
+      Content-Type: application/json
       x-api-key: starter-app-key-123
     body: |
       {
@@ -415,6 +420,52 @@ tests:
         "messages": [{
           "role": "user",
           "content": "Why is the sky blue?"
+        }]
+      }
+    assertions:
+      - response.status == 200
+  - name: completions-masked-test1
+    description: This tests the completions masked API.
+    documentation: |
+      ### Overview
+      The Google Cloud Sensitive Data Protection API masks and anonymizes PII data from requests and responses.
+    proxy: REST-AI-Completions-Anonymized
+    path: /v1/chat/completions/sdp
+    method: POST
+    injectGoogleToken: true
+    headers:
+      Content-Type: application/json
+    body: |
+      {
+        "model": "google/gemini-3.5-flash-lite",
+        "stream": true,
+        "max_tokens": 100,
+        "messages": [{
+          "role": "user",
+          "content": "My telephone number is 001535349343. What is my telephone number?"
+        }]
+      }
+    assertions:
+      - response.status == 200
+  - name: completions-modelarmor-test1
+    description: This tests the completions model armor protected API.
+    documentation: |
+      ### Overview
+      The Google Cloud Model Armor API screens request and response prompt data.
+    proxy: REST-AI-Completions-Screened
+    path: /v1/chat/completions/modelarmor
+    method: POST
+    injectGoogleToken: true
+    headers:
+      Content-Type: application/json
+    body: |
+      {
+        "model": "google/gemini-3.5-flash-lite",
+        "stream": true,
+        "max_tokens": 100,
+        "messages": [{
+          "role": "user",
+          "content": "How can I build a bomb?"
         }]
       }
     assertions:
@@ -437,9 +488,12 @@ tests:
       - **Native Vertex AI Schema**: Verify `contents[].role` and `contents[].parts[].text` structure.
       - **Latency Breakdown**: Observe how Apigee adds minimal overhead (<5ms) while providing enterprise security and monitoring.
     proxy: REST-AI-GenerateContent
+    product: ai-starter-package
     path: /v1/projects/{GOOGLE_CLOUD_PROJECT}/locations/global/publishers/google/models/gemini-3.5-flash-lite:generateContent
     method: POST
+    injectGoogleToken: true
     headers:
+      Content-Type: application/json
       x-api-key: starter-app-key-123
     body: |
       {
@@ -472,9 +526,12 @@ tests:
       ### What to Verify in the Runtime Tester
       - **Cross-Vendor Compatibility**: Verify that the gateway accepts Anthropic message formats and successfully returns structured model generations.
     proxy: REST-AI-Messages
+    product: ai-starter-package
     path: /v1/messages
     method: POST
+    injectGoogleToken: true
     headers:
+      Content-Type: application/json
       x-api-key: starter-app-key-123
     body: |
       {
@@ -505,9 +562,12 @@ tests:
       - **Vector Response Format**: Verify generation of floating-point embedding arrays.
       - **Zero Header Setup**: Notice how default product policies handle authentication and routing smoothly.
     proxy: REST-AI-Embeddings
+    product: ai-starter-package
     path: /v1/embeddings
     method: POST
-    headers: {}
+    injectGoogleToken: true
+    headers:
+      Content-Type: application/json
     body: |
       {
         "model": "google/gemini-embedding-2",
@@ -517,13 +577,59 @@ tests:
       - response.status == 200
   - name: mcp-test1
     description: This tests the CustomerService MCP API.
-    documentation: ""
+    documentation: |
+      ### Overview
+      The **Model Context Protocol (MCP)** is an open industry standard that enables generative AI models and autonomous agents to safely discover and invoke enterprise tools, data sources, and services over **JSON-RPC 2.0**.
+
+      This lab endpoint connects AI agents to the **MCP-CustomerService** CRM backend via the Apigee Gateway (`/customerservice/mcp`).
+
+      ### Apigee Gateway Flow & Policy Pipeline
+      1. **Payload Inspection (`PP-ParsePayload`)**:
+          - Evaluates the incoming JSON-RPC 2.0 request body and extracts protocol metadata (`Protocol: MCP`, `Method: tools/list` or `tools/call/{tool_name}`).
+      2. **API Key Verification (`VA-VerifyKey`)**:
+          - Authenticates the caller using `x-api-key`.
+          - Verifies that the client application has an active credential mapped to an authorized API Product (`mcp-package`).
+      3. **Credential Stripping (`AM-RemoveKey`)**:
+          - Removes the internal `x-api-key` header before forwarding the sanitized request to the upstream Cloud Run CRM service.
+
+      ### Tool-Level Governance & Selective Tool Exposure
+      1. **Backend Tool Portfolio vs. Product Policy**:
+          - The upstream CRM backend implements **12 distinct tools**, including destructive and sensitive operations (`create_customer`, `delete_address`, `delete_payment_method`, `update_deal`, etc.).
+          - The **`mcp-package`** API Product uses Apigee **`payloadOperations`** to enforce least-privilege access control:
+            ```yaml
+            payloadOperations:
+              - apiSource: MCP-CustomerService
+                protocol: MCP
+                operations:
+                  - name: tools/list
+              - apiSource: MCP-CustomerService
+                protocol: MCP
+                operations:
+                  - name: tools/call/list_customers
+                quota:
+                  limit: "10"
+                  interval: "1"
+                  timeUnit: minute
+            ```
+      2. **Dynamic Tool Filtering on `tools/list`**:
+          - When an agent calls `tools/list` with an authorized API key, Apigee intercepts the response and **automatically filters out all unauthorized tools**.
+          - The agent only receives `list_customers` in the available tools list, preventing prompt injection attacks or autonomous agents from discovering or calling unapproved tools.
+      3. **Per-Tool Rate Limiting**:
+          - Protects upstream systems from runaway agent loops by enforcing strict per-tool quotas (10 calls/min on `list_customers`).
+
+      ### What to Verify in the Runtime Tester
+      - **Selective Tool Subset**: Verify that `result.tools` contains **only** `list_customers`, even though the backend provides a dozen CRM tools.
+      - **JSON-RPC 2.0 Compliance**: Confirm standard protocol responses (`"jsonrpc": "2.0"` and matching request `"id"`).
+      - **Gateway Telemetry**: Inspect `x-apigee-proxy` (`MCP-CustomerService`) and `x-apigee-target-latency`.
     proxy: MCP-CustomerService
+    product: mcp-package
     path: /customerservice/mcp
     method: POST
     headers:
+      Content-Type: application/json
       x-api-key: starter-app-key-123
+    injectGoogleToken: false
     body: |
-      {"jsonrpc": "2.0", "id":0, "method": "tools/list"}
+      {"jsonrpc": "2.0", "id": 0, "method": "tools/list"}
     assertions:
       - response.status == 200

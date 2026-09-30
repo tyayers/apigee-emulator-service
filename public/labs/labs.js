@@ -99,7 +99,7 @@
       `  method: ${test.verb || test.method || 'POST'}`,
     ];
 
-    const currentKey = state.participant?.consumerKey || 'test-app-key-123';
+    const currentKey = state.participant?.consumerKey || test.headers?.['x-api-key'] || 'starter-app-key-123';
     const headers = { ...(test.headers || {}) };
     if (headers['x-api-key']) {
       headers['x-api-key'] = currentKey;
@@ -237,6 +237,7 @@
   }
 
   // Prompt or Switch Participant Dialog
+  // Prompt or Switch Participant Dialog (New User Page)
   function promptOnboarding(force = false) {
     const modal = document.getElementById('modal-onboarding');
     if (!modal) return;
@@ -250,15 +251,19 @@
       if (closeBtn) {
         closeBtn.style.display = state.participant ? 'block' : 'none';
       }
-      if (typeof modal.showModal === 'function') {
-        modal.showModal();
-      } else {
+      try {
+        if (typeof modal.showModal === 'function') {
+          if (!modal.open) modal.showModal();
+        } else {
+          modal.style.display = 'block';
+        }
+      } catch (e) {
         modal.style.display = 'block';
       }
       const input = document.getElementById('input-participant-name');
       if (input) {
         input.value = '';
-        input.focus();
+        setTimeout(() => input.focus(), 80);
       }
     }
   }
@@ -266,8 +271,12 @@
   function closeOnboarding() {
     const modal = document.getElementById('modal-onboarding');
     if (!modal) return;
-    if (typeof modal.close === 'function') modal.close();
-    else modal.style.display = 'none';
+    try {
+      if (typeof modal.close === 'function' && modal.open) modal.close();
+      else modal.style.display = 'none';
+    } catch {
+      modal.style.display = 'none';
+    }
   }
 
   // Open Participant Profile Dialog
@@ -293,15 +302,26 @@
     if (valEmail) valEmail.textContent = state.participant.email || '-';
     if (valKey) valKey.textContent = state.participant.consumerKey || '-';
 
-    if (typeof modal.showModal === 'function') modal.showModal();
-    else modal.style.display = 'block';
+    try {
+      if (typeof modal.showModal === 'function') {
+        if (!modal.open) modal.showModal();
+      } else {
+        modal.style.display = 'block';
+      }
+    } catch {
+      modal.style.display = 'block';
+    }
   }
 
   function closeParticipantProfile() {
     const modal = document.getElementById('modal-participant-profile');
     if (!modal) return;
-    if (typeof modal.close === 'function') modal.close();
-    else modal.style.display = 'none';
+    try {
+      if (typeof modal.close === 'function' && modal.open) modal.close();
+      else modal.style.display = 'none';
+    } catch {
+      modal.style.display = 'none';
+    }
   }
 
   // Delete Account Confirmation Dialog
@@ -311,39 +331,66 @@
     const nameEl = document.getElementById('delete-confirm-user-name');
     if (nameEl) nameEl.textContent = state.participant?.name || 'this user';
 
-    if (typeof modal.showModal === 'function') modal.showModal();
-    else modal.style.display = 'block';
+    try {
+      if (typeof modal.showModal === 'function') {
+        if (!modal.open) modal.showModal();
+      } else {
+        modal.style.display = 'block';
+      }
+    } catch {
+      modal.style.display = 'block';
+    }
   }
 
   function closeDeleteConfirm() {
     const modal = document.getElementById('modal-delete-confirm');
     if (!modal) return;
-    if (typeof modal.close === 'function') modal.close();
-    else modal.style.display = 'none';
+    try {
+      if (typeof modal.close === 'function' && modal.open) modal.close();
+      else modal.style.display = 'none';
+    } catch {
+      modal.style.display = 'none';
+    }
   }
 
   async function handleAccountDelete() {
-    if (!state.participant) return;
-    const consumerKey = state.participant.consumerKey;
-    const userName = state.participant.name;
-
-    try {
-      const resp = await fetch('/api/labs/delete-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ consumerKey }),
-      });
-      const data = await resp.json();
-      if (!data.success) {
-        showToast(data.error || 'Failed to delete account', 'danger');
-        return;
-      }
-    } catch {
-      showToast('Error contacting server to delete account', 'danger');
+    if (!state.participant) {
+      closeDeleteConfirm();
+      closeParticipantProfile();
+      promptOnboarding(true);
       return;
     }
 
-    // Clear state completely
+    const consumerKey = state.participant.consumerKey;
+    const userName = state.participant.name;
+
+    // Show deleting state on action buttons
+    const btnDel1 = document.getElementById('btn-open-delete-account');
+    const btnDel2 = document.getElementById('btn-confirm-delete');
+    if (btnDel1) {
+      btnDel1.disabled = true;
+      btnDel1.innerHTML = '<span>Deleting Account... ⏳</span>';
+    }
+    if (btnDel2) {
+      btnDel2.disabled = true;
+      btnDel2.innerHTML = '<span>Deleting Account... ⏳</span>';
+    }
+
+    try {
+      await fetch('/api/labs/delete-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          consumerKey,
+          name: userName,
+          identifier: consumerKey || userName,
+        }),
+      });
+    } catch (err) {
+      console.warn('Network notice during user delete:', err);
+    }
+
+    // Always clear local state completely
     state.participant = null;
     state.testResults = {};
     state.currentStepIndex = 0;
@@ -351,14 +398,27 @@
     localStorage.removeItem('apigee_lab_participant');
     localStorage.removeItem('apigee_lab_test_results');
 
+    // Close open profile and confirmation dialogs
     closeDeleteConfirm();
     closeParticipantProfile();
+
+    if (btnDel1) {
+      btnDel1.disabled = false;
+      btnDel1.innerHTML = '<span>Close &amp; Delete Account</span>';
+    }
+    if (btnDel2) {
+      btnDel2.disabled = false;
+      btnDel2.innerHTML = '<span>Yes, Delete Account &amp; All Data</span>';
+    }
+
     updateParticipantUI();
     renderCurrentStep();
     updateOverallProgress();
 
-    showToast(`Account for "${userName}" and all data permanently deleted.`, 'info');
-    setTimeout(() => promptOnboarding(true), 350);
+    showToast(`Account for "${userName}" deleted. Please enter your name to register a new user.`, 'info');
+
+    // Transition immediately to the new user page / onboarding modal
+    setTimeout(() => promptOnboarding(true), 120);
   }
 
   // Open Trace in External Apigee Trace Viewer (directly in new tab)
@@ -660,15 +720,30 @@
     const tableBody = document.getElementById('leaderboard-table-body');
     if (!tableBody) return;
 
-    if (entries.length === 0) {
+    const spotTokensVal = document.getElementById('spot-tokens-val');
+    const spotTokensUser = document.getElementById('spot-tokens-user');
+    const spotCallsVal = document.getElementById('spot-calls-val');
+    const spotCallsUser = document.getElementById('spot-calls-user');
+    const spotBudgetVal = document.getElementById('spot-budget-val');
+    const spotBudgetUser = document.getElementById('spot-budget-user');
+    const spotLatVal = document.getElementById('spot-latency-val');
+
+    if (!Array.isArray(entries) || entries.length === 0) {
       tableBody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No participant usage recorded yet.</td></tr>';
+      if (spotTokensVal) spotTokensVal.textContent = '0';
+      if (spotTokensUser) spotTokensUser.textContent = '--';
+      if (spotCallsVal) spotCallsVal.textContent = '0';
+      if (spotCallsUser) spotCallsUser.textContent = '--';
+      if (spotBudgetVal) spotBudgetVal.textContent = '$0.00';
+      if (spotBudgetUser) spotBudgetUser.textContent = '--';
+      if (spotLatVal) spotLatVal.textContent = '0 ms';
       return;
     }
 
     // Identify leaders
-    let maxTokensEntry = entries[0];
-    let maxCallsEntry = entries[0];
-    let maxBudgetEntry = entries[0];
+    let maxTokensEntry = entries.find((e) => e.totalTokens > 0) || entries[0];
+    let maxCallsEntry = entries.find((e) => e.totalCalls > 0) || entries[0];
+    let maxBudgetEntry = entries.find((e) => e.estimatedCost > 0) || entries[0];
     let totalFleetLatency = 0;
     let latencyCount = 0;
 
@@ -685,21 +760,16 @@
     const avgFleetLat = latencyCount > 0 ? Math.round(totalFleetLatency / latencyCount) : 0;
 
     // Update Spotlight cards
-    const spotTokensVal = document.getElementById('spot-tokens-val');
-    const spotTokensUser = document.getElementById('spot-tokens-user');
-    const spotCallsVal = document.getElementById('spot-calls-val');
-    const spotCallsUser = document.getElementById('spot-calls-user');
-    const spotBudgetVal = document.getElementById('spot-budget-val');
-    const spotBudgetUser = document.getElementById('spot-budget-user');
-    const spotLatVal = document.getElementById('spot-latency-val');
-
     if (spotTokensVal) spotTokensVal.textContent = maxTokensEntry.totalTokens.toLocaleString();
-    if (spotTokensUser) spotTokensUser.textContent = maxTokensEntry.name;
+    if (spotTokensUser) spotTokensUser.textContent = maxTokensEntry.totalTokens > 0 ? maxTokensEntry.name : '--';
     if (spotCallsVal) spotCallsVal.textContent = maxCallsEntry.totalCalls.toLocaleString();
-    if (spotCallsUser) spotCallsUser.textContent = maxCallsEntry.name;
+    if (spotCallsUser) spotCallsUser.textContent = maxCallsEntry.totalCalls > 0 ? maxCallsEntry.name : '--';
     if (spotBudgetVal) spotBudgetVal.textContent = maxBudgetEntry.estimatedCostFormatted;
-    if (spotBudgetUser) spotBudgetUser.textContent = maxBudgetEntry.name;
+    if (spotBudgetUser) spotBudgetUser.textContent = maxBudgetEntry.estimatedCost > 0 ? maxBudgetEntry.name : '--';
     if (spotLatVal) spotLatVal.textContent = `${avgFleetLat} ms`;
+
+    // Total test count
+    const totalTestsCount = (state.tests && state.tests.length) || 8;
 
     // Render Table
     tableBody.innerHTML = '';
@@ -708,9 +778,9 @@
       if (e.isCurrent) tr.className = 'current-user-row';
 
       let medal = `#${e.rank}`;
-      if (e.rank === 1) medal = '🥇';
-      else if (e.rank === 2) medal = '🥈';
-      else if (e.rank === 3) medal = '🥉';
+      if (e.rank === 1 && (e.totalTokens > 0 || e.totalCalls > 0)) medal = '🥇';
+      else if (e.rank === 2 && (e.totalTokens > 0 || e.totalCalls > 0)) medal = '🥈';
+      else if (e.rank === 3 && (e.totalTokens > 0 || e.totalCalls > 0)) medal = '🥉';
 
       const initial = (e.name || 'U').charAt(0).toUpperCase();
 
@@ -726,7 +796,7 @@
           </div>
         </td>
         <td><code>${e.consumerKey}</code></td>
-        <td><span class="badge ${e.testsCompletedCount >= 5 ? 'badge-proxy' : ''}">${e.testsCompletedCount} / 5</span></td>
+        <td><span class="badge ${e.testsCompletedCount >= totalTestsCount ? 'badge-proxy' : ''}">${e.testsCompletedCount} / ${totalTestsCount}</span></td>
         <td><strong>${e.totalCalls}</strong></td>
         <td>
           <strong>${e.totalTokens.toLocaleString()}</strong>
@@ -873,7 +943,7 @@
     if (!test) return;
 
     const total = state.tests.length;
-    const currentKey = state.participant?.consumerKey || 'test-app-key-123';
+    const currentKey = state.participant?.consumerKey || test.headers?.['x-api-key'] || 'starter-app-key-123';
 
     // Header badges & titles
     const stepBadge = document.getElementById('step-badge');
@@ -881,6 +951,16 @@
 
     const testTitle = document.getElementById('test-title');
     if (testTitle) testTitle.textContent = test.description || test.name;
+
+    const badgeProduct = document.getElementById('badge-product');
+    if (badgeProduct) {
+      if (test.product) {
+        badgeProduct.textContent = test.product;
+        badgeProduct.style.display = 'inline-block';
+      } else {
+        badgeProduct.style.display = 'none';
+      }
+    }
 
     const badgeProxy = document.getElementById('badge-proxy');
     if (badgeProxy) badgeProxy.textContent = test.proxyDisplayName || test.proxy;
@@ -1057,7 +1137,7 @@
     const test = state.tests[state.currentStepIndex];
     if (!test) return;
 
-    const currentKey = state.participant?.consumerKey || 'test-app-key-123';
+    const currentKey = state.participant?.consumerKey || test.headers?.['x-api-key'] || 'starter-app-key-123';
     const activeHeaders = { ...(test.headers || {}) };
     if (activeHeaders['x-api-key']) activeHeaders['x-api-key'] = currentKey;
 
@@ -1267,11 +1347,13 @@
     const payload = {
       testName: test.name,
       proxy: test.proxy,
+      product: test.product,
       method: test.verb || test.method || 'POST',
       path: test.path,
       headers: headers,
       body: body,
       recordTrace: true,
+      injectGoogleToken: test.injectGoogleToken,
       assertions: test.assertions && test.assertions.length > 0 ? test.assertions : ['response.status == 200'],
     };
 
@@ -1460,7 +1542,7 @@
     }
 
     const btnOpenDelAccount = document.getElementById('btn-open-delete-account');
-    if (btnOpenDelAccount) btnOpenDelAccount.onclick = openDeleteConfirm;
+    if (btnOpenDelAccount) btnOpenDelAccount.onclick = handleAccountDelete;
 
     const btnSwitchAccount = document.getElementById('btn-switch-account');
     if (btnSwitchAccount) {

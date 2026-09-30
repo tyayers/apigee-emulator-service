@@ -66,16 +66,19 @@
     btnTestAll: document.getElementById('btn-test-all'),
     activeTestBanner: document.getElementById('active-test-banner'),
     activeTestName: document.getElementById('active-test-name'),
+    activeTestProduct: document.getElementById('active-test-product'),
     activeTestDesc: document.getElementById('active-test-desc'),
     reqMethod: document.getElementById('req-method'),
     reqPath: document.getElementById('req-path'),
     reqProxyName: document.getElementById('req-proxy-name'),
     chkRecordTrace: document.getElementById('chk-record-trace'),
+    chkInjectGoogleToken: document.getElementById('chk-inject-google-token'),
     btnSendReq: document.getElementById('btn-send-req'),
     headersTbody: document.getElementById('headers-tbody'),
     headerCountBadge: document.getElementById('header-count-badge'),
     btnAddHeader: document.getElementById('btn-add-header'),
     btnAddApiKey: document.getElementById('btn-add-apikey'),
+    btnAddBearerToken: document.getElementById('btn-add-bearertoken'),
     reqBody: document.getElementById('req-body'),
     btnPrettifyBody: document.getElementById('btn-prettify-body'),
     btnClearBody: document.getElementById('btn-clear-body'),
@@ -677,6 +680,12 @@
     el.btnAddApiKey.addEventListener('click', () => {
       addHeaderRow('x-api-key', 'starter-app-key-123');
     });
+    if (el.btnAddBearerToken) {
+      el.btnAddBearerToken.addEventListener('click', () => {
+        addHeaderRow('Authorization', 'Bearer {GoogleAccessCode}');
+        if (el.chkInjectGoogleToken) el.chkInjectGoogleToken.checked = true;
+      });
+    }
 
     el.btnPrettifyBody.addEventListener('click', () => {
       try {
@@ -1209,6 +1218,20 @@
     state.assertions = Array.isArray(test.assertions) ? [...test.assertions] : [];
     renderAssertionsList();
 
+    // Configure Google Bearer Token injection toggle
+    if (el.chkInjectGoogleToken) {
+      if (test.injectGoogleToken !== undefined) {
+        el.chkInjectGoogleToken.checked = Boolean(test.injectGoogleToken);
+      } else {
+        const testHeadersStr = JSON.stringify(test.headers || {}).toLowerCase();
+        const hasPlaceholder = testHeadersStr.includes('googleaccesscode') || testHeadersStr.includes('googleaccesstoken');
+        const proxyLower = (test.proxy || '').toLowerCase();
+        const isInteractions = proxyLower.includes('interactions');
+        const isMcp = proxyLower.includes('mcp') || proxyLower.includes('customerservice');
+        el.chkInjectGoogleToken.checked = hasPlaceholder || (!isInteractions && !isMcp);
+      }
+    }
+
     // Ensure selected test is selected in the dropdown
     const testIdx = state.tests.indexOf(test);
     if (testIdx !== -1 && el.presetSelect) {
@@ -1219,6 +1242,15 @@
     if (el.activeTestBanner) {
       if (test && test.name) {
         if (el.activeTestName) el.activeTestName.textContent = test.name;
+        if (el.activeTestProduct) {
+          if (test.product) {
+            el.activeTestProduct.textContent = test.product;
+            el.activeTestProduct.classList.remove('hidden');
+          } else {
+            el.activeTestProduct.textContent = '';
+            el.activeTestProduct.classList.add('hidden');
+          }
+        }
         if (el.activeTestDesc) {
           if (test.description) {
             el.activeTestDesc.textContent = test.description;
@@ -2706,6 +2738,7 @@
     const body = el.reqBody.value;
     const testName = state.selectedTest ? state.selectedTest.name : '';
     const assertions = state.assertions || [];
+    const injectGoogleToken = el.chkInjectGoogleToken ? el.chkInjectGoogleToken.checked : undefined;
 
     // Reset response view
     el.respStatusBadge.className = 'status-tag status-none';
@@ -2729,6 +2762,7 @@
           recordTrace,
           testName,
           assertions,
+          injectGoogleToken,
         }),
       });
 

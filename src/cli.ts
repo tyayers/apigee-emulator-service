@@ -46,6 +46,18 @@ export async function runCli(): Promise<void> {
   const emulator = new EmulatorClient();
   const bundleManager = new BundleManager(dataDir);
   emulator.kvmSecretProvider = () => bundleManager.getKVMSecretValues();
+  emulator.activeConsumerKeysProvider = () => {
+    const apps = bundleManager.getApps();
+    const keys: string[] = [];
+    for (const app of apps) {
+      if (app.credentials) {
+        for (const cred of app.credentials) {
+          if (cred.consumerKey) keys.push(cred.consumerKey);
+        }
+      }
+    }
+    return keys;
+  };
 
   const deployer = new DeploymentDeployer(emulator, bundleManager, dataDir);
   const deploymentManager = new DeploymentManager(dataDir);

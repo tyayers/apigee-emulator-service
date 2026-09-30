@@ -58,4 +58,14 @@ describe("HTTP server endpoints", () => {
     expect(data.success).toBe(true);
     expect(data.url).toBe("https://apigee-trace-viewer-323709580283.europe-west1.run.app/testuser");
   });
+
+  test("POST /tester/api/tests/warmup triggers proxy warmup", async () => {
+    const res = await fetch(`http://127.0.0.1:${testPort}/tester/api/tests/warmup`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.status).toBe("warmup_started");
+  });
 });
