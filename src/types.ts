@@ -211,5 +211,8 @@ export interface AnalyticsQueryResponse {
   count: number;
   projectId: string;
   database: string;
+  source?: "firestore" | "local" | "hybrid";
+  storageType?: "memory" | "file";
+  storageFile?: string;
   error?: string;
 }

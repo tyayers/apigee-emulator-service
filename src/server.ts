@@ -73,7 +73,7 @@ export class EmulatorServer {
     this.deploymentManager = new DeploymentManager(this.dataDir);
     this.testHistory = new TestHistoryManager();
     this.proxyTester = new ProxyTester(this.emulator, () => this.deploymentManager.getDeploymentConsumerKeys());
-    this.analytics = new AnalyticsManager();
+    this.analytics = new AnalyticsManager(this.dataDir);
     this.labManager = new LabManager(this.dataDir);
   }
 
@@ -770,19 +770,24 @@ export class EmulatorServer {
       if (method === "GET") {
         const limitStr = url.searchParams.get("limit");
         const limit = limitStr ? parseInt(limitStr, 10) || 500 : 500;
+        const forceLocal = url.searchParams.get("source") === "local";
+        const projectId = await this.analytics.detectProjectID();
         try {
-          const records = await this.analytics.getLastRecords(limit);
+          const result = await this.analytics.getLastRecords(limit, forceLocal);
           return this.jsonResponse({
-            records,
-            count: records.length,
-            projectId: this.analytics.detectProjectID(),
+            records: result.records,
+            count: result.records.length,
+            projectId,
             database: "(default)",
+            source: result.source,
+            storageType: result.storageType,
+            storageFile: result.storageFile,
           });
         } catch (err: any) {
           return this.jsonResponse({
             records: [],
             count: 0,
-            projectId: this.analytics.detectProjectID(),
+            projectId,
             database: "(default)",
             error: err.message || String(err),
           }, 500);

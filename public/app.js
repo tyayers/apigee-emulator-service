@@ -231,6 +231,7 @@
     iconRefreshAnalytics: document.getElementById('icon-refresh-analytics'),
     btnExportCsv: document.getElementById('btn-export-csv'),
     btnExportJson: document.getElementById('btn-export-json'),
+    analyticsStorageTag: document.getElementById('analytics-storage-tag'),
     analyticsDbTag: document.getElementById('analytics-db-tag'),
 
     // KPI Summary elements
@@ -5052,7 +5053,7 @@
 
       if (res.ok) {
         const data = await res.json();
-        console.log('[Analytics] Record saved to Firestore apigee_analytics:', data.id);
+        console.log('[Analytics] Record saved:', data.id);
         if (el.btnViewTraceAnalytics) {
           el.btnViewTraceAnalytics.classList.remove('hidden');
         }
@@ -5093,9 +5094,24 @@
       const data = await resp.json();
       analyticsState.records = data.records || [];
 
-      if (data.projectId && el.analyticsDbTag) {
-        el.analyticsDbTag.textContent = `projects/${data.projectId}/databases/(default)`;
+      if (el.analyticsStorageTag) {
+        if (data.source === 'local') {
+          el.analyticsStorageTag.textContent = data.storageType === 'memory' ? 'Storage: In-Memory (Cloud Run)' : 'Storage: Local File Volume';
+        } else if (data.source === 'firestore') {
+          el.analyticsStorageTag.textContent = 'Storage: Firestore (apigee_analytics)';
+        } else {
+          el.analyticsStorageTag.textContent = 'Storage: Local Volume + Firestore';
+        }
       }
+
+      if (el.analyticsDbTag) {
+        if (data.source === 'local') {
+          el.analyticsDbTag.textContent = data.storageFile ? `File: ${data.storageFile}` : 'Memory Buffer (Firestore offline)';
+        } else if (data.projectId) {
+          el.analyticsDbTag.textContent = `projects/${data.projectId}/databases/(default)`;
+        }
+      }
+
       if (el.navAnalyticsBadge) {
         el.navAnalyticsBadge.textContent = analyticsState.records.length;
       }
@@ -5105,7 +5121,7 @@
     } catch (err) {
       console.error('[Analytics] Error retrieving records:', err);
       if (el.analyticsTableBody) {
-        el.analyticsTableBody.innerHTML = `<tr><td colspan="8" class="empty-state">Error retrieving analytics from Firestore: ${escapeHtml(err.message)}</td></tr>`;
+        el.analyticsTableBody.innerHTML = `<tr><td colspan="8" class="empty-state">Error retrieving analytics: ${escapeHtml(err.message)}</td></tr>`;
       }
     } finally {
       analyticsState.loading = false;
