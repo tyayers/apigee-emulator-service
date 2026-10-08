@@ -33,9 +33,17 @@ Before getting started, make sure you have the following prerequisites installed
    ```bash
    sudo apt-get update && sudo apt-get install -y curl jq
    ```
-5. **Google Cloud SDK (`gcloud`)** – Authenticated with your GCP project (required for Cloud Run deployment):
+5. **Google Cloud SDK (`gcloud`)** – Authenticated with your GCP project (required for Cloud Run deployment or auto-detecting `GOOGLE_CLOUD_PROJECT`):
    ```bash
    gcloud auth login
+   ```
+6. **Gemini API Key (`GEMINI_API_KEY`)** – Required to test the Gemini Interactions API (`REST-AI-Interactions`). Set it directly as an environment variable or in a `.env` file in the project root:
+   ```bash
+   # Set directly in your shell:
+   export GEMINI_API_KEY="AIzaSy..."
+
+   # Or define in a .env file:
+   echo "GEMINI_API_KEY=AIzaSy..." >> .env
    ```
 
 ---
