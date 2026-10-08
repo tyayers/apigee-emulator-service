@@ -84,4 +84,50 @@ describe("HTTP server endpoints", () => {
     expect(data.success).toBe(true);
     expect(data.status).toBe("warmup_started");
   });
+
+  test("GET /tester/api/config/host and status return host configuration", async () => {
+    const statusRes = await fetch(`http://127.0.0.1:${testPort}/tester/api/status`);
+    expect(statusRes.status).toBe(200);
+    const statusData = await statusRes.json();
+    expect(statusData).toHaveProperty("targetHostConfig");
+    expect(statusData.targetHostConfig.mode).toBe("local");
+    expect(statusData.targetHostConfig.defaultRemoteHost).toBe("https://34-8-196-4.nip.io");
+
+    const configRes = await fetch(`http://127.0.0.1:${testPort}/tester/api/config/host`);
+    expect(configRes.status).toBe(200);
+    const configData = await configRes.json();
+    expect(configData.mode).toBe("local");
+    expect(configData.remoteHost).toBe("https://34-8-196-4.nip.io");
+  });
+
+  test("POST /tester/api/config/host switches host mode and remote host", async () => {
+    const postRes = await fetch(`http://127.0.0.1:${testPort}/tester/api/config/host`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "remote",
+        remoteHost: "https://custom-apigee.nip.io",
+      }),
+    });
+    expect(postRes.status).toBe(200);
+    const postData = await postRes.json();
+    expect(postData.mode).toBe("remote");
+    expect(postData.remoteHost).toBe("https://custom-apigee.nip.io");
+
+    // Verify it changed
+    const verifyRes = await fetch(`http://127.0.0.1:${testPort}/tester/api/config/host`);
+    const verifyData = await verifyRes.json();
+    expect(verifyData.mode).toBe("remote");
+    expect(verifyData.remoteHost).toBe("https://custom-apigee.nip.io");
+
+    // Reset back to local
+    await fetch(`http://127.0.0.1:${testPort}/tester/api/config/host`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "local",
+        remoteHost: "https://34-8-196-4.nip.io",
+      }),
+    });
+  });
 });

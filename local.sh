@@ -7,28 +7,31 @@
 # Bun TypeScript server, and runs tests & traces.
 #
 # USAGE:
-#   1. Start emulator & server:
-#        ./local.sh up
-#        ./local.sh start --dev
+#   1. Start emulator & server (Option 1):
+#        ./local.sh --start
+#        ./local.sh --start --dev
 #
-#   2. Deploy a deployment YAML (with automatic GOOGLE_CLOUD_PROJECT substitution):
-#        ./local.sh deploy data/deployments/deployment-1.yaml
-#        ./local.sh deploy --project my-gcp-project data/deployments/deployment-1.yaml
+#   2. Deploy a deployment YAML (Option 2):
+#        ./local.sh --deploy
+#        ./local.sh --deploy data/deployments/deployment-1.yaml
+#        ./local.sh --deploy --project my-gcp-project data/deployments/deployment-1.yaml
 #
-#   3. Deploy all deployments at once:
-#        ./local.sh deploy --all
+#   3. Deploy all deployments at once (Option 3):
+#        ./local.sh --deploy-all
 #
-#   4. Run tests:
-#        ./local.sh test
-#        ./local.sh test REST-AI-Interactions
+#   4. Run tests (Option 4):
+#        ./local.sh --test
+#        ./local.sh --test REST-AI-Interactions
 #
-#   5. Check status, inspect active proxies, or trace:
-#        ./local.sh status
-#        ./local.sh tester
-#        ./local.sh trace-start REST-AI-Interactions
-#        ./local.sh trace-stop
-#        ./local.sh reset
-#        ./local.sh stop
+#   5. Check status, inspect active proxies, or trace (Options 5-10):
+#        ./local.sh --status
+#        ./local.sh --ui
+#        ./local.sh --reset
+#        ./local.sh --recreate
+#        ./local.sh --clean
+#        ./local.sh --stop
+#        ./local.sh --trace-start REST-AI-Interactions
+#        ./local.sh --trace-stop
 #
 #   6. Interactive menu (default when run with no arguments):
 #        ./local.sh
@@ -58,7 +61,12 @@ NC="\033[0m"
 # Configuration defaults
 PORT="${PORT:-8082}"
 EMULATOR_MGMT_URL="${EMULATOR_MGMT_URL:-http://127.0.0.1:8080}"
-EMULATOR_RUNTIME_URL="${EMULATOR_RUNTIME_URL:-http://127.0.0.1:8998}"
+if [ -n "${EMULATOR_RUNTIME_URL:-}" ]; then
+  CUSTOM_RUNTIME_URL_SET="true"
+else
+  CUSTOM_RUNTIME_URL_SET="false"
+  EMULATOR_RUNTIME_URL=""
+fi
 CONTAINER_NAME="${EMULATOR_CONTAINER_NAME:-apigee}"
 EMULATOR_TIMEOUT="${EMULATOR_TIMEOUT:-60}"
 URL_FILE="$ROOT_DIR/.local_url"
@@ -73,6 +81,20 @@ declare -A ALL_PARAMS_MAP
 # ------------------------------------------------------------------------------
 # Port Resolution
 # ------------------------------------------------------------------------------
+resolve_emulator_runtime_url() {
+  if [ "$CUSTOM_RUNTIME_URL_SET" = "true" ] && [ -n "$EMULATOR_RUNTIME_URL" ]; then
+    return 0
+  fi
+  # Auto-detect mapped port from Docker container if running
+  local mapped_port
+  mapped_port=$(docker port "$CONTAINER_NAME" 8998/tcp 2>/dev/null | head -n 1 | sed 's/.*://' | tr -d ' \r\n' || true)
+  if [ -n "$mapped_port" ]; then
+    EMULATOR_RUNTIME_URL="http://127.0.0.1:${mapped_port}"
+  elif [ -z "$EMULATOR_RUNTIME_URL" ]; then
+    EMULATOR_RUNTIME_URL="http://127.0.0.1:8888"
+  fi
+  export EMULATOR_RUNTIME_URL
+}
 is_tester_service() {
   local p="$1"
   local res
@@ -295,7 +317,7 @@ recreate_emulator() {
     echo -e "${BLUE}Creating container ${CONTAINER_NAME}...${NC}"
     docker create --name "$CONTAINER_NAME" \
       -p 8080:8080 \
-      -p 8998:8998 \
+      -p 8888:8998 \
       -p 9042:9042 \
       gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1
   fi
@@ -329,7 +351,7 @@ ensure_emulator_running() {
       echo -e "${BLUE}Creating container ${CONTAINER_NAME}...${NC}"
       docker create --name "$CONTAINER_NAME" \
         -p 8080:8080 \
-        -p 8998:8998 \
+        -p 8888:8998 \
         -p 9042:9042 \
         gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1
     fi
@@ -344,12 +366,14 @@ ensure_emulator_running() {
 
   # Check if emulator is already responding
   if check_emulator_ready; then
+    resolve_emulator_runtime_url
     return 0
   fi
 
   echo -e "${BLUE}Waiting for Apigee Emulator to become ready...${NC}"
   if wait_for_emulator_ready "$EMULATOR_TIMEOUT"; then
     echo -e "${GREEN}✓ Apigee Emulator container is ready.${NC}"
+    resolve_emulator_runtime_url
     return 0
   fi
 
@@ -397,10 +421,12 @@ start_server() {
   fi
   echo -e "  • ${BOLD}Waiting for service to bind and start...${NC}"
 
+  resolve_emulator_runtime_url
+
   if [ "$dev_mode" = "true" ]; then
-    setsid env PORT="$PORT" bun --watch run src/index.ts </dev/null > "$LOG_FILE" 2>&1 &
+    setsid env PORT="$PORT" EMULATOR_RUNTIME_URL="$EMULATOR_RUNTIME_URL" bun --watch run src/index.ts </dev/null > "$LOG_FILE" 2>&1 &
   else
-    setsid env PORT="$PORT" bun run src/index.ts </dev/null > "$LOG_FILE" 2>&1 &
+    setsid env PORT="$PORT" EMULATOR_RUNTIME_URL="$EMULATOR_RUNTIME_URL" bun run src/index.ts </dev/null > "$LOG_FILE" 2>&1 &
   fi
   local bun_pid=$!
   echo "$bun_pid" > "$PID_FILE"
@@ -482,10 +508,13 @@ deploy_resource() {
     reset_flag="--no-reset"
   fi
 
+  resolve_emulator_runtime_url
+
   # Run the Bun TypeScript deployer directly
   GOOGLE_CLOUD_PROJECT="$PROJECT_ID" \
   GOOGLE_CLOUD_LOCATION="$REGION" \
   PORT="$PORT" \
+  EMULATOR_RUNTIME_URL="$EMULATOR_RUNTIME_URL" \
   bun run src/index.ts --deploy "$target" $reset_flag --no-server
 
   echo -e "\n${GREEN}Deployment finished successfully.${NC}"
@@ -514,6 +543,7 @@ run_tests() {
   local proxy_name="$1"
   resolve_gcp_context
   resolve_active_port
+  resolve_emulator_runtime_url
 
   echo -e "${BOLD}Running tests against local Apigee Emulator...${NC}"
 
@@ -535,6 +565,7 @@ run_tests() {
     GOOGLE_CLOUD_PROJECT="$PROJECT_ID" \
     GOOGLE_CLOUD_LOCATION="$REGION" \
     PORT="$PORT" \
+    EMULATOR_RUNTIME_URL="$EMULATOR_RUNTIME_URL" \
     bun run src/index.ts --test ${proxy_name:+"$proxy_name"} --no-server
   fi
 }
@@ -542,6 +573,7 @@ run_tests() {
 check_status() {
   resolve_gcp_context
   resolve_active_port
+  resolve_emulator_runtime_url
 
   local tester_pid=""
   if [ -f "$PID_FILE" ]; then
@@ -654,6 +686,7 @@ stop_all() {
 
 start_trace() {
   local proxy_name="$1"
+  resolve_emulator_runtime_url
   if [ -z "$proxy_name" ]; then
     echo -e "${RED}Usage: ./local.sh trace-start <PROXY_NAME>${NC}" >&2
     exit 1
@@ -666,7 +699,7 @@ start_trace() {
   session_id=$(echo "$session" | jq -r '.name // .id // empty' 2>/dev/null || true)
   if [ -n "$session_id" ]; then
     echo -e "${GREEN}Trace session active:${NC} $session_id"
-    echo -e "Send traffic to http://localhost:8998 and then run: ${CYAN}./local.sh trace-stop${NC}"
+    echo -e "Send traffic to ${EMULATOR_RUNTIME_URL} and then run: ${CYAN}./local.sh trace-stop${NC}"
   else
     echo -e "${RED}Failed to start trace session:${NC} $session"
   fi
@@ -700,44 +733,64 @@ stop_trace() {
 # ------------------------------------------------------------------------------
 show_help() {
   echo -e "${BOLD}Usage:${NC}"
-  echo "  ./local.sh [COMMAND] [OPTIONS] [FILE.yaml...]"
+  echo "  ./local.sh [OPTION | COMMAND] [ARGUMENTS]"
   echo ""
-  echo -e "${BOLD}Commands:${NC}"
-  echo "  up, start              Start Apigee container and launch local tester service in background"
-  echo "  deploy [FILE...]       Deploy a deployment YAML or bundle (default: deployment-1.yaml)"
-  echo "  test [PROXY]           Run proxy tests against local runtime"
-  echo "  status                 Check container health, deployed proxies, and tester UI"
-  echo "  tester, ui             Print and open Tester Web UI in browser"
-  echo "  trace-start [PROXY]    Start trace recording session for a proxy"
-  echo "  trace-stop             Stop trace session and download trace.json"
-  echo "  reset                  Reset local emulator state"
-  echo "  recreate               Destroy and recreate emulator container with fresh state"
-  echo "  clean                  Remove generated assets, reset emulator, or start fresh (clean.sh)"
-  echo "  logs                   View Docker container logs"
-  echo "  stop                   Stop all services (emulator container & local tester)"
+  echo -e "${BOLD}Menu Options (1-10):${NC}"
+  echo "  1)  --start, --up                 Start Apigee container and launch local tester service in background"
+  echo "  2)  --deploy [FILE]               Deploy a deployment YAML or bundle (default: data/deployments/deployment-1.yaml)"
+  echo "  3)  --deploy-all, -a, --all       Deploy all deployments in 'data/deployments/'"
+  echo "  4)  --test [PROXY]                Run proxy tests against local runtime (all or specific proxy)"
+  echo "  5)  --status                      Check container health, deployed proxies, and tester UI"
+  echo "  6)  --ui, --tester                Print and open Tester Web UI in browser"
+  echo "  7)  --reset                       Reset local emulator state via API"
+  echo "  8)  --recreate                    Destroy and recreate emulator container with fresh state"
+  echo "  9)  --clean [OPTIONS]             Remove generated assets, reset emulator, or start fresh (clean.sh)"
+  echo "  10) --stop                        Stop all services (emulator container & local tester)"
   echo ""
-  echo -e "${BOLD}Options:${NC}"
-  echo "  -a, --all              Deploy all deployments in 'data/deployments/'"
-  echo "  -l, --list             List available deployments and bundles"
-  echo "  --project [ID]         Set GCP Project ID for {GOOGLE_CLOUD_PROJECT} substitution"
-  echo "  --region [REGION]      Set GCP Region / Location (default: global)"
-  echo "  --port [PORT]          Set tester server port (default: 8082)"
-  echo "  --dev                  Run server in Bun watch/dev mode"
-  echo "  -p, --parameters P     Pass additional parameters (key=val,key2=val2)"
-  echo "  -h, --help             Show this help message"
+  echo -e "${BOLD}Additional Commands & Options:${NC}"
+  echo "  --logs, logs                      View Docker container logs"
+  echo "  --trace-start [PROXY]             Start trace recording session for a proxy"
+  echo "  --trace-stop                      Stop trace session and download trace.json"
+  echo "  -l, --list                        List available deployments and bundles"
+  echo "  --project [ID]                    Set GCP Project ID for {GOOGLE_CLOUD_PROJECT} substitution"
+  echo "  --region [REGION]                 Set GCP Region / Location (default: global)"
+  echo "  --port [PORT]                     Set tester server port (default: 8082)"
+  echo "  --dev                             Run server in Bun watch/dev mode"
+  echo "  -p, --parameters P                Pass additional parameters (key=val,key2=val2)"
+  echo "  -h, --help                        Show this help message"
+  echo ""
+  echo -e "${BOLD}Note:${NC} Positional commands without dashes (e.g. 'start', 'deploy', 'test', 'status') are also supported."
   echo ""
   echo -e "${BOLD}Examples:${NC}"
-  echo "  # 1. Start server with automatic project detection:"
-  echo "  ./local.sh up"
+  echo "  # Start server and emulator in background (Option 1):"
+  echo "  ./local.sh --start"
   echo ""
-  echo "  # 2. Deploy deployment-1.yaml with specific project ID:"
-  echo "  ./local.sh deploy --project aigateway-lab3 data/deployments/deployment-1.yaml"
+  echo "  # Deploy deployment-1.yaml (Option 2):"
+  echo "  ./local.sh --deploy data/deployments/deployment-1.yaml"
   echo ""
-  echo "  # 3. Run tests for a deployed proxy:"
-  echo "  ./local.sh test REST-AI-Interactions"
+  echo "  # Deploy all deployments (Option 3):"
+  echo "  ./local.sh --deploy-all"
   echo ""
-  echo "  # 4. Check status and deployed proxies:"
-  echo "  ./local.sh status"
+  echo "  # Run proxy tests (Option 4):"
+  echo "  ./local.sh --test REST-AI-Interactions"
+  echo ""
+  echo "  # Check status (Option 5):"
+  echo "  ./local.sh --status"
+  echo ""
+  echo "  # Open Web UI (Option 6):"
+  echo "  ./local.sh --ui"
+  echo ""
+  echo "  # Reset emulator state (Option 7):"
+  echo "  ./local.sh --reset"
+  echo ""
+  echo "  # Recreate emulator container (Option 8):"
+  echo "  ./local.sh --recreate"
+  echo ""
+  echo "  # Clean generated assets (Option 9):"
+  echo "  ./local.sh --clean"
+  echo ""
+  echo "  # Stop all services (Option 10):"
+  echo "  ./local.sh --stop"
 }
 
 # ------------------------------------------------------------------------------
@@ -752,16 +805,16 @@ interactive_menu() {
     echo -e "  Current GCP Project: ${CYAN}$PROJECT_ID${NC}"
   fi
   echo ""
-  echo "  1) Start Local Server & Emulator in Background (up)"
-  echo "  2) Deploy deployment-1.yaml"
-  echo "  3) Deploy all deployments (--all)"
-  echo "  4) Run Test Suite"
-  echo "  5) Check Status & Deployed Proxies"
-  echo "  6) Open Tester Web UI in Browser"
-  echo "  7) Reset Emulator State (API reset)"
-  echo "  8) Recreate Emulator Container (Fresh State)"
-  echo "  9) Clean Generated Assets & Reset Emulator (clean.sh)"
-  echo "  10) Stop All Services (Emulator & Tester)"
+  echo "  1) Start Local Server & Emulator in Background   (--start / --up)"
+  echo "  2) Deploy deployment-1.yaml                     (--deploy [FILE])"
+  echo "  3) Deploy all deployments                       (--deploy-all)"
+  echo "  4) Run Test Suite                               (--test [PROXY])"
+  echo "  5) Check Status & Deployed Proxies              (--status)"
+  echo "  6) Open Tester Web UI in Browser                (--ui / --tester)"
+  echo "  7) Reset Emulator State (API reset)             (--reset)"
+  echo "  8) Recreate Emulator Container (Fresh State)    (--recreate)"
+  echo "  9) Clean Generated Assets & Reset Emulator      (--clean)"
+  echo "  10) Stop All Services (Emulator & Tester)       (--stop)"
   echo "  11) Exit"
   echo ""
   read -rp "Select an option [1-11] (default: 1): " choice
@@ -798,6 +851,7 @@ interactive_menu() {
 COMMAND=""
 TARGET_FILE=""
 DEV_MODE="false"
+CLEAN_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -805,64 +859,74 @@ while [[ $# -gt 0 ]]; do
       show_help
       exit 0
       ;;
-    up|start)
+    --start|--up|up|start)
       COMMAND="start"
       shift
       ;;
-    deploy)
+    --deploy|deploy)
       COMMAND="deploy"
       shift
-      ;;
-    test)
-      COMMAND="test"
-      shift
-      ;;
-    status)
-      COMMAND="status"
-      shift
-      ;;
-    tester|ui)
-      COMMAND="ui"
-      shift
-      ;;
-    reset)
-      COMMAND="reset"
-      shift
-      ;;
-    recreate)
-      COMMAND="recreate"
-      shift
-      ;;
-    clean)
-      COMMAND="clean"
-      shift
-      ;;
-    stop)
-      COMMAND="stop"
-      shift
-      ;;
-    logs)
-      COMMAND="logs"
-      shift
-      ;;
-    trace-start)
-      COMMAND="trace-start"
-      shift
-      if [ -n "$1" ] && [[ "$1" != -* ]]; then
+      if [ -n "${1:-}" ] && [[ "$1" != -* ]]; then
         TARGET_FILE="$1"
         shift
       fi
       ;;
-    trace-stop)
+    --deploy-all|deploy-all|-a|--all)
+      COMMAND="deploy-all"
+      shift
+      ;;
+    --test|test)
+      COMMAND="test"
+      shift
+      if [ -n "${1:-}" ] && [[ "$1" != -* ]]; then
+        TARGET_FILE="$1"
+        shift
+      fi
+      ;;
+    --status|status)
+      COMMAND="status"
+      shift
+      ;;
+    --ui|--tester|tester|ui)
+      COMMAND="ui"
+      shift
+      ;;
+    --reset|reset)
+      COMMAND="reset"
+      shift
+      ;;
+    --recreate|recreate)
+      COMMAND="recreate"
+      shift
+      ;;
+    --clean|clean)
+      COMMAND="clean"
+      shift
+      CLEAN_ARGS=("$@")
+      break
+      ;;
+    --stop|stop)
+      COMMAND="stop"
+      shift
+      ;;
+    --logs|logs)
+      COMMAND="logs"
+      shift
+      ;;
+    --trace-start|trace-start)
+      COMMAND="trace-start"
+      shift
+      if [ -n "${1:-}" ] && [[ "$1" != -* ]]; then
+        TARGET_FILE="$1"
+        shift
+      fi
+      ;;
+    --trace-stop|trace-stop)
       COMMAND="trace-stop"
       shift
       ;;
     --dev)
       DEV_MODE="true"
-      shift
-      ;;
-    -a|--all)
-      COMMAND="deploy-all"
       shift
       ;;
     -l|--list)
@@ -947,7 +1011,7 @@ case "$COMMAND" in
     recreate_emulator
     ;;
   clean)
-    exec "$ROOT_DIR/clean.sh" "$@"
+    exec "$ROOT_DIR/clean.sh" "${CLEAN_ARGS[@]}"
     ;;
   stop)
     stop_all

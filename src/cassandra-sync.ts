@@ -52,10 +52,14 @@ function getDockerCqlExecutor(): CassandraExecutor | null {
 
     return {
       async query(cql: string) {
+        let jsonCql = cql.trim();
+        if (!jsonCql.toLowerCase().includes("select json ")) {
+          jsonCql = jsonCql.replace(/^(\s*select\s+)/i, "$1json ");
+        }
         const cmd = spawnSync(
           "docker",
-          ["exec", "apigee", "cqlsh", "-e", cql],
-          { encoding: "utf-8", timeout: 10000 },
+          ["exec", "apigee", "/opt/apigee/apigee-cassandra/bin/cqlsh", "-e", jsonCql],
+          { encoding: "utf-8", timeout: 15000 },
         );
         if (cmd.status !== 0) {
           throw new Error(cmd.stderr || cmd.stdout || "cqlsh query failed");
@@ -63,9 +67,11 @@ function getDockerCqlExecutor(): CassandraExecutor | null {
         const lines = (cmd.stdout || "").split("\n");
         const rows: any[] = [];
         for (const line of lines) {
-          const parts = line.split("|").map((s) => s.trim());
-          if (parts.length >= 2 && parts[0].length === 36) {
-            rows.push({ id: parts[0], name: parts[1] });
+          const trimmed = line.trim();
+          if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            try {
+              rows.push(JSON.parse(trimmed));
+            } catch {}
           }
         }
         return rows;
@@ -73,8 +79,8 @@ function getDockerCqlExecutor(): CassandraExecutor | null {
       async execute(cql: string) {
         const cmd = spawnSync(
           "docker",
-          ["exec", "apigee", "cqlsh", "-e", cql],
-          { encoding: "utf-8", timeout: 10000 },
+          ["exec", "apigee", "/opt/apigee/apigee-cassandra/bin/cqlsh", "-e", cql],
+          { encoding: "utf-8", timeout: 15000 },
         );
         if (cmd.status !== 0) {
           throw new Error(cmd.stderr || cmd.stdout || "cqlsh execution failed");
@@ -95,6 +101,121 @@ async function getCassandraExecutor(): Promise<CassandraExecutor | null> {
   return await getNativeDriverExecutor();
 }
 
+export async function purgeOrphanedCassandraKmsData(
+  executorArg?: CassandraExecutor | null,
+): Promise<{ cleanedMappers: number; cleanedMapperIdx: number; cleanedCreds: number; cleanedCredIdx: number }> {
+  let executor = executorArg;
+  let createdExecutor = false;
+  if (!executor) {
+    executor = await getCassandraExecutor();
+    if (!executor) return { cleanedMappers: 0, cleanedMapperIdx: 0, cleanedCreds: 0, cleanedCredIdx: 0 };
+    createdExecutor = true;
+  }
+
+  try {
+    const prodRows = await executor.query("SELECT id, name FROM kms_hybrid_hybrid.api_product;");
+    const appRows = await executor.query("SELECT id, name FROM kms_hybrid_hybrid.app;");
+
+    const validAppIds = new Set<string>();
+    for (const r of appRows) {
+      const id = typeof r.id?.toString === "function" ? r.id.toString() : String(r.id || "");
+      if (id) validAppIds.add(id);
+    }
+
+    const validProdIds = new Set<string>();
+    for (const r of prodRows) {
+      const id = typeof r.id?.toString === "function" ? r.id.toString() : String(r.id || "");
+      if (id) validProdIds.add(id);
+    }
+
+    let cleanedMappers = 0;
+    let cleanedMapperIdx = 0;
+    let cleanedCreds = 0;
+    let cleanedCredIdx = 0;
+
+    // 1. Clean app_and_api_product_mapper (delete rows pointing to deleted apps or deleted products)
+    try {
+      const mapperRows = await executor.query("SELECT tid, api_prdt_id, app_id, app_cred_id FROM kms_hybrid_hybrid.app_and_api_product_mapper;");
+      for (const m of mapperRows) {
+        const appId = typeof m.app_id?.toString === "function" ? m.app_id.toString() : String(m.app_id || "");
+        const prodId = typeof m.api_prdt_id?.toString === "function" ? m.api_prdt_id.toString() : String(m.api_prdt_id || "");
+        if (!validAppIds.has(appId) || !validProdIds.has(prodId)) {
+          const tid = m.tid || "hybrid";
+          const credId = m.app_cred_id;
+          await executor.execute(`DELETE FROM kms_hybrid_hybrid.app_and_api_product_mapper WHERE tid = '${tid}' AND api_prdt_id = ${prodId} AND app_id = ${appId} AND app_cred_id = '${credId}';`);
+          cleanedMappers++;
+        }
+      }
+    } catch (e) {
+      console.warn("[CassandraSync] Notice checking app_and_api_product_mapper:", e);
+    }
+
+    // 2. Clean app_and_api_product_mapper_idx (delete rows pointing to deleted apps)
+    try {
+      const mapperIdxRows = await executor.query("SELECT key, rid FROM kms_hybrid_hybrid.app_and_api_product_mapper_idx;");
+      for (const row of mapperIdxRows) {
+        const key = row.key || "";
+        const m = key.match(/app_id=([0-9a-fA-F-]+)/);
+        if (m && !validAppIds.has(m[1])) {
+          await executor.execute(`DELETE FROM kms_hybrid_hybrid.app_and_api_product_mapper_idx WHERE key = '${row.key}' AND rid = '${row.rid}';`);
+          cleanedMapperIdx++;
+        }
+      }
+    } catch (e) {
+      console.warn("[CassandraSync] Notice checking app_and_api_product_mapper_idx:", e);
+    }
+
+    // 3. Clean app_credential (delete credentials pointing to deleted apps)
+    const validCredKeys = new Set<string>();
+    try {
+      const credRows = await executor.query("SELECT tid, id, app_id FROM kms_hybrid_hybrid.app_credential;");
+      for (const c of credRows) {
+        const appId = typeof c.app_id?.toString === "function" ? c.app_id.toString() : String(c.app_id || "");
+        if (!validAppIds.has(appId)) {
+          const tid = c.tid || "hybrid";
+          await executor.execute(`DELETE FROM kms_hybrid_hybrid.app_credential WHERE tid = '${tid}' AND id = '${c.id}';`);
+          cleanedCreds++;
+        } else if (c.id) {
+          validCredKeys.add(c.id);
+        }
+      }
+    } catch (e) {
+      console.warn("[CassandraSync] Notice checking app_credential:", e);
+    }
+
+    // 4. Clean app_credential_idx (delete index entries pointing to deleted apps or deleted credentials)
+    try {
+      const credIdxRows = await executor.query("SELECT key, rid FROM kms_hybrid_hybrid.app_credential_idx;");
+      for (const row of credIdxRows) {
+        const key = row.key || "";
+        const m = key.match(/app_id=([0-9a-fA-F-]+)/);
+        if (m && !validAppIds.has(m[1])) {
+          await executor.execute(`DELETE FROM kms_hybrid_hybrid.app_credential_idx WHERE key = '${row.key}' AND rid = '${row.rid}';`);
+          cleanedCredIdx++;
+        } else if (key === "tid=hybrid") {
+          const mCred = row.rid?.match(/id=([^:]+):tid=hybrid/);
+          if (mCred && !validCredKeys.has(mCred[1])) {
+            await executor.execute(`DELETE FROM kms_hybrid_hybrid.app_credential_idx WHERE key = '${row.key}' AND rid = '${row.rid}';`);
+            cleanedCredIdx++;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[CassandraSync] Notice checking app_credential_idx:", e);
+    }
+
+    if (cleanedMappers > 0 || cleanedMapperIdx > 0 || cleanedCreds > 0 || cleanedCredIdx > 0) {
+      console.log(`[CassandraSync] Purged orphaned KMS entities: ${cleanedMappers} mapper(s), ${cleanedMapperIdx} mapper index(es), ${cleanedCreds} credential(s), ${cleanedCredIdx} cred index(es)`);
+    }
+
+    return { cleanedMappers, cleanedMapperIdx, cleanedCreds, cleanedCredIdx };
+  } finally {
+    if (createdExecutor && executor) {
+      await executor.close();
+    }
+  }
+}
+
 export async function syncCassandraDeveloperAppKeys(
   dataDir: string,
   distDir?: string,
@@ -108,6 +229,9 @@ export async function syncCassandraDeveloperAppKeys(
       return false;
     }
 
+    // 0. Purge any orphaned KMS records from previous runs to prevent 404 Fault App does not exist
+    await purgeOrphanedCassandraKmsData(executor);
+
     // 1. Fetch products and apps from Cassandra
     const prodRows = await executor.query("SELECT id, name FROM kms_hybrid_hybrid.api_product;");
     const appRows = await executor.query("SELECT id, name FROM kms_hybrid_hybrid.app;");
@@ -115,15 +239,21 @@ export async function syncCassandraDeveloperAppKeys(
     const prodMap: { [name: string]: string } = {};
     for (const r of prodRows) {
       const id = typeof r.id?.toString === "function" ? r.id.toString() : String(r.id);
-      const name = r.name || "";
-      if (id && name) prodMap[name] = id;
+      const name = (r.name || "").trim();
+      if (id && name) {
+        prodMap[name] = id;
+        prodMap[name.toLowerCase()] = id;
+      }
     }
 
     const appMap: { [name: string]: string } = {};
     for (const r of appRows) {
       const id = typeof r.id?.toString === "function" ? r.id.toString() : String(r.id);
-      const name = r.name || "";
-      if (id && name) appMap[name] = id;
+      const name = (r.name || "").trim();
+      if (id && name) {
+        appMap[name] = id;
+        appMap[name.toLowerCase()] = id;
+      }
     }
 
     // Ensure REST products in Cassandra have proxies and api_res set so the runtime VerifyAPIKey policy allows requests
@@ -226,8 +356,19 @@ export async function syncCassandraDeveloperAppKeys(
 
     let syncedCount = 0;
     for (const app of apps) {
-      const appName = app.name;
-      let appID = appMap[appName];
+      const appName = app.name || "";
+      let appID = appMap[appName] || appMap[appName.toLowerCase()];
+      if (!appID) {
+        for (const [k, v] of Object.entries(appMap)) {
+          if (
+            k.toLowerCase() === appName.toLowerCase() ||
+            k.toLowerCase().replace(/[\s-_]/g, "") === appName.toLowerCase().replace(/[\s-_]/g, "")
+          ) {
+            appID = v;
+            break;
+          }
+        }
+      }
       if (!appID) {
         appID = Object.values(appMap)[0];
       }

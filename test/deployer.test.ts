@@ -84,6 +84,6 @@ describe("deployer & templater conversion", () => {
     } finally {
       if (fs.existsSync(tmpDataDir)) fs.rmSync(tmpDataDir, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 });
 

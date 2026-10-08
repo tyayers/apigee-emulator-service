@@ -27,3 +27,4 @@ data/proxies/
 .env
 lab-participants.json
 lab-usage.json
+*.zip

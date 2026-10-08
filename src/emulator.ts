@@ -1,5 +1,32 @@
 import { DeployedProxy, EmulatorStatus } from "./types.ts";
 import { redactValue } from "./redact.ts";
+import { purgeOrphanedCassandraKmsData } from "./cassandra-sync.ts";
+
+function detectRuntimeUrl(explicitUrl?: string): string {
+  if (explicitUrl) return explicitUrl.replace(/\/$/, "");
+  if (process.env.EMULATOR_RUNTIME_URL) {
+    return process.env.EMULATOR_RUNTIME_URL.replace(/\/$/, "");
+  }
+
+  // Auto-detect mapped port from Docker container if running locally
+  try {
+    const container = process.env.EMULATOR_CONTAINER_NAME || "apigee";
+    const { execSync } = require("child_process");
+    const out = execSync(`docker port ${container} 8998/tcp`, {
+      encoding: "utf8",
+      timeout: 1000,
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    const match = out.match(/:([0-9]+)/);
+    if (match && match[1]) {
+      return `http://127.0.0.1:${match[1]}`;
+    }
+  } catch {
+    // Docker command failed or container not running
+  }
+
+  return "http://127.0.0.1:8888";
+}
 
 export class EmulatorClient {
   public mgmtUrl: string;
@@ -13,11 +40,31 @@ export class EmulatorClient {
       process.env.EMULATOR_MGMT_URL ||
       "http://127.0.0.1:8080"
     ).replace(/\/$/, "");
-    this.runtimeUrl = (
-      runtimeUrl ||
-      process.env.EMULATOR_RUNTIME_URL ||
-      "http://127.0.0.1:8998"
-    ).replace(/\/$/, "");
+    this.runtimeUrl = detectRuntimeUrl(runtimeUrl);
+  }
+
+  public async ensureRuntimeReachable(): Promise<string> {
+    try {
+      const res = await fetch(`${this.runtimeUrl}/`, { signal: AbortSignal.timeout(500) });
+      if (res.status) return this.runtimeUrl;
+    } catch {
+      const altUrl = this.runtimeUrl.includes(":8888")
+        ? this.runtimeUrl.replace(":8888", ":8998")
+        : this.runtimeUrl.includes(":8998")
+        ? this.runtimeUrl.replace(":8998", ":8888")
+        : undefined;
+
+      if (altUrl) {
+        try {
+          const res = await fetch(`${altUrl}/`, { signal: AbortSignal.timeout(500) });
+          if (res.status) {
+            this.runtimeUrl = altUrl;
+            return this.runtimeUrl;
+          }
+        } catch {}
+      }
+    }
+    return this.runtimeUrl;
   }
 
   public async getActiveConsumerKeys(): Promise<string[]> {
@@ -53,6 +100,7 @@ export class EmulatorClient {
 
       if (res.ok) {
         status.online = true;
+        await this.ensureRuntimeReachable().catch(() => {});
         const tree = await this.getDeploymentTree();
         status.activeProxies = tree;
       }
@@ -71,6 +119,9 @@ export class EmulatorClient {
       const text = await res.text();
       throw new Error(`Reset returned status ${res.status}: ${text}`);
     }
+    try {
+      await purgeOrphanedCassandraKmsData();
+    } catch {}
   }
 
   public async setupTestData(zipBytes: Uint8Array | Buffer): Promise<void> {

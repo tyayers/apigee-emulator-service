@@ -4,7 +4,7 @@ import { EmulatorClient } from "../src/emulator.ts";
 
 describe("ProxyTester - configurable Google Bearer Token and placeholders", () => {
   const fakeEmulator = {
-    runtimeUrl: "http://127.0.0.1:8998",
+    runtimeUrl: "http://127.0.0.1:8888",
     startTraceSession: async () => "trace-123",
     listDeployments: async () => ({}),
   } as unknown as EmulatorClient;

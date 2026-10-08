@@ -26,7 +26,7 @@
 #   - Execute directly: './emulator/deploy.sh' (do NOT 'source emulator/deploy.sh')
 #   - Prerequisites: docker, aft, curl, python3 (with pyyaml), zip, unzip
 #   - Management API:  http://localhost:8080 (emulator admin, tree, reset)
-#   - Runtime Traffic: http://localhost:8998 (API proxy basepath requests)
+#   - Runtime Traffic: http://localhost:8888 (API proxy basepath requests)
 #   - Default Test Key: 'x-api-key: test-api-key-12345'
 # ==============================================================================
 
@@ -66,7 +66,7 @@ BOLD="\033[1m"
 NC="\033[0m"
 
 EMULATOR_MGMT_URL="${EMULATOR_MGMT_URL:-http://localhost:8080}"
-EMULATOR_ROUTER_PORT="${EMULATOR_ROUTER_PORT:-8998}"
+EMULATOR_ROUTER_PORT="${EMULATOR_ROUTER_PORT:-8888}"
 CONTAINER_NAME="${EMULATOR_CONTAINER_NAME:-apigee}"
 
 # ------------------------------------------------------------------------------
@@ -114,7 +114,7 @@ ${BOLD}Examples:${NC}
 
 ${BOLD}Environment Variables:${NC}
   EMULATOR_MGMT_URL       Management URL (default: http://localhost:8080)
-  EMULATOR_ROUTER_PORT    Runtime router port (default: 8998)
+  EMULATOR_ROUTER_PORT    Runtime router port (default: 8888)
   EMULATOR_CONTAINER_NAME Docker container name (default: apigee)"
 }
 

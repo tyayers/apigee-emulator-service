@@ -175,4 +175,50 @@ export class DeploymentManager {
         t.deployment === `${baseWithoutExt}.yml`
     );
   }
+
+  public getDeploymentCredentials(): { consumerKey: string; consumerSecret?: string; appName: string; products: string[] }[] {
+    const results: { consumerKey: string; consumerSecret?: string; appName: string; products: string[] }[] = [];
+    const depConfigs = this.listDeployments();
+    for (const dep of depConfigs) {
+      if (dep.users && Array.isArray(dep.users)) {
+        for (const user of dep.users) {
+          if (user.apps && Array.isArray(user.apps)) {
+            for (const app of user.apps) {
+              if (app.credentials && Array.isArray(app.credentials)) {
+                for (const cred of app.credentials) {
+                  if (cred.consumerKey && !results.some((r) => r.consumerKey === cred.consumerKey)) {
+                    results.push({
+                      consumerKey: cred.consumerKey,
+                      consumerSecret: cred.consumerSecret,
+                      appName: app.name || "Deployment App",
+                      products: cred.products || app.products || [],
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // Also include any keys explicitly found in test definitions
+    const tests = this.loadAllTests();
+    for (const t of tests) {
+      const apiKey = Object.entries(t.headers || {}).find(
+        ([k]) => k.toLowerCase() === "x-api-key" || k.toLowerCase() === "x-ai-key"
+      )?.[1];
+      if (apiKey && !results.some((r) => r.consumerKey === apiKey)) {
+        results.push({
+          consumerKey: apiKey,
+          appName: "Test Definition Key",
+          products: t.product ? [t.product] : [],
+        });
+      }
+    }
+    return results;
+  }
+
+  public getDeploymentConsumerKeys(): string[] {
+    return Array.from(new Set(this.getDeploymentCredentials().map((c) => c.consumerKey)));
+  }
 }

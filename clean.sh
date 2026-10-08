@@ -247,7 +247,7 @@ case "$MODE_RESET" in
       if [ -f "$SCRIPT_DIR/create.sh" ]; then
         "$SCRIPT_DIR/create.sh"
       else
-        docker create --name "$CONTAINER_NAME" -p 8080:8080 -p 8998:8998 -p 9042:9042 gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1
+        docker create --name "$CONTAINER_NAME" -p 8080:8080 -p 8888:8998 -p 9042:9042 gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1
       fi
       docker start "$CONTAINER_NAME" >/dev/null
     fi

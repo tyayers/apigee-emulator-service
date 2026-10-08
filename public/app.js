@@ -24,6 +24,9 @@
     activeProxyTab: 'tester', // 'tester' or 'yaml'
     proxyYamlCache: {},
     proxyDisplayNames: {},
+    targetHostMode: 'local',
+    remoteHostUrl: 'https://34-8-196-4.nip.io',
+    localHostUrl: 'http://localhost:8888',
   };
 
   // SVG Icons (Monochromatic)
@@ -45,6 +48,19 @@
     appSidebar: document.getElementById('app-sidebar'),
     statusBadge: document.getElementById('emulator-status-badge'),
     statusText: document.getElementById('emulator-status-text'),
+    btnHostLocal: document.getElementById('btn-host-local'),
+    btnHostRemote: document.getElementById('btn-host-remote'),
+    btnHostConfig: document.getElementById('btn-host-config'),
+    remoteHostBadgeText: document.getElementById('remote-host-badge-text'),
+    remoteHostBanner: document.getElementById('remote-host-banner'),
+    remoteHostBannerUrl: document.getElementById('remote-host-banner-url'),
+    btnBannerEditHost: document.getElementById('btn-banner-edit-host'),
+    modalRemoteHostConfig: document.getElementById('modal-remote-host-config'),
+    inputRemoteHostUrl: document.getElementById('input-remote-host-url'),
+    btnCloseRemoteModal: document.getElementById('btn-close-remote-modal'),
+    btnCancelRemoteHost: document.getElementById('btn-cancel-remote-host'),
+    btnSaveRemoteHost: document.getElementById('btn-save-remote-host'),
+    runtimeBaseLabel: document.getElementById('runtime-base-label'),
     btnDeployAll: document.getElementById('btn-deploy-all'),
     btnReset: document.getElementById('btn-reset-emulator'),
     btnRefresh: document.getElementById('btn-refresh'),
@@ -473,6 +489,7 @@
     initCollapsibleCards();
     setupTabHandlers();
     setupEventListeners();
+    updateHostSwitcherUI();
     setupAnalyticsEventListeners();
     setupMobileDrawer();
     initDefaultHeaders();
@@ -664,9 +681,122 @@
     });
   }
 
+  function updateHostSwitcherUI() {
+    const isRemote = false;
+    if (el.btnHostLocal) {
+      el.btnHostLocal.classList.toggle('active', !isRemote);
+      el.btnHostLocal.setAttribute('aria-checked', !isRemote ? 'true' : 'false');
+    }
+    if (el.btnHostRemote) {
+      el.btnHostRemote.classList.toggle('active', isRemote);
+      el.btnHostRemote.classList.toggle('remote-active', isRemote);
+      el.btnHostRemote.setAttribute('aria-checked', isRemote ? 'true' : 'false');
+    }
+    if (el.btnHostConfig) {
+      el.btnHostConfig.classList.toggle('hidden', !isRemote);
+    }
+    if (el.remoteHostBadgeText) {
+      try {
+        const u = new URL(state.remoteHostUrl);
+        el.remoteHostBadgeText.textContent = u.host;
+      } catch {
+        el.remoteHostBadgeText.textContent = (state.remoteHostUrl || '').replace(/^https?:\/\//, '');
+      }
+    }
+    if (el.remoteHostBanner) {
+      el.remoteHostBanner.classList.toggle('hidden', !isRemote);
+    }
+    if (el.remoteHostBannerUrl) {
+      el.remoteHostBannerUrl.textContent = state.remoteHostUrl;
+    }
+    if (el.runtimeBaseLabel) {
+      const activeBase = isRemote ? state.remoteHostUrl : (state.localHostUrl || 'http://localhost:8888');
+      el.runtimeBaseLabel.textContent = `${activeBase.replace(/\/$/, '')}/`;
+    }
+    if (el.inputRemoteHostUrl) {
+      el.inputRemoteHostUrl.value = state.remoteHostUrl;
+    }
+  }
+
+  function setHostMode(mode) {
+    state.targetHostMode = mode;
+    localStorage.setItem('apigee_target_host_mode', mode);
+    updateHostSwitcherUI();
+    showToast(mode === 'remote' ? `Switched target to Remote Apigee Host (${state.remoteHostUrl})` : 'Switched target to Local Emulator');
+    fetch(`${API_BASE}/config/host`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, remoteHost: state.remoteHostUrl }),
+    }).catch(() => {});
+  }
+
+  function openRemoteHostModal() {
+    if (!el.modalRemoteHostConfig) return;
+    if (el.inputRemoteHostUrl) el.inputRemoteHostUrl.value = state.remoteHostUrl;
+    try {
+      if (typeof el.modalRemoteHostConfig.showModal === 'function') {
+        el.modalRemoteHostConfig.showModal();
+      } else {
+        el.modalRemoteHostConfig.style.display = 'block';
+      }
+    } catch {
+      el.modalRemoteHostConfig.style.display = 'block';
+    }
+  }
+
+  function closeRemoteHostModal() {
+    if (!el.modalRemoteHostConfig) return;
+    try {
+      if (typeof el.modalRemoteHostConfig.close === 'function') {
+        el.modalRemoteHostConfig.close();
+      } else {
+        el.modalRemoteHostConfig.style.display = 'none';
+      }
+    } catch {
+      el.modalRemoteHostConfig.style.display = 'none';
+    }
+  }
+
+  function saveRemoteHost() {
+    if (!el.inputRemoteHostUrl) return;
+    let val = el.inputRemoteHostUrl.value.trim();
+    if (!val) {
+      showToast('Please enter a valid remote host URL', 'warning');
+      return;
+    }
+    if (!val.startsWith('http://') && !val.startsWith('https://')) {
+      val = 'https://' + val;
+    }
+    val = val.replace(/\/$/, '');
+    state.remoteHostUrl = val;
+    localStorage.setItem('apigee_remote_host_url', val);
+    closeRemoteHostModal();
+    updateHostSwitcherUI();
+    showToast(`Remote host updated to ${val}`);
+    fetch(`${API_BASE}/config/host`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: state.targetHostMode, remoteHost: val }),
+    }).catch(() => {});
+  }
+
   // Event Listeners
   function setupEventListeners() {
     if (el.btnThemeToggle) el.btnThemeToggle.addEventListener('click', toggleTheme);
+    if (el.btnHostLocal) el.btnHostLocal.addEventListener('click', () => setHostMode('local'));
+    if (el.btnHostRemote) el.btnHostRemote.addEventListener('click', () => setHostMode('remote'));
+    if (el.btnHostConfig) el.btnHostConfig.addEventListener('click', openRemoteHostModal);
+    if (el.btnBannerEditHost) el.btnBannerEditHost.addEventListener('click', openRemoteHostModal);
+    if (el.btnCloseRemoteModal) el.btnCloseRemoteModal.addEventListener('click', closeRemoteHostModal);
+    if (el.btnCancelRemoteHost) el.btnCancelRemoteHost.addEventListener('click', closeRemoteHostModal);
+    if (el.btnSaveRemoteHost) el.btnSaveRemoteHost.addEventListener('click', saveRemoteHost);
+    document.querySelectorAll('.btn-preset-host').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const u = btn.getAttribute('data-url');
+        if (u && el.inputRemoteHostUrl) el.inputRemoteHostUrl.value = u;
+      });
+    });
+
     if (el.btnRefresh) el.btnRefresh.addEventListener('click', () => fetchStatus(true));
     if (el.btnDeployAll) el.btnDeployAll.addEventListener('click', deployAll);
     if (el.btnDeploySelected) el.btnDeploySelected.addEventListener('click', deploySelected);
@@ -1017,6 +1147,13 @@
       if (currentSelected) {
         highlightProxyInList(currentSelected);
       }
+      if (data.targetHostConfig) {
+        state.localHostUrl = data.targetHostConfig.localHost || state.localHostUrl;
+        if (!localStorage.getItem('apigee_remote_host_url') && data.targetHostConfig.defaultRemoteHost) {
+          state.remoteHostUrl = data.targetHostConfig.defaultRemoteHost;
+        }
+      }
+      try { updateHostSwitcherUI(); } catch (e) { console.error('Error updating host switcher:', e); }
 
       if (notify) {
         showToast('Refreshed emulator status');
@@ -2763,6 +2900,7 @@
           testName,
           assertions,
           injectGoogleToken,
+          targetHost: state.targetHostMode === 'remote' ? state.remoteHostUrl : undefined,
         }),
       });
 
@@ -3132,10 +3270,11 @@
 
     try {
       const proxy = state.selectedProxyName || '';
+      const targetHost = state.targetHostMode === 'remote' ? state.remoteHostUrl : undefined;
       const resp = await fetch(`${API_BASE}/tests/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proxy }),
+        body: JSON.stringify({ proxy, targetHost }),
       });
 
       if (!resp.ok) {

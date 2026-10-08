@@ -13,7 +13,7 @@ COPY data /app/data
 
 ENV PORT=8082 \
     EMULATOR_MGMT_URL=http://127.0.0.1:8080 \
-    EMULATOR_RUNTIME_URL=http://127.0.0.1:8998 \
+    EMULATOR_RUNTIME_URL=http://127.0.0.1:8888 \
     DATA_DIR=/app/data
 
 EXPOSE 8082

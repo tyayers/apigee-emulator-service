@@ -741,7 +741,9 @@ export class BundleManager {
         ? app.apiProducts
         : creds.flatMap((c: any) => (c.apiProducts || []).map((p: any) => typeof p === "string" ? p : p.apiproduct)).filter(Boolean);
 
+      const appId = app.appId || app.id || undefined;
       return {
+        ...(appId ? { appId } : {}),
         name: app.name,
         displayName: app.displayName || app.name,
         developerEmail: email,

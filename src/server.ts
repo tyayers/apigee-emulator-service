@@ -38,6 +38,8 @@ export class EmulatorServer {
   public proxyTester: ProxyTester;
   public analytics: AnalyticsManager;
   public labManager: LabManager;
+  public hostMode: "local" | "remote" = "local";
+  public customRemoteHost: string = process.env.APIGEE_REMOTE_HOST || "https://34-8-196-4.nip.io";
 
   private isDeploying: boolean = false;
   private deployMessage: string = "";
@@ -70,7 +72,7 @@ export class EmulatorServer {
     this.deployer = new DeploymentDeployer(this.emulator, this.bundleManager, this.dataDir);
     this.deploymentManager = new DeploymentManager(this.dataDir);
     this.testHistory = new TestHistoryManager();
-    this.proxyTester = new ProxyTester(this.emulator);
+    this.proxyTester = new ProxyTester(this.emulator, () => this.deploymentManager.getDeploymentConsumerKeys());
     this.analytics = new AnalyticsManager();
     this.labManager = new LabManager(this.dataDir);
   }
@@ -341,6 +343,13 @@ export class EmulatorServer {
         b.isDeployed = activeNames.has(b.proxyName.toLowerCase());
       }
 
+      status.targetHostConfig = {
+        localHost: this.emulator.runtimeUrl,
+        defaultRemoteHost: this.customRemoteHost,
+        activeHost: this.hostMode === "remote" ? this.customRemoteHost : this.emulator.runtimeUrl,
+        mode: this.hostMode,
+      };
+
       return this.jsonResponse(status);
     }
 
@@ -380,6 +389,39 @@ export class EmulatorServer {
       return this.jsonResponse(this.deploymentManager.loadAllTests());
     }
 
+    // 7b. GET /config/host
+    if (subPath === "config/host" && method === "GET") {
+      return this.jsonResponse({
+        localHost: this.emulator.runtimeUrl,
+        defaultRemoteHost: this.customRemoteHost,
+        remoteHost: this.customRemoteHost,
+        activeHost: this.hostMode === "remote" ? this.customRemoteHost : this.emulator.runtimeUrl,
+        mode: this.hostMode,
+        deploymentCredentials: this.deploymentManager.getDeploymentCredentials(),
+      });
+    }
+
+    // 7c. POST /config/host
+    if (subPath === "config/host" && method === "POST") {
+      try {
+        const body = (await req.json()) as any;
+        if (body.mode === "local" || body.mode === "remote") {
+          this.hostMode = body.mode;
+        }
+        if (body.remoteHost && typeof body.remoteHost === "string") {
+          this.customRemoteHost = body.remoteHost.trim().replace(/\/$/, "");
+        }
+        return this.jsonResponse({
+          success: true,
+          mode: this.hostMode,
+          remoteHost: this.customRemoteHost,
+          activeHost: this.hostMode === "remote" ? this.customRemoteHost : this.emulator.runtimeUrl,
+        });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
     // 8. POST /tests/run
     if (subPath === "tests/run" && method === "POST") {
       let runReq: TestsRunRequest = {};
@@ -402,6 +444,7 @@ export class EmulatorServer {
           continue;
         }
 
+        const effectiveTargetHost = runReq.targetHost || (this.hostMode === "remote" ? this.customRemoteHost : undefined);
         const testReq: TestRequest = {
           proxy: tc.proxy,
           method: tc.verb || "GET",
@@ -412,6 +455,7 @@ export class EmulatorServer {
           testName: tc.name,
           assertions: tc.assertions,
           injectGoogleToken: tc.injectGoogleToken,
+          targetHost: effectiveTargetHost,
         };
 
         const resp = await this.proxyTester.execute(testReq);
@@ -602,6 +646,9 @@ export class EmulatorServer {
           if (match && match.injectGoogleToken !== undefined) {
             testReq.injectGoogleToken = match.injectGoogleToken;
           }
+        }
+        if (!testReq.targetHost && this.hostMode === "remote") {
+          testReq.targetHost = this.customRemoteHost;
         }
         const resp = await this.proxyTester.execute(testReq);
 
@@ -919,7 +966,10 @@ export class EmulatorServer {
     if (subPath === "labs/verify-task" && method === "POST") {
       try {
         const body = await req.json();
-        const { labId, taskId, customApiKey } = body;
+        const { labId, taskId, customApiKey, targetHost } = body;
+        const effectiveTargetHost = targetHost || (this.hostMode === "remote" ? this.customRemoteHost : undefined);
+        const isRemote = Boolean(effectiveTargetHost && !effectiveTargetHost.includes("127.0.0.1") && !effectiveTargetHost.includes("localhost"));
+        const baselineKey = isRemote ? "starter-app-key-123" : "test-app-key-123";
 
         let passed = false;
         const score = 25;
@@ -934,12 +984,13 @@ export class EmulatorServer {
               path: "/v1beta/interactions",
               headers: {
                 "Content-Type": "application/json",
-                "x-api-key": "test-app-key-123",
+                "x-api-key": baselineKey,
               },
               body: JSON.stringify({
                 model: "gemini-3.5-flash-lite",
                 input: "Hello from Lab 1 baseline test!",
               }),
+              targetHost: effectiveTargetHost,
             });
             if (testRes.statusCode === 200) {
               passed = true;
@@ -955,12 +1006,13 @@ export class EmulatorServer {
               path: "/v1/chat/completions",
               headers: {
                 "Content-Type": "application/json",
-                "x-api-key": "test-app-key-123",
+                "x-api-key": baselineKey,
               },
               body: JSON.stringify({
                 model: "google/gemini-3.5-flash-lite",
                 messages: [{ role: "user", content: "Test failover route" }],
               }),
+              targetHost: effectiveTargetHost,
             });
             if (testRes.statusCode === 200 || testRes.body.includes("failover") || testRes.headers["x-failover-target"]) {
               passed = true;
@@ -988,6 +1040,7 @@ export class EmulatorServer {
                   model: "gemini-3.5-flash-lite",
                   input: "Testing custom product credential quota!",
                 }),
+                targetHost: effectiveTargetHost,
               });
               if (testRes.statusCode === 200 || testRes.statusCode === 429) {
                 passed = true;

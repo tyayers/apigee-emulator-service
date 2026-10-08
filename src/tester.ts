@@ -11,9 +11,11 @@ import { TestRequest, TestResponse } from "./types.ts";
 
 export class ProxyTester {
   private emulator: EmulatorClient;
+  public deploymentCredentialsProvider?: () => string[];
 
-  constructor(emulator: EmulatorClient) {
+  constructor(emulator: EmulatorClient, deploymentCredentialsProvider?: () => string[]) {
     this.emulator = emulator;
+    this.deploymentCredentialsProvider = deploymentCredentialsProvider;
   }
 
   public async execute(req: TestRequest): Promise<TestResponse> {
@@ -21,10 +23,19 @@ export class ProxyTester {
     let path = (req.path || "").trim();
     if (!path.startsWith("/")) path = "/" + path;
 
+    const rawTargetHost = (req.targetHost || "").trim();
+    const isRemote = Boolean(
+      rawTargetHost &&
+      !rawTargetHost.includes("127.0.0.1") &&
+      !rawTargetHost.includes("localhost")
+    );
+    const baseHost = (rawTargetHost || this.emulator.runtimeUrl).replace(/\/$/, "");
+    const targetUrl = `${baseHost}${path}`;
+
     let traceSessionId = "";
 
-    // 1. Optionally start trace session
-    if (req.recordTrace && req.proxy) {
+    // 1. Optionally start trace session (only on local emulator, not on remote host)
+    if (req.recordTrace && req.proxy && !isRemote) {
       try {
         traceSessionId = await this.emulator.startTraceSession(req.proxy);
       } catch (err) {
@@ -159,8 +170,6 @@ export class ProxyTester {
     // Synchronize req.headers with effective dispatched headers
     req.headers = { ...effectiveHeaders };
 
-    const targetUrl = `${this.emulator.runtimeUrl}${path}`;
-
     // 3. Send HTTP request
     let startTime = Date.now();
     try {
@@ -173,22 +182,51 @@ export class ProxyTester {
         fetchOpts.body = req.body;
       }
 
-      let res = await fetch(targetUrl, fetchOpts);
+      let res: Response;
+      try {
+        res = await fetch(targetUrl, fetchOpts);
+      } catch (fetchErr: any) {
+        // If connection failed to a local emulator port, check alternate port (8888 <-> 8998)
+        if (!isRemote && (targetUrl.includes(":8888") || targetUrl.includes(":8998"))) {
+          const altHost = baseHost.includes(":8888")
+            ? baseHost.replace(":8888", ":8998")
+            : baseHost.replace(":8998", ":8888");
+          const altUrl = `${altHost}${path}`;
+          try {
+            res = await fetch(altUrl, fetchOpts);
+            this.emulator.runtimeUrl = altHost;
+          } catch {
+            throw fetchErr;
+          }
+        } else {
+          throw fetchErr;
+        }
+      }
       let durationMs = Date.now() - startTime;
       let body = await res.text();
 
-      // Retry mechanism 1: If 401 occurs due to InvalidApiKey, try active consumer key from emulator
+      // Retry mechanism 1: If 401 occurs due to InvalidApiKey:
+      // When targeting remote host, ONLY try credentials defined in the deployment.
+      // When targeting local emulator, query active consumer keys from emulator datastore.
       if (res.status === 401 && (apiKey || aiKey)) {
         try {
-          const activeKeys = await this.emulator.getActiveConsumerKeys();
-          if (activeKeys.length > 0) {
-            const activeKey = activeKeys[0];
+          let candidateKeys: string[] = [];
+          if (isRemote) {
+            if (this.deploymentCredentialsProvider) {
+              candidateKeys = this.deploymentCredentialsProvider();
+            }
+          } else {
+            candidateKeys = await this.emulator.getActiveConsumerKeys();
+          }
+
+          if (candidateKeys.length > 0) {
             const currentKey = apiKey || aiKey;
-            if (activeKey !== currentKey) {
-              effectiveHeaders["x-api-key"] = activeKey;
-              effectiveHeaders["x-ai-key"] = activeKey;
-              req.headers["x-api-key"] = activeKey;
-              req.headers["x-ai-key"] = activeKey;
+            const retryKey = candidateKeys.find((k) => k !== currentKey);
+            if (retryKey) {
+              effectiveHeaders["x-api-key"] = retryKey;
+              effectiveHeaders["x-ai-key"] = retryKey;
+              req.headers["x-api-key"] = retryKey;
+              req.headers["x-ai-key"] = retryKey;
 
               const retryOpts: RequestInit = {
                 method,
@@ -256,7 +294,7 @@ export class ProxyTester {
       }
 
       let traceData: any = undefined;
-      if (traceSessionId) {
+      if (traceSessionId && !isRemote) {
         // Buffer wait for emulator to record trace
         await new Promise((resolve) => setTimeout(resolve, 200));
         try {
@@ -278,7 +316,7 @@ export class ProxyTester {
         body,
         traceSessionId,
         traceData,
-        request: req,
+        request: { ...req, targetHost: baseHost },
       };
     } catch (err: any) {
       const durationMs = Date.now() - startTime;
@@ -290,7 +328,7 @@ export class ProxyTester {
         body: `Connection Error: ${err.message || String(err)}`,
         traceSessionId,
         error: err.message || String(err),
-        request: req,
+        request: { ...req, targetHost: baseHost },
       };
     }
   }

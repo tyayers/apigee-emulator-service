@@ -69,6 +69,7 @@ export interface TestRequest {
   assertions?: string[];
   injectGoogleToken?: boolean;
   product?: string;
+  targetHost?: string;
 }
 
 export interface AssertionResult {
@@ -136,6 +137,20 @@ export interface DeployResponse {
 export interface TestsRunRequest {
   proxy?: string;
   testName?: string;
+  targetHost?: string;
+}
+
+export interface HostConfig {
+  localHost: string;
+  defaultRemoteHost: string;
+  activeHost: string;
+  mode: "local" | "remote";
+  deploymentCredentials?: {
+    consumerKey: string;
+    consumerSecret?: string;
+    appName: string;
+    products: string[];
+  }[];
 }
 
 export interface TestsRunResponse {

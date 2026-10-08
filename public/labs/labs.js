@@ -14,6 +14,9 @@
     editMode: false,
     participant: null, // { id, name, email, appName, consumerKey, consumerSecret }
     proxyYamlCache: {}, // proxyName -> { yaml, source }
+    targetHostMode: 'local',
+    remoteHostUrl: 'https://34-8-196-4.nip.io',
+    localHostUrl: 'http://localhost:8888',
   };
 
   // Known Header Explanations for Apigee Gateway
@@ -209,11 +212,131 @@
     }
   }
 
+  // Target Host Switcher UI
+  function updateLabHostSwitcherUI() {
+    const isRemote = false;
+    const btnLocal = document.getElementById('btn-lab-host-local');
+    const btnRemote = document.getElementById('btn-lab-host-remote');
+    const btnEditRemote = document.getElementById('btn-lab-edit-remote');
+    const labelRemote = document.getElementById('lab-remote-host-label');
+    const inputRemote = document.getElementById('input-lab-remote-host');
+
+    if (btnLocal) {
+      btnLocal.classList.toggle('active', !isRemote);
+    }
+    if (btnRemote) {
+      btnRemote.classList.toggle('active', isRemote);
+      btnRemote.classList.toggle('remote-active', isRemote);
+    }
+    if (btnEditRemote) {
+      btnEditRemote.classList.toggle('hidden', !isRemote);
+    }
+    if (labelRemote) {
+      try {
+        const u = new URL(state.remoteHostUrl);
+        labelRemote.textContent = u.host;
+      } catch {
+        labelRemote.textContent = (state.remoteHostUrl || '').replace(/^https?:\/\//, '');
+      }
+    }
+    if (inputRemote) {
+      inputRemote.value = state.remoteHostUrl;
+    }
+
+    updateParticipantUI();
+
+    if (state.tests && state.tests.length > 0) {
+      const test = state.tests[state.currentStepIndex];
+      if (test) {
+        const reqUrlText = document.getElementById('req-url-text');
+        if (reqUrlText) {
+          const targetBase = isRemote ? state.remoteHostUrl : (state.localHostUrl || 'http://localhost:8888');
+          reqUrlText.textContent = `${targetBase.replace(/\/$/, '')}${test.path}`;
+        }
+      }
+      renderCurrentStep();
+    }
+  }
+
+  function setLabHostMode(mode) {
+    state.targetHostMode = mode;
+    localStorage.setItem('apigee_target_host_mode', mode);
+    updateLabHostSwitcherUI();
+    showToast(mode === 'remote' ? `Switched to Remote Apigee Host (${state.remoteHostUrl})` : 'Switched to Local Emulator');
+    fetch('/api/config/host', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, remoteHost: state.remoteHostUrl }),
+    }).catch(() => {});
+  }
+
+  function openLabRemoteModal() {
+    const modal = document.getElementById('modal-lab-remote-host');
+    if (!modal) return;
+    const input = document.getElementById('input-lab-remote-host');
+    if (input) input.value = state.remoteHostUrl;
+    try {
+      if (typeof modal.showModal === 'function') modal.showModal();
+      else modal.style.display = 'block';
+    } catch {
+      modal.style.display = 'block';
+    }
+  }
+
+  function closeLabRemoteModal() {
+    const modal = document.getElementById('modal-lab-remote-host');
+    if (!modal) return;
+    try {
+      if (typeof modal.close === 'function') modal.close();
+      else modal.style.display = 'none';
+    } catch {
+      modal.style.display = 'none';
+    }
+  }
+
+  function saveLabRemoteHost() {
+    const input = document.getElementById('input-lab-remote-host');
+    if (!input) return;
+    let val = input.value.trim();
+    if (!val) {
+      showToast('Please enter a valid remote host URL', 'warning');
+      return;
+    }
+    if (!val.startsWith('http://') && !val.startsWith('https://')) {
+      val = 'https://' + val;
+    }
+    val = val.replace(/\/$/, '');
+    state.remoteHostUrl = val;
+    localStorage.setItem('apigee_remote_host_url', val);
+    closeLabRemoteModal();
+    updateLabHostSwitcherUI();
+    showToast(`Remote host updated to ${val}`);
+    fetch('/api/config/host', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: state.targetHostMode, remoteHost: val }),
+    }).catch(() => {});
+  }
+
   // Update Participant Header Chip UI
   function updateParticipantUI() {
     const avatar = document.getElementById('participant-avatar');
     const name = document.getElementById('participant-name');
     const keyPill = document.getElementById('participant-key-pill');
+
+    const isRemote = state.targetHostMode === 'remote';
+    if (isRemote) {
+      if (state.participant) {
+        if (avatar) avatar.textContent = (state.participant.name || 'U').charAt(0).toUpperCase();
+        if (name) name.textContent = state.participant.name;
+        if (keyPill) keyPill.textContent = 'Remote (Deploy Key)';
+      } else {
+        if (avatar) avatar.textContent = '🌐';
+        if (name) name.textContent = 'Apigee Remote';
+        if (keyPill) keyPill.textContent = 'Deploy Keys Mode';
+      }
+      return;
+    }
 
     if (state.participant) {
       if (avatar) avatar.textContent = (state.participant.name || 'U').charAt(0).toUpperCase();
@@ -236,9 +359,11 @@
       .replace(/'/g, '&#39;');
   }
 
-  // Prompt or Switch Participant Dialog
   // Prompt or Switch Participant Dialog (New User Page)
   function promptOnboarding(force = false) {
+    if (!force && state.targetHostMode === 'remote') {
+      return;
+    }
     const modal = document.getElementById('modal-onboarding');
     if (!modal) return;
     if (force || !state.participant) {
@@ -1054,23 +1179,31 @@
     const reqMethodTag = document.getElementById('req-method-tag');
     if (reqMethodTag) reqMethodTag.textContent = test.verb || test.method || 'POST';
 
-    const reqUrlText = document.getElementById('req-url-text');
-    if (reqUrlText) reqUrlText.textContent = `http://localhost:8998${test.path}`;
+    const isRemote = state.targetHostMode === 'remote';
+    const targetBase = isRemote ? state.remoteHostUrl : (state.localHostUrl || 'http://localhost:8888');
 
-    // Request Headers Preview (with participant key substituted)
+    const reqUrlText = document.getElementById('req-url-text');
+    if (reqUrlText) reqUrlText.textContent = `${targetBase.replace(/\/$/, '')}${test.path}`;
+
+    // Request Headers Preview (with participant key substituted on local, deployment key preserved on remote)
     const reqHeadersPreview = document.getElementById('req-headers-preview');
     if (reqHeadersPreview) {
       reqHeadersPreview.innerHTML = '';
       const headers = { ...(test.headers || {}) };
-      if (headers['x-api-key']) {
+      if (!isRemote && headers['x-api-key'] && currentKey) {
         headers['x-api-key'] = currentKey;
       }
 
       for (const [k, v] of Object.entries(headers)) {
         const pill = document.createElement('div');
-        const isUserKey = k.toLowerCase() === 'x-api-key';
-        pill.className = `header-pill ${isUserKey ? 'user-key' : ''}`;
-        pill.innerHTML = `<strong>${k}:</strong> <span>${v}</span> ${isUserKey ? '<span style="font-size: 9px; opacity: 0.8;">(Your Key)</span>' : ''}`;
+        const isApiKey = k.toLowerCase() === 'x-api-key';
+        if (isRemote && isApiKey) {
+          pill.className = 'header-pill deployment-key';
+          pill.innerHTML = `<strong>${k}:</strong> <span>${v}</span> <span style="font-size: 9px; opacity: 0.85;">(Deployment Key)</span>`;
+        } else {
+          pill.className = `header-pill ${isApiKey ? 'user-key' : ''}`;
+          pill.innerHTML = `<strong>${k}:</strong> <span>${v}</span> ${isApiKey ? '<span style="font-size: 9px; opacity: 0.8;">(Your Key)</span>' : ''}`;
+        }
         reqHeadersPreview.appendChild(pill);
       }
       if (Object.keys(headers).length === 0) {
@@ -1091,7 +1224,9 @@
     const editHeaders = document.getElementById('edit-req-headers');
     if (editHeaders) {
       const activeHeaders = { ...(test.headers || {}) };
-      if (activeHeaders['x-api-key']) activeHeaders['x-api-key'] = currentKey;
+      if (!isRemote && activeHeaders['x-api-key'] && currentKey) {
+        activeHeaders['x-api-key'] = currentKey;
+      }
       editHeaders.value = JSON.stringify(activeHeaders, null, 2);
     }
 
@@ -1348,12 +1483,14 @@
     const test = state.tests[state.currentStepIndex];
     if (!test) return;
 
-    if (!state.participant) {
+    const isRemote = state.targetHostMode === 'remote';
+
+    if (!isRemote && !state.participant) {
       promptOnboarding(true);
       return;
     }
 
-    const currentKey = state.participant.consumerKey;
+    const currentKey = state.participant?.consumerKey || 'starter-app-key-123';
     const btnRun = document.getElementById('btn-run-test');
     const btnRunText = document.getElementById('btn-run-text');
     const banner = document.getElementById('validation-banner');
@@ -1366,11 +1503,15 @@
 
     if (banner) banner.className = 'validation-status-banner running';
     if (icon) icon.textContent = '⚡';
-    if (heading) heading.textContent = 'Executing via Apigee Emulator...';
-    if (subtext) subtext.textContent = `Evaluating Cassandra credentials (${currentKey}) and upstream model response.`;
+    if (heading) heading.textContent = isRemote ? 'Executing via Remote Apigee Host...' : 'Executing via Apigee Emulator...';
+    if (subtext) subtext.textContent = isRemote
+      ? `Routing to ${state.remoteHostUrl} using deployment credentials.`
+      : `Evaluating Cassandra credentials (${currentKey}) and upstream model response.`;
 
     let headers = { ...(test.headers || {}) };
-    if (headers['x-api-key']) headers['x-api-key'] = currentKey;
+    if (!isRemote && headers['x-api-key'] && state.participant?.consumerKey) {
+      headers['x-api-key'] = state.participant.consumerKey;
+    }
     let body = test.body;
 
     if (state.editMode) {
@@ -1394,9 +1535,10 @@
       path: test.path,
       headers: headers,
       body: body,
-      recordTrace: true,
+      recordTrace: !isRemote,
       injectGoogleToken: test.injectGoogleToken,
       assertions: test.assertions && test.assertions.length > 0 ? test.assertions : ['response.status == 200'],
+      targetHost: isRemote ? state.remoteHostUrl : undefined,
     };
 
     try {
@@ -1630,6 +1772,32 @@
     const btnConfirmReset = document.getElementById('btn-confirm-reset');
     if (btnConfirmReset) btnConfirmReset.onclick = handleResetConfirm;
 
+    // Target Host Switcher Controls
+    const btnHostLocal = document.getElementById('btn-lab-host-local');
+    if (btnHostLocal) btnHostLocal.onclick = () => setLabHostMode('local');
+
+    const btnHostRemote = document.getElementById('btn-lab-host-remote');
+    if (btnHostRemote) btnHostRemote.onclick = () => setLabHostMode('remote');
+
+    const btnEditRemote = document.getElementById('btn-lab-edit-remote');
+    if (btnEditRemote) btnEditRemote.onclick = openLabRemoteModal;
+
+    const btnCloseLabRemote = document.getElementById('btn-close-lab-remote-modal');
+    if (btnCloseLabRemote) btnCloseLabRemote.onclick = closeLabRemoteModal;
+
+    const btnCancelLabRemote = document.getElementById('btn-cancel-lab-remote');
+    if (btnCancelLabRemote) btnCancelLabRemote.onclick = closeLabRemoteModal;
+
+    const btnSaveLabRemote = document.getElementById('btn-save-lab-remote');
+    if (btnSaveLabRemote) btnSaveLabRemote.onclick = saveLabRemoteHost;
+
+    document.querySelectorAll('.btn-preset-lab-host').forEach(btn => {
+      btn.onclick = () => {
+        const u = btn.getAttribute('data-url');
+        const input = document.getElementById('input-lab-remote-host');
+        if (u && input) input.value = u;
+      };
+    });
   }
 
   // Initialize Application
@@ -1639,6 +1807,21 @@
     setupCopyButtons();
     setupEvents();
     loadSavedState();
+
+    // Fetch Host Configuration from server
+    try {
+      const hostResp = await fetch('/api/config/host');
+      if (hostResp.ok) {
+        const hostData = await hostResp.json();
+        state.localHostUrl = hostData.localHost || state.localHostUrl;
+        if (!localStorage.getItem('apigee_remote_host_url') && hostData.remoteHost) {
+          state.remoteHostUrl = hostData.remoteHost;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    updateLabHostSwitcherUI();
 
     try {
       const resp = await fetch('/api/tests');
@@ -1655,7 +1838,7 @@
     }
 
     // Prompt participant onboarding if first visit
-    if (!state.participant) {
+    if (!state.participant && state.targetHostMode !== 'remote') {
       setTimeout(() => promptOnboarding(false), 200);
     }
   }

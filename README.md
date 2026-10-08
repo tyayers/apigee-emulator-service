@@ -33,10 +33,27 @@ This repository provides tools, scripts, and a lightweight web service for build
 
 ## Prerequisites
 
-- **Docker** installed and running (for local emulator container)
-- **Google Cloud SDK (`gcloud`)** installed and authenticated (for Cloud Run)
-- **Bun** (v1.1+) installed (`curl -fsSL https://bun.sh/install | bash`)
-- **cURL** & **jq**
+The following tools are required in your Linux / Cloud Shell environment:
+
+1. **Bun (v1.1+)** – Fast JavaScript & TypeScript runtime used for the test runner and deployment compiler:
+   ```bash
+   curl -fsSL https://bun.sh/install | bash
+   export PATH="$HOME/.bun/bin:$PATH"
+   ```
+2. **Apigee Templater (`aft`)** – CLI tool for compiling and bundling Apigee proxies:
+   ```bash
+   curl -sSL https://raw.githubusercontent.com/apigee/apigee-templater/main/install.sh | bash
+   export PATH="$HOME/.local/bin:$HOME/.aft/bin:$PATH"
+   ```
+3. **Docker** – Required for running the Apigee Local Emulator container:
+   ```bash
+   docker --version
+   ```
+4. **cURL & jq** – CLI utilities for HTTP requests and JSON formatting:
+   ```bash
+   sudo apt-get update && sudo apt-get install -y curl jq
+   ```
+5. **Google Cloud SDK (`gcloud`)** – Optional, required when deploying to Google Cloud Run or auto-detecting `GOOGLE_CLOUD_PROJECT`.
 
 ---
 
@@ -46,7 +63,7 @@ The Apigee Emulator runs as a local Docker container exposing management endpoin
 
 ### Create the Container
 
-Run [`create.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/create.sh):
+Run [`create.sh`](create.sh):
 
 ```bash
 ./create.sh
@@ -57,7 +74,7 @@ Or execute the Docker command directly:
 ```bash
 docker create --name apigee \
   -p 8080:8080 \
-  -p 8998:8998 \
+  -p 8888:8998 \
   gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1
 ```
 
@@ -73,13 +90,15 @@ docker stop apigee
 
 ### Port Mapping
 - **Port `8080`**: Apigee Management API (`/v1/emulator/*`).
-- **Port `8998`**: Apigee Message Processor Runtime (proxy traffic).
+- **Port `8888`**: Apigee Message Processor Runtime (proxy traffic, mapped to container port 8998).
 
 ---
 
 ## 2. Managing & Deploying Locally (`local.sh`)
 
-[`local.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/local.sh) is the local counterpart to `cloudrun.sh`. It automatically discovers or accepts your GCP Project ID, substitutes `{GOOGLE_CLOUD_PROJECT}` in deployment manifests, manages the Docker emulator container, compiles and deploys resources using Bun TypeScript, and provides commands for testing and tracing.
+[`local.sh`](local.sh) is the local counterpart to `cloudrun.sh`. It automatically discovers or accepts your GCP Project ID, substitutes `{GOOGLE_CLOUD_PROJECT}` in deployment manifests, manages the Docker emulator container, compiles and deploys resources using Bun TypeScript, and provides commands for testing and tracing.
+
+Each menu item (1–10) in `./local.sh` has a corresponding `--parameter` flag that can be passed directly from the CLI.
 
 ### Interactive Menu
 Run `./local.sh` with no arguments to bring up the interactive console:
@@ -87,57 +106,63 @@ Run `./local.sh` with no arguments to bring up the interactive console:
 ./local.sh
 ```
 
-### Starting the Emulator & Web UI
-Start the Apigee emulator container and launch the Bun TypeScript tester server:
+### Starting the Emulator & Web UI (Option 1)
+Start the Apigee emulator container and launch the Bun TypeScript tester server in the background:
 ```bash
-./local.sh up
+./local.sh --start
 
 # Or with live auto-reload on file edits:
-./local.sh start --dev
+./local.sh --start --dev
 ```
 
-### Deploying Deployment Manifests Directly
+### Deploying Deployment Manifests Directly (Options 2 & 3)
 Deploy a deployment YAML with automatic GCP project substitution:
 ```bash
-# Auto-detects project from GOOGLE_CLOUD_PROJECT or gcloud config:
-./local.sh deploy data/deployments/deployment-1.yaml
+# Deploys default data/deployments/deployment-1.yaml (Option 2):
+./local.sh --deploy
+
+# Deploys a specific deployment YAML:
+./local.sh --deploy data/deployments/deployment-1.yaml
 
 # Or explicitly specify the GCP Project ID:
-./local.sh deploy --project my-gcp-project data/deployments/deployment-1.yaml
+./local.sh --deploy --project my-gcp-project data/deployments/deployment-1.yaml
 
-# Deploy all deployments in data/deployments/:
-./local.sh deploy --all
+# Deploy all deployments in data/deployments/ at once (Option 3):
+./local.sh --deploy-all
 ```
 
-### Testing & Tracing Locally
+### Testing & Tracing Locally (Option 4)
 ```bash
-# Run tests for all deployed proxies
-./local.sh test
+# Run tests for all deployed proxies (Option 4):
+./local.sh --test
 
-# Run tests for a specific proxy
-./local.sh test REST-AI-Interactions
+# Run tests for a specific proxy:
+./local.sh --test REST-AI-Interactions
 
-# Start a trace session for a proxy
-./local.sh trace-start REST-AI-Interactions
+# Start a trace session for a proxy:
+./local.sh --trace-start REST-AI-Interactions
 
-# Stop trace and save to trace.json
-./local.sh trace-stop
+# Stop trace and save to trace.json:
+./local.sh --trace-stop
 ```
 
-### Local Management Commands
+### Local Management Commands (Menu Options 1–10)
 
-| Command | Description |
-|---|---|
-| `./local.sh up` | Start emulator container and launch Bun server |
-| `./local.sh deploy [FILE]` | Deploy deployment YAML with `{GOOGLE_CLOUD_PROJECT}` substitution |
-| `./local.sh test [PROXY]` | Execute proxy tests and assertion evaluations |
-| `./local.sh status` | Check Docker container, emulator health, and deployed proxies |
-| `./local.sh tester` / `ui` | Open Tester Web UI at `http://localhost:8082/tester/` |
-| `./local.sh trace-start [PROXY]` | Start debug trace session for proxy |
-| `./local.sh trace-stop` | Stop trace session and save transactions to `trace.json` |
-| `./local.sh reset` | Clear deployed proxies and reset emulator state |
-| `./local.sh logs` | Follow Docker container logs |
-| `./local.sh stop` | Stop Apigee Docker container |
+| Option | CLI Flag Parameter | Positional Command | Description |
+|---|---|---|---|
+| **1** | `./local.sh --start` / `--up` | `./local.sh start` / `up` | Start emulator container and launch Bun server in background |
+| **2** | `./local.sh --deploy [FILE]` | `./local.sh deploy [FILE]` | Deploy deployment YAML with `{GOOGLE_CLOUD_PROJECT}` substitution (default: `deployment-1.yaml`) |
+| **3** | `./local.sh --deploy-all` | `./local.sh deploy-all` / `-a` | Deploy all deployments in `data/deployments/` |
+| **4** | `./local.sh --test [PROXY]` | `./local.sh test [PROXY]` | Execute proxy tests and assertion evaluations |
+| **5** | `./local.sh --status` | `./local.sh status` | Check Docker container, emulator health, and deployed proxies |
+| **6** | `./local.sh --ui` / `--tester` | `./local.sh tester` / `ui` | Open Tester Web UI at `http://localhost:8082/tester/` in browser |
+| **7** | `./local.sh --reset` | `./local.sh reset` | Clear deployed proxies and reset emulator state via API |
+| **8** | `./local.sh --recreate` | `./local.sh recreate` | Destroy and recreate emulator container with fresh state (`-p 8888:8998`) |
+| **9** | `./local.sh --clean` | `./local.sh clean` | Remove generated assets, reset emulator, or start fresh (`clean.sh`) |
+| **10** | `./local.sh --stop` | `./local.sh stop` | Stop all services (emulator Docker container & local tester) |
+| — | `./local.sh --logs` | `./local.sh logs` | Follow Docker container logs |
+| — | `./local.sh --trace-start [P]` | `./local.sh trace-start [P]` | Start debug trace session for proxy |
+| — | `./local.sh --trace-stop` | `./local.sh trace-stop` | Stop trace session and save transactions to `trace.json` |
 
 ---
 
@@ -154,7 +179,7 @@ The emulator includes built-in debug tracing. You can record execution traces an
 ### Step 2: Send Request to Proxy
 
 ```bash
-curl -i http://localhost:8998/testproxy
+curl -i http://localhost:8888/testproxy
 ```
 
 ### Step 3: Stop Tracing & Fetch Transactions
@@ -175,12 +200,12 @@ Open [`trace.html`](file:///home/tyayers/projects/tyayers/apigee-emulator-servic
 
 ## 4. Testing TestProxy Endpoints
 
-Once `TestProxy` is deployed, it listens on port **8998** with basepath `/testproxy`.
+Once `TestProxy` is deployed, it listens on port **8888** with basepath `/testproxy`.
 
 ### 1. Basic Request
 
 ```bash
-curl -i http://localhost:8998/testproxy
+curl -i http://localhost:8888/testproxy
 ```
 
 **Expected Response**:
@@ -199,7 +224,7 @@ Hello, Guest! Hello world!
 `TestProxy` includes a JavaScript policy (`JS-AddHelloWorld`) that reads the `message` query parameter:
 
 ```bash
-curl -i "http://localhost:8998/testproxy?message=from-Apigee"
+curl -i "http://localhost:8888/testproxy?message=from-Apigee"
 ```
 
 **Expected Response**:
@@ -215,7 +240,7 @@ Hello, Guest! from-Apigee
 ### 3. Target JSON Endpoint
 
 ```bash
-curl -i http://localhost:8998/testproxy/json
+curl -i http://localhost:8888/testproxy/json
 ```
 
 **Expected Response**:
@@ -236,7 +261,7 @@ curl -i http://localhost:8998/testproxy/json
 Using the test API credential generated from [`deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) or [`developerapps.json`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/developerapps.json):
 
 ```bash
-curl -i "http://localhost:8998/testproxy" \
+curl -i "http://localhost:8888/testproxy" \
   -H "x-api-key: test-app-key-123"
 ```
 

@@ -11,6 +11,35 @@ In this tutorial, you will learn how to:
 
 ---
 
+## Prerequisites
+
+Before getting started, make sure you have the following prerequisites installed in your Linux shell (or Google Cloud Shell):
+
+1. **Bun (v1.1+)** – High-performance JavaScript/TypeScript runtime used by the tester service and deployment compiler:
+   ```bash
+   curl -fsSL https://bun.sh/install | bash
+   export PATH="$HOME/.bun/bin:$PATH"
+   ```
+2. **Apigee Templater (`aft`)** – CLI tool for compiling and building Apigee proxy bundles:
+   ```bash
+   curl -sSL https://raw.githubusercontent.com/apigee/apigee-templater/main/install.sh | bash
+   export PATH="$HOME/.local/bin:$HOME/.aft/bin:$PATH"
+   ```
+3. **Docker** – Required for running the Apigee Local Emulator container:
+   ```bash
+   docker --version
+   ```
+4. **cURL & jq** – Command-line tools for making requests and inspecting JSON responses:
+   ```bash
+   sudo apt-get update && sudo apt-get install -y curl jq
+   ```
+5. **Google Cloud SDK (`gcloud`)** – Authenticated with your GCP project (required for Cloud Run deployment):
+   ```bash
+   gcloud auth login
+   ```
+
+---
+
 ## The Testing Strategy: Shift-Left with the Emulator
 
 In traditional Apigee development, verifying a proxy change often requires deploying directly to a cloud evaluation or development environment in Apigee X or hybrid. While essential for end-to-end integration, this introduces slow feedback loops (deploying revisions over cloud management APIs, queue times, and risk of disrupting shared dev environments).
@@ -47,7 +76,7 @@ The repository [tyayers/apigee-emulator-service](https://github.com/tyayers/apig
 
 ### The Deployment Manifest: `deployment-1.yaml`
 
-The deployment manifest [`data/deployments/deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) packages proxies (`TestProxy`), API products, developer test applications, and automated test suites together in a single file:
+The deployment manifest [`data/deployments/deployment-1.yaml`](data/deployments/deployment-1.yaml) packages proxies (`TestProxy`), API products, developer test applications, and automated test suites together in a single file:
 
 ```yaml
 # data/deployments/deployment-1.yaml (Excerpt)
@@ -95,46 +124,57 @@ Notice the **`tests:`** block at the end: it defines the automated test case, ta
 
 ---
 
-## 2. Local Testing
+## 2. Local Testing with `local.sh`
 
-### Step 1: Start the Apigee Emulator Container
+The [`local.sh`](local.sh) script orchestrates the local testing workflow. Every action in the interactive menu (1–10) can be invoked directly with dedicated `--parameter` flags.
 
-Start the local Docker container running Apigee Local Runtime:
+### Step 1: Start the Local Emulator & Tester Service
+
+Start the Apigee Local Runtime container and launch the Bun TypeScript tester service in the background:
 
 ```bash
-# Clone the repository if you haven't already
+# Clone the repository
 git clone https://github.com/tyayers/apigee-emulator-service.git
 cd apigee-emulator-service
 
-# Create and start the emulator container
-./create.sh
-docker start apigee
+# Start the emulator and background tester service (Option 1)
+./local.sh --start
 ```
 
-Verify that the emulator is ready:
+`./local.sh --start` automatically:
+- Checks prerequisites (`docker`, `bun`, `curl`, `jq`).
+- Creates or starts the `apigee` Docker container (with runtime port mapped to `8888:8998` and management port `8080:8080`).
+- Waits for emulator readiness.
+- Starts the Bun TypeScript tester server in the background on port `8082`.
+
+You can check status at any time:
 ```bash
-curl -s http://localhost:8080/v1/emulator/tree | jq .
-# Returns [] (empty array indicating healthy, ready runtime)
+./local.sh --status
 ```
 
 ---
 
-### Step 2: Deploy and Convert Assets with `deploy.sh`
+### Step 2: Deploy Deployment Manifests with `local.sh`
 
-Deploy [`deployment-1.yaml`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/data/deployments/deployment-1.yaml) to your local emulator:
+Deploy [`deployment-1.yaml`](data/deployments/deployment-1.yaml) to your local emulator:
 
 ```bash
-./deploy.sh data/deployments/deployment-1.yaml
+# Deploy deployment-1.yaml (Option 2)
+./local.sh --deploy data/deployments/deployment-1.yaml
+
+# Or deploy all available manifests at once (Option 3)
+./local.sh --deploy-all
 ```
 
-Under the hood, `deploy.sh`:
+Under the hood, `./local.sh --deploy`:
 - Compiles `TestProxy` with `aft`.
+- Substitutes `{GOOGLE_CLOUD_PROJECT}` with your active project.
 - Generates compliant API products and developer app credentials.
-- Resets the emulator and deploys the bundle to the `test` environment on port **8998**.
+- Resets the emulator and deploys the bundle to the `test` environment on runtime port **8888**.
 
-Test the proxy manually:
+Test the proxy endpoint directly:
 ```bash
-curl -i http://localhost:8998/testproxy
+curl -i http://localhost:8888/testproxy
 ```
 
 Output:
@@ -148,36 +188,44 @@ Hello, Guest! Hello world!
 
 ---
 
-### Step 3: Run the Emulator Tester Service & Web UI
+### Step 3: Run the Tester Web UI
 
-Start the lightweight Go service providing automated startup deployment, the test runner, and the web interface:
+Open the interactive web interface in your browser:
 
 ```bash
-# Compile and run
-go build -o apigee-emulator-service .
-PORT=8085 ./apigee-emulator-service
+# Open tester Web UI (Option 6)
+./local.sh --ui
 ```
 
-Open your browser to:
+Or open directly in your browser:
 ```text
-http://localhost:8085/tester/
+http://localhost:8082/tester/
 ```
 
-- When the service starts, it automatically deploys all pre-compiled bundles in `data/bundles/` and displays a wait dialog.
-- The **Tests** dropdown displays the tests extracted from `deployment-1.yaml` (`testproxy-test1`).
-- The assertions pane shows the expected rules: `status.code == 200`.
-- Clicking **"Send Request"** executes the call and loads the full vertical debug trace.
-- Clicking **"Test All"** runs the automated test runner across all proxies.
+- The UI displays loaded deployment manifests, active proxies, and test suites extracted from `deployment-1.yaml` (`testproxy-test1`).
+- The assertions pane shows configured validation rules: `status.code == 200`.
+- Clicking **"Send Request"** executes the call against the local emulator runtime and renders the debug trace.
+- Clicking **"Test All"** runs the full automated test suite across all proxies.
 
 ---
 
-### Step 4: Run Automated Tests via REST API
+### Step 4: Run Automated Tests via CLI or REST API
 
-You can trigger test suites programmatically using the service's REST API:
+Run the automated test runner directly from your shell:
 
 ```bash
-# Run all tests for TestProxy
-curl -s -X POST http://localhost:8085/tester/api/tests/run \
+# Run all tests (Option 4)
+./local.sh --test
+
+# Run tests for a specific proxy
+./local.sh --test TestProxy
+```
+
+You can also trigger tests programmatically via the Tester REST API:
+
+```bash
+# Run all tests for TestProxy via API
+curl -s -X POST http://localhost:8082/tester/api/tests/run \
   -H "Content-Type: application/json" \
   -d '{"proxy": "TestProxy"}' | jq .
 ```
@@ -237,26 +285,19 @@ jobs:
         image: gcr.io/apigee-release/hybrid/apigee-emulator:2.0.1
         ports:
           - 8080:8080
-          - 8998:8998
+          - 8888:8998
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          go-version: '1.21'
+          bun-version: latest
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Dependencies
+      - name: Install aft (Apigee Templater) CLI
         run: |
-          pip install pyyaml
-          # Install aft (Apigee Templater) CLI
           curl -sSL https://raw.githubusercontent.com/apigee/apigee-templater/main/install.sh | bash
           echo "$HOME/.aft/bin" >> $GITHUB_PATH
 
@@ -271,30 +312,13 @@ jobs:
             sleep 2
           done
 
-      - name: Convert Deployment Manifests to Local Assets
+      - name: Deploy Deployment Manifest
         run: |
-          ./deploy.sh --convert
-
-      - name: Start Apigee Emulator Tester Service
-        run: |
-          go build -o apigee-emulator-service .
-          PORT=8085 ./apigee-emulator-service &
-          sleep 5
+          ./local.sh --deploy data/deployments/deployment-1.yaml
 
       - name: Run Automated Test Suites
         run: |
-          RESPONSE=$(curl -s -X POST http://localhost:8085/tester/api/tests/run \
-            -H "Content-Type: application/json" \
-            -d '{}')
-          
-          echo "$RESPONSE" | jq .
-          
-          FAILED=$(echo "$RESPONSE" | jq '.failed')
-          if [ "$FAILED" -ne 0 ]; then
-            echo "::error::Automated test suite failed ($FAILED tests failed)!"
-            exit 1
-          fi
-          echo "All automated emulator tests passed successfully!"
+          ./local.sh --test
 ```
 
 ---
@@ -332,10 +356,10 @@ On Cloud Run, an **Envoy** ingress container handles HTTPS routing and proxies:
 
 ### Step 1: Deploy Service to Cloud Run
 
-Deploy the multi-container configuration using [`cloudrun.sh`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/cloudrun.sh):
+Deploy the multi-container configuration using [`cloudrun.sh`](cloudrun.sh):
 
 ```bash
-# Deploy service
+# Deploy service to Cloud Run
 ./cloudrun.sh deploy-service
 ```
 
@@ -344,11 +368,11 @@ Deploy the multi-container configuration using [`cloudrun.sh`](file:///home/tyay
 ### Step 2: Deploy TestProxy and Deployment Manifests to Cloud Run
 
 ```bash
-# Deploy deployment-1.yaml
-./cloudrun.sh data/deployments/deployment-1.yaml
+# Deploy deployment-1.yaml to Cloud Run
+./cloudrun.sh deploy data/deployments/deployment-1.yaml
 ```
 
-This compiles `TestProxy`, packages the test credentials, resets the remote emulator, and deploys the revision to Cloud Run.
+This compiles `TestProxy` with `aft`, packages the test credentials, resets the remote emulator, and deploys the revision to Cloud Run.
 
 ---
 
@@ -360,7 +384,7 @@ Run tests directly against the Cloud Run instance:
 # Retrieve service URL
 CLOUDRUN_URL=$(./cloudrun.sh url)
 
-# Run automated tests against the Cloud Run deployment
+# Run automated tests against the Cloud Run deployment via REST API
 curl -s -X POST "$CLOUDRUN_URL/tester/api/tests/run" \
   -H "Content-Type: application/json" \
   -d '{"proxy": "TestProxy"}' | jq .
@@ -374,13 +398,13 @@ curl -s -X POST "$CLOUDRUN_URL/tester/api/tests/run" \
 ./cloudrun.sh trace-stop
 ```
 
-The resulting `trace.json` file can be opened in [`trace.html`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/trace.html) to inspect policy execution timings and variables.
+The resulting `trace.json` file can be opened in [`trace.html`](trace.html) to inspect policy execution timings and variables.
 
 ---
 
 ### Cloud Run Tester Screenshot
 
-You can access the full interactive developer interface in your browser at `https://<your-cloud-run-url>/tester/`:
+You can access the full interactive developer interface in your browser at `https://<your-cloud-run-url>/tester/` (or via `./cloudrun.sh ui`):
 
 > [!NOTE]
 > **Cloud Run Deployment Screenshot**
@@ -397,9 +421,9 @@ Automated emulator testing is designed to accelerate development, not replace en
 
 | Testing Stage | Environment | What is Validated |
 |---|---|---|
-| **Local / Developer Inner Loop** | Local Emulator (`deploy.sh`, `/tester/`) | Policy syntax, JavaScript logic, AssignMessage transformations, KVM lookups, Mock target flows. |
+| **Local / Developer Inner Loop** | Local Emulator (`local.sh`, `/tester/`) | Policy syntax, JavaScript logic, AssignMessage transformations, KVM lookups, Mock target flows. |
 | **Pull Request / CI/CD** | Emulator Container in GitHub Actions | Automated regression tests (`status.code == 200`, JSON assertions), branch bundle validation. |
-| **Team Sandbox / Review** | Emulator on Google Cloud Run | Manual inspection, shared review, webhook integration, trace debugging without local Docker. |
+| **Team Sandbox / Review** | Emulator on Google Cloud Run (`cloudrun.sh`) | Manual inspection, shared review, webhook integration, trace debugging without local Docker. |
 | **Integration & UAT** | Real Apigee X / Hybrid Orgs (Non-Prod) | Mutual TLS (mTLS), Cloud KMS integration, real third-party backends, Cloud Armor / WAF, GCP IAM roles. |
 
 By catching 90%+ of policy logic and schema errors during the emulator phase, deployments to real Apigee X and hybrid organizations become significantly faster, cleaner, and less prone to rollbacks.
@@ -408,16 +432,20 @@ By catching 90%+ of policy logic and schema errors during the emulator phase, de
 
 ## Summary & Useful Commands Reference
 
-| Task | Command |
-|---|---|
-| **Start Local Emulator** | `./create.sh && docker start apigee` |
-| **Deploy Manifest Locally** | `./deploy.sh data/deployments/deployment-1.yaml` |
-| **Convert Manifests to Bundles** | `./deploy.sh --convert` |
-| **Start Tester Service** | `PORT=8085 ./apigee-emulator-service` |
-| **Run Automated Tests (API)** | `curl -X POST http://localhost:8085/tester/api/tests/run -d '{"proxy":"TestProxy"}'` |
-| **Deploy to Cloud Run** | `./cloudrun.sh deploy-service` |
-| **Deploy Manifest to Cloud Run** | `./cloudrun.sh data/deployments/deployment-1.yaml` |
-| **Test Cloud Run Endpoint** | `./cloudrun.sh test /testproxy` |
+| Task | Local (`local.sh`) | Cloud Run (`cloudrun.sh`) |
+|---|---|---|
+| **Start / Deploy Service** | `./local.sh --start` | `./cloudrun.sh deploy-service` |
+| **Deploy Manifest** | `./local.sh --deploy data/deployments/deployment-1.yaml` | `./cloudrun.sh deploy data/deployments/deployment-1.yaml` |
+| **Deploy All Manifests** | `./local.sh --deploy-all` | `./cloudrun.sh --all` |
+| **Run Automated Tests** | `./local.sh --test [PROXY]` | `curl -X POST "$URL/tester/api/tests/run"` |
+| **Test Proxy Endpoint** | `curl -i http://localhost:8888/testproxy` | `./cloudrun.sh test /testproxy` |
+| **Check Status & Health** | `./local.sh --status` | `./cloudrun.sh status` |
+| **Open Tester Web UI** | `./local.sh --ui` | `./cloudrun.sh ui` |
+| **Record Debug Trace** | `./local.sh --trace-start [PROXY]` / `--trace-stop` | `./cloudrun.sh trace-start [PROXY]` / `trace-stop` |
+| **Reset Emulator State** | `./local.sh --reset` | `./cloudrun.sh reset` |
+| **Recreate Container** | `./local.sh --recreate` | — |
+| **Clean Generated Assets** | `./local.sh --clean` | — |
+| **Stop All Services** | `./local.sh --stop` | — |
 
 For more details and source code, visit the GitHub repository:
 👉 **[https://github.com/tyayers/apigee-emulator-service](https://github.com/tyayers/apigee-emulator-service)**

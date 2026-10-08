@@ -1953,3 +1953,73 @@ body {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* Labs Host Switcher */
+.lab-host-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lab-host-switcher .host-pill-group {
+  display: inline-flex;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  padding: 2px;
+  gap: 2px;
+}
+
+.lab-host-switcher .host-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.lab-host-switcher .host-pill:hover {
+  color: var(--text-primary);
+}
+
+.lab-host-switcher .host-pill.active {
+  background-color: var(--primary);
+  color: #ffffff;
+}
+
+.lab-host-switcher .host-pill.active.remote-active {
+  background-color: #0284c7;
+}
+
+.lab-host-switcher .host-remote-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background-color: rgba(2, 132, 199, 0.12);
+  border: 1px solid rgba(2, 132, 199, 0.35);
+  border-radius: var(--radius-full);
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: #0284c7;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.lab-host-switcher .host-remote-btn:hover {
+  background-color: rgba(2, 132, 199, 0.22);
+  border-color: #0284c7;
+}
+
+.header-pill.deployment-key {
+  border-color: rgba(2, 132, 199, 0.5);
+  background-color: rgba(2, 132, 199, 0.1);
+  color: #0284c7;
+}
