@@ -1,6 +1,8 @@
 # Apigee Emulator Service Guide
 
-This repository provides tools, scripts, and a lightweight web service for building, testing, tracing, and deploying Apigee proxies locally or to **Google Cloud Run** using the **Apigee Local Emulator**.
+This repository provides tools, scripts, and a lightweight web service for building, testing, tracing, and deploying Apigee proxies locally, in **Google Cloud Shell**,  or to **Google Cloud Run** using the **Apigee Local Emulator**.
+
+![Apigee Emulator Tester](img/screen1.jpg)
 
 ---
 
@@ -507,4 +509,3 @@ Run the built-in Bun test suite:
 ```bash
 bun test
 ```
-
