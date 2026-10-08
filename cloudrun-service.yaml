@@ -138,6 +138,25 @@ spec:
                             cluster: manager_service
                             timeout: 300s
 
+                        # Root path / Deployments Hub Dashboard (Manager UI)
+                        - match:
+                            path: "/"
+                          route:
+                            cluster: manager_service
+                            timeout: 300s
+
+                        # Static files and assets for Deployments Hub
+                        - match:
+                            prefix: "/deployments."
+                          route:
+                            cluster: manager_service
+                            timeout: 300s
+                        - match:
+                            path: "/style.css"
+                          route:
+                            cluster: manager_service
+                            timeout: 300s
+
                         # All other paths route to Apigee Runtime Message Processor (Port 8998)
                         - match:
                             prefix: "/"

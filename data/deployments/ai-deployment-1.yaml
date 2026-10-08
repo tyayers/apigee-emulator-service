@@ -5,8 +5,6 @@ name: ai-deployment-1
 type: deployment
 templates:
   - REST-AI-Completions.yaml
-  - REST-AI-Completions-Anonymized.yaml
-  - REST-AI-Completions-Screened.yaml
   - REST-AI-Embeddings.yaml
   - REST-AI-GenerateContent.yaml
   - REST-AI-Interactions.yaml
