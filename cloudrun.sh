@@ -166,7 +166,13 @@ get_available_deployments() {
 }
 
 get_available_zips() {
-  find data/bundles dist -maxdepth 1 -name "*.zip" -type f 2>/dev/null | grep -v "bundle.zip" | grep -v "testdata.zip" | sort -u
+  local search_dirs=()
+  [ -d "data/bundles" ] && search_dirs+=("data/bundles")
+  [ -d "dist" ] && search_dirs+=("dist")
+  if [ ${#search_dirs[@]} -eq 0 ]; then
+    return 0
+  fi
+  find "${search_dirs[@]}" -maxdepth 1 -name "*.zip" -type f 2>/dev/null | grep -v "bundle.zip" | grep -v "testdata.zip" | sort -u || true
 }
 
 # ------------------------------------------------------------------------------
@@ -174,54 +180,52 @@ get_available_zips() {
 # ------------------------------------------------------------------------------
 show_help() {
   echo -e "${BOLD}Usage:${NC}"
-  echo "  ./cloudrun.sh [COMMAND] [OPTIONS] [FILES...]"
+  echo "  ./cloudrun.sh [OPTION | COMMAND] [ARGUMENTS]"
   echo ""
-  echo -e "${BOLD}Service Management Commands:${NC}"
-  echo "  deploy-service, up     Deploy Envoy + Apigee Emulator service to Cloud Run"
-  echo "  status                 Check service URL, health, and currently deployed proxies"
-  echo "  url                    Display current Cloud Run service URL"
-  echo "  tester, manage         Open/display the Apigee Emulator Tester Web UI URL"
-  echo "  logs                   Tail Cloud Run service logs"
-  echo "  reset                  Reset Apigee emulator state on Cloud Run"
-  echo "  delete                 Delete the Cloud Run service"
+  echo -e "${BOLD}Menu Options (1-10):${NC}"
+  echo "  1)  --deploy-service, --start, deploy-service   Deploy Envoy + Apigee Emulator + Manager to Cloud Run"
+  echo "  2)  --deploy [FILE], deploy [FILE]             Deploy default or specified YAML deployment / bundle"
+  echo "  3)  --browse-deployments                        Browse & deploy deployments (data/deployments/*.yaml)"
+  echo "  4)  --browse-bundles                            Browse & deploy ZIP bundles (data/bundles/*.zip)"
+  echo "  5)  --deploy-all, -a, --all                     Deploy all deployments from 'data/deployments/'"
+  echo "  6)  --status, status                            Check service URL, health, and currently deployed proxies"
+  echo "  7)  --test [PATH], test                         Send a test request to deployed proxy (default: /testproxy)"
+  echo "  8)  --trace-start [PROXY], trace-start          Start trace recording session on Cloud Run"
+  echo "  9)  --trace-stop, trace-stop                    Stop trace session and download trace.json"
+  echo "  10) --tester, --ui, --manage                    Open / display Apigee Emulator Tester Web UI URL"
   echo ""
-  echo -e "${BOLD}Proxy & Traffic Commands:${NC}"
-  echo "  deploy [FILE...]       Deploy YAML deployment or ZIP bundle(s) from data/"
-  echo "  test [PATH]            Send a test request to deployed proxy (e.g. /testproxy)"
-  echo "  trace-start [PROXY]    Start trace recording session on Cloud Run"
-  echo "  trace-stop             Stop trace session and download trace.json"
-  echo ""
-  echo -e "${BOLD}Options:${NC}"
-  echo "  -a, --all              Deploy all deployments from 'data/deployments/' to Cloud Run"
+  echo -e "${BOLD}Additional Commands & Options:${NC}"
+  echo "  --logs, logs           Tail Cloud Run service logs"
+  echo "  --reset, reset         Reset Apigee emulator state on Cloud Run"
+  echo "  --delete, delete       Delete the Cloud Run service"
+  echo "  --url, url             Display current Cloud Run service URL"
   echo "  -l, --list             List available deployments and bundles in 'data/'"
   echo "  --project [PROJECT_ID] Override GCP Project ID (or uses GOOGLE_CLOUD_PROJECT env var)"
-  echo "  --region [REGION]      Override Cloud Run region (or uses GOOGLE_CLOUD_LOCATION / GOOGLE_CLOUD_REGION, default: europe-west1)"
+  echo "  --region [REGION]      Override Cloud Run region (default: europe-west1)"
   echo "  --service SERVICE_NAME Override Cloud Run service name (default: apigee-emulator)"
   echo "  -p, --parameters P     Pass additional parameters (comma-separated key=val, e.g. -p par1=val1,par2=val2)"
-  echo "  --url URL              Directly target an existing Cloud Run or custom URL"
   echo "  --auth                 Send gcloud identity token with all requests"
   echo "  -h, --help             Show this help message"
   echo ""
   echo -e "${BOLD}Examples:${NC}"
-  echo "  # 1. Deploy the containers to Cloud Run:"
-  echo "  ./cloudrun.sh deploy-service"
+  echo "  # Complete one-command deployment to Cloud Run with parameters (Option 1):"
+  echo "  ./cloudrun.sh --deploy-service --project cloud32x --parameters \"GEMINI_API_KEY=AIzaSy...\""
+  echo "  # Or using positional command:"
+  echo "  ./cloudrun.sh deploy-service --project cloud32x --parameters \"GEMINI_API_KEY=AIzaSy...\""
+  echo "  # Or using --start alias:"
+  echo "  ./cloudrun.sh --start --project cloud32x -p \"GEMINI_API_KEY=AIzaSy...\""
   echo ""
-  echo "  # 2. Deploy a YAML deployment to Cloud Run:"
-  echo "  ./cloudrun.sh data/deployments/deployment-1.yaml"
+  echo "  # Deploy default deployment-1.yaml (Option 2):"
+  echo "  ./cloudrun.sh --deploy"
   echo ""
-  echo "  # 3. Deploy a ZIP bundle to Cloud Run:"
-  echo "  ./cloudrun.sh data/bundles/TestProxy.zip"
+  echo "  # Deploy all deployments (Option 5):"
+  echo "  ./cloudrun.sh --deploy-all"
   echo ""
-  echo "  # 4. Deploy all resources at once:"
-  echo "  ./cloudrun.sh --all"
+  echo "  # Test proxy traffic on Cloud Run (Option 7):"
+  echo "  ./cloudrun.sh --test /testproxy"
   echo ""
-  echo "  # 5. Test proxy traffic on Cloud Run:"
-  echo "  ./cloudrun.sh test /testproxy"
-  echo ""
-  echo "  # 6. Record and inspect trace on Cloud Run:"
-  echo "  ./cloudrun.sh trace-start TestProxy"
-  echo "  ./cloudrun.sh test /testproxy"
-  echo "  ./cloudrun.sh trace-stop"
+  echo "  # Check status (Option 6):"
+  echo "  ./cloudrun.sh --status"
 }
 
 # ------------------------------------------------------------------------------
@@ -1788,7 +1792,7 @@ while [[ $# -gt 0 ]]; do
       show_help
       exit 0
       ;;
-    deploy-service|up|--deploy-service)
+    deploy-service|up|--deploy-service|--start|start)
       COMMAND="deploy-service"
       shift
       ;;
@@ -1800,7 +1804,7 @@ while [[ $# -gt 0 ]]; do
       COMMAND="url"
       shift
       ;;
-    tester|manage|manager|--tester|--manage)
+    tester|manage|manager|--tester|--manage|--ui|ui)
       COMMAND="tester"
       shift
       ;;
@@ -1816,31 +1820,47 @@ while [[ $# -gt 0 ]]; do
       COMMAND="delete"
       shift
       ;;
-    test)
+    test|--test)
       COMMAND="test"
       shift
-      TEST_PATH="$1"
-      [ -n "$TEST_PATH" ] && shift
+      if [[ -n "$1" && "$1" != -* ]]; then
+        TEST_PATH="$1"
+        shift
+      fi
       ;;
-    trace-start)
+    trace-start|--trace-start)
       COMMAND="trace-start"
       shift
-      TRACE_PROXY="$1"
-      [ -n "$TRACE_PROXY" ] && shift
+      if [[ -n "$1" && "$1" != -* ]]; then
+        TRACE_PROXY="$1"
+        shift
+      fi
       ;;
-    trace-stop)
+    trace-stop|--trace-stop)
       COMMAND="trace-stop"
       shift
       ;;
-    deploy)
+    deploy|--deploy)
       COMMAND="deploy"
       shift
+      if [[ -n "$1" && "$1" != -* ]]; then
+        FILES_TO_DEPLOY+=("$1")
+        shift
+      fi
       ;;
-    -a|--all)
+    --browse-deployments)
+      COMMAND="browse-deployments"
+      shift
+      ;;
+    --browse-bundles)
+      COMMAND="browse-bundles"
+      shift
+      ;;
+    -a|--all|--deploy-all|deploy-all)
       COMMAND="deploy-all"
       shift
       ;;
-    -l|--list)
+    -l|--list|list)
       COMMAND="list"
       shift
       ;;
@@ -1955,13 +1975,19 @@ if [ -n "$COMMAND" ]; then
       rm -f "$URL_FILE" "$SESSION_FILE"
       ;;
     test)
-      test_traffic "$TEST_PATH"
+      test_traffic "${TEST_PATH:-/testproxy}"
       ;;
     trace-start)
       trace_start "$TRACE_PROXY"
       ;;
     trace-stop)
       trace_stop
+      ;;
+    browse-deployments)
+      browse_and_deploy "deployments" get_available_deployments "data/deployments/deployment-1.yaml"
+      ;;
+    browse-bundles)
+      browse_and_deploy "ZIP bundles" get_available_zips ""
       ;;
     deploy-all)
       all_res=()
@@ -1970,8 +1996,7 @@ if [ -n "$COMMAND" ]; then
       ;;
     deploy)
       if [ ${#FILES_TO_DEPLOY[@]} -eq 0 ]; then
-        echo -e "${RED}Error: 'deploy' requires at least one YAML or ZIP file.${NC}" >&2
-        exit 1
+        FILES_TO_DEPLOY+=("data/deployments/deployment-1.yaml")
       fi
       deploy_proxies_to_cloudrun "${FILES_TO_DEPLOY[@]}"
       ;;

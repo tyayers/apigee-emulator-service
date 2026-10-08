@@ -166,6 +166,31 @@ Deploy a deployment YAML with automatic GCP project substitution:
 
 ---
 
+### Cloud Run Management Commands (`cloudrun.sh` Menu Options 1–10)
+
+| Option | CLI Flag Parameter | Positional Command | Description |
+|---|---|---|---|
+| **1** | `./cloudrun.sh --deploy-service` / `--start` | `./cloudrun.sh deploy-service` | Deploy Envoy + Apigee Emulator + Manager + all deployments to Cloud Run |
+| **2** | `./cloudrun.sh --deploy [FILE]` | `./cloudrun.sh deploy [FILE]` | Deploy default (`deployment-1.yaml`) or specified deployment / bundle |
+| **3** | `./cloudrun.sh --browse-deployments` | — | Browse and select a deployment YAML to deploy |
+| **4** | `./cloudrun.sh --browse-bundles` | — | Browse and select a ZIP bundle to deploy |
+| **5** | `./cloudrun.sh --deploy-all` / `-a` | `./cloudrun.sh deploy-all` | Deploy all deployments in `data/deployments/` to Cloud Run |
+| **6** | `./cloudrun.sh --status` | `./cloudrun.sh status` | Check Cloud Run service URL, health, and deployed proxies |
+| **7** | `./cloudrun.sh --test [PATH]` | `./cloudrun.sh test [PATH]` | Send a test request to deployed proxy (default: `/testproxy`) |
+| **8** | `./cloudrun.sh --trace-start [P]` | `./cloudrun.sh trace-start [P]` | Start debug trace recording session on Cloud Run |
+| **9** | `./cloudrun.sh --trace-stop` | `./cloudrun.sh trace-stop` | Stop trace session and download `trace.json` |
+| **10** | `./cloudrun.sh --tester` / `--ui` | `./cloudrun.sh tester` / `ui` | Display and open Cloud Run Tester Web UI in browser |
+| — | `./cloudrun.sh --logs` | `./cloudrun.sh logs` | Tail Cloud Run service logs |
+| — | `./cloudrun.sh --reset` | `./cloudrun.sh reset` | Reset Apigee emulator state on Cloud Run |
+| — | `./cloudrun.sh --delete` | `./cloudrun.sh delete` | Delete the Cloud Run service |
+
+To execute complete deployment to Cloud Run in one non-interactive command:
+```bash
+./cloudrun.sh --deploy-service --project <PROJECT_ID> --parameters "GEMINI_API_KEY=<KEY>"
+```
+
+---
+
 ## 3. Tracing Proxy Executions with `trace.html`
 
 The emulator includes built-in debug tracing. You can record execution traces and view them interactively in [`trace.html`](file:///home/tyayers/projects/tyayers/apigee-emulator-service/trace.html).

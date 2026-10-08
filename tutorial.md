@@ -76,51 +76,90 @@ The repository [tyayers/apigee-emulator-service](https://github.com/tyayers/apig
 
 ### The Deployment Manifest: `deployment-1.yaml`
 
-The deployment manifest [`data/deployments/deployment-1.yaml`](data/deployments/deployment-1.yaml) packages proxies (`TestProxy`), API products, developer test applications, and automated test suites together in a single file:
+The deployment manifest [`data/deployments/deployment-1.yaml`](data/deployments/deployment-1.yaml) packages AI proxy templates (`REST-AI-Interactions`, `REST-AI-Completions`, `MCP-CustomerService`, etc.), API products, developer test applications, and automated test suites together in a single file:
 
 ```yaml
 # data/deployments/deployment-1.yaml (Excerpt)
 gateway: apigee
-name: deployment-1
+schemaVersion: 1.0.0
+name: ai-deployment-1
 type: deployment
 
-proxies:
-  - name: TestProxy
-    # ... proxy configuration ...
+templates:
+  - REST-AI-Completions.yaml
+  - REST-AI-Embeddings.yaml
+  - REST-AI-GenerateContent.yaml
+  - REST-AI-Interactions.yaml
+  - REST-AI-Messages.yaml
+  - MCP-CustomerService.yaml
 
 products:
-  - name: test-product
-    displayName: Test Product
+  - name: ai-starter-package
+    displayName: AI Starter Package
     environments:
       - default-dev
-    operations:
-      - apiSource: TestProxy
-        operations:
-          - name: /json
-            methods: []
+    proxies:
+      - REST-AI-Interactions
+      - REST-AI-Completions
+      - REST-AI-GenerateContent
+      - REST-AI-Messages
+      - REST-AI-Embeddings
+    quota: "50000"
+    quotaInterval: "1"
+    quotaTimeUnit: month
 
 users:
-  - name: test@example.com
+  - name: starter-dev@example.com
     apps:
-      - name: Test App
+      - name: Starter App
         products:
-          - test-product
+          - ai-starter-package
         credentials:
-          - consumerKey: test-app-key-123
+          - consumerKey: starter-app-key-123
             status: approved
 
 tests:
-  - name: testproxy-test1
-    proxy: TestProxy
-    path: /testproxy
-    method: GET
+  - name: interactions-test1
+    description: Tests the Gemini Interactions API
+    proxy: REST-AI-Interactions
+    product: ai-starter-package
+    path: /v1beta/interactions
+    method: POST
     headers:
-      x-api-key: test-app-key-123
+      Content-Type: application/json
+      x-api-key: starter-app-key-123
+    body: |
+      {
+        "model": "gemini-3.5-flash-lite",
+        "input": "What is the capital of France?"
+      }
     assertions:
-      - status.code == 200
+      - response.status == 200
+
+  - name: completions-test1
+    description: This tests the completions API
+    proxy: REST-AI-Completions
+    product: ai-starter-package
+    path: /v1/chat/completions
+    method: POST
+    headers:
+      Content-Type: application/json
+      x-api-key: starter-app-key-123
+    body: |
+      {
+        "model": "google/gemini-3.5-flash-lite",
+        "stream": true,
+        "max_tokens": 100,
+        "messages": [{
+          "role": "user",
+          "content": "Why is the sky blue?"
+        }]
+      }
+    assertions:
+      - response.status == 200
 ```
 
-Notice the **`tests:`** block at the end: it defines the automated test case, target path, required credentials, and assertions (`status.code == 200`).
+Notice the **`tests:`** block at the end: it defines the automated test cases, target paths, required credentials (`x-api-key: starter-app-key-123`), model parameters, and assertions (`response.status == 200`).
 
 ---
 
@@ -167,23 +206,39 @@ Deploy [`deployment-1.yaml`](data/deployments/deployment-1.yaml) to your local e
 ```
 
 Under the hood, `./local.sh --deploy`:
-- Compiles `TestProxy` with `aft`.
+- Compiles the AI proxy templates (`REST-AI-*`, `MCP-CustomerService`) with `aft`.
 - Substitutes `{GOOGLE_CLOUD_PROJECT}` with your active project.
-- Generates compliant API products and developer app credentials.
-- Resets the emulator and deploys the bundle to the `test` environment on runtime port **8888**.
+- Generates compliant API products (`ai-starter-package`, `mcp-package`) and developer app credentials.
+- Resets the emulator and deploys the bundles to the `test` environment on runtime port **8888**.
 
-Test the proxy endpoint directly:
+Test an AI proxy endpoint directly using `curl`:
 ```bash
-curl -i http://localhost:8888/testproxy
+curl -i -X POST http://localhost:8888/v1beta/interactions \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: starter-app-key-123" \
+  -d '{
+    "model": "gemini-3.5-flash-lite",
+    "input": "What is the capital of France?"
+  }'
 ```
 
 Output:
 ```http
 HTTP/1.1 200 OK
-x-testheader: Hello world!
-Content-Type: text/plain; charset=utf-8
+Content-Type: application/json
+x-apigee-proxy: /organizations/hybrid/environments/test/apiproxies/REST-AI-Interactions/revisions/0
+x-apigee-target-latency: 42
 
-Hello, Guest! Hello world!
+{
+  "steps": [
+    {
+      "content": "The capital of France is Paris."
+    }
+  ],
+  "usage": {
+    "total_tokens": 15
+  }
+}
 ```
 
 ---
@@ -202,8 +257,8 @@ Or open directly in your browser:
 http://localhost:8082/tester/
 ```
 
-- The UI displays loaded deployment manifests, active proxies, and test suites extracted from `deployment-1.yaml` (`testproxy-test1`).
-- The assertions pane shows configured validation rules: `status.code == 200`.
+- The UI displays loaded deployment manifests, active proxies, and test suites extracted from `deployment-1.yaml` (`interactions-test1`, `completions-test1`, `mcp-test1`, etc.).
+- The assertions pane shows configured validation rules: `response.status == 200`.
 - Clicking **"Send Request"** executes the call against the local emulator runtime and renders the debug trace.
 - Clicking **"Test All"** runs the full automated test suite across all proxies.
 
@@ -218,16 +273,16 @@ Run the automated test runner directly from your shell:
 ./local.sh --test
 
 # Run tests for a specific proxy
-./local.sh --test TestProxy
+./local.sh --test REST-AI-Interactions
 ```
 
 You can also trigger tests programmatically via the Tester REST API:
 
 ```bash
-# Run all tests for TestProxy via API
+# Run all tests for REST-AI-Interactions via API
 curl -s -X POST http://localhost:8082/tester/api/tests/run \
   -H "Content-Type: application/json" \
-  -d '{"proxy": "TestProxy"}' | jq .
+  -d '{"proxy": "REST-AI-Interactions"}' | jq .
 ```
 
 Example JSON response:
@@ -238,16 +293,16 @@ Example JSON response:
   "failed": 0,
   "results": [
     {
-      "testName": "testproxy-test1",
-      "proxy": "TestProxy",
-      "method": "GET",
-      "path": "/testproxy",
+      "testName": "interactions-test1",
+      "proxy": "REST-AI-Interactions",
+      "method": "POST",
+      "path": "/v1beta/interactions",
       "statusCode": 200,
       "passed": true,
-      "durationMs": 42,
+      "durationMs": 58,
       "assertions": [
         {
-          "assertion": "status.code == 200",
+          "assertion": "response.status == 200",
           "passed": true,
           "actual": "200"
         }
@@ -356,23 +411,27 @@ On Cloud Run, an **Envoy** ingress container handles HTTPS routing and proxies:
 
 ### Step 1: Deploy Service to Cloud Run
 
-Deploy the multi-container configuration using [`cloudrun.sh`](cloudrun.sh):
+Deploy the complete multi-container configuration (Envoy + Apigee Emulator + Tester Manager + all deployments) in one command using [`cloudrun.sh`](cloudrun.sh):
 
 ```bash
-# Deploy service to Cloud Run
-./cloudrun.sh deploy-service
+# Complete deployment to Cloud Run with project and parameters (Option 1):
+./cloudrun.sh --deploy-service --project <PROJECT_ID> --parameters "GEMINI_API_KEY=<KEY>"
+
+# Or using positional command or --start alias:
+./cloudrun.sh deploy-service --project <PROJECT_ID> --parameters "GEMINI_API_KEY=<KEY>"
+./cloudrun.sh --start --project <PROJECT_ID> --parameters "GEMINI_API_KEY=<KEY>"
 ```
 
 ---
 
-### Step 2: Deploy TestProxy and Deployment Manifests to Cloud Run
+### Step 2: Deploy AI Proxies and Deployment Manifests to Cloud Run
 
 ```bash
-# Deploy deployment-1.yaml to Cloud Run
-./cloudrun.sh deploy data/deployments/deployment-1.yaml
+# Deploy deployment-1.yaml to Cloud Run (Option 2)
+./cloudrun.sh --deploy data/deployments/deployment-1.yaml
 ```
 
-This compiles `TestProxy` with `aft`, packages the test credentials, resets the remote emulator, and deploys the revision to Cloud Run.
+This compiles the AI proxy templates with `aft`, packages the test credentials, resets the remote emulator, and deploys the revision to Cloud Run.
 
 ---
 
@@ -387,15 +446,15 @@ CLOUDRUN_URL=$(./cloudrun.sh url)
 # Run automated tests against the Cloud Run deployment via REST API
 curl -s -X POST "$CLOUDRUN_URL/tester/api/tests/run" \
   -H "Content-Type: application/json" \
-  -d '{"proxy": "TestProxy"}' | jq .
+  -d '{"proxy": "REST-AI-Interactions"}' | jq .
 
-# Test proxy traffic with the built-in CLI helper
-./cloudrun.sh test /testproxy
+# Test proxy traffic with the built-in CLI helper (e.g. MCP CustomerService)
+./cloudrun.sh --test /customerservice/mcp
 
 # Record debug traces in Cloud Run
-./cloudrun.sh trace-start TestProxy
-./cloudrun.sh test /testproxy
-./cloudrun.sh trace-stop
+./cloudrun.sh --trace-start REST-AI-Interactions
+./cloudrun.sh --test /v1beta/interactions
+./cloudrun.sh --trace-stop
 ```
 
 The resulting `trace.json` file can be opened in [`trace.html`](trace.html) to inspect policy execution timings and variables.
@@ -434,15 +493,15 @@ By catching 90%+ of policy logic and schema errors during the emulator phase, de
 
 | Task | Local (`local.sh`) | Cloud Run (`cloudrun.sh`) |
 |---|---|---|
-| **Start / Deploy Service** | `./local.sh --start` | `./cloudrun.sh deploy-service` |
-| **Deploy Manifest** | `./local.sh --deploy data/deployments/deployment-1.yaml` | `./cloudrun.sh deploy data/deployments/deployment-1.yaml` |
-| **Deploy All Manifests** | `./local.sh --deploy-all` | `./cloudrun.sh --all` |
-| **Run Automated Tests** | `./local.sh --test [PROXY]` | `curl -X POST "$URL/tester/api/tests/run"` |
-| **Test Proxy Endpoint** | `curl -i http://localhost:8888/testproxy` | `./cloudrun.sh test /testproxy` |
-| **Check Status & Health** | `./local.sh --status` | `./cloudrun.sh status` |
-| **Open Tester Web UI** | `./local.sh --ui` | `./cloudrun.sh ui` |
-| **Record Debug Trace** | `./local.sh --trace-start [PROXY]` / `--trace-stop` | `./cloudrun.sh trace-start [PROXY]` / `trace-stop` |
-| **Reset Emulator State** | `./local.sh --reset` | `./cloudrun.sh reset` |
+| **Start / Deploy Service** | `./local.sh --start` / `start` | `./cloudrun.sh --deploy-service` / `deploy-service` / `--start` |
+| **Deploy Manifest** | `./local.sh --deploy [FILE]` | `./cloudrun.sh --deploy [FILE]` / `deploy [FILE]` |
+| **Deploy All Manifests** | `./local.sh --deploy-all` | `./cloudrun.sh --deploy-all` / `-a` |
+| **Run Automated Tests** | `./local.sh --test [PROXY]` | `./cloudrun.sh --test [PATH]` or via REST API |
+| **Test Proxy Endpoint** | `curl -i -X POST http://localhost:8888/v1beta/interactions` | `./cloudrun.sh --test /v1beta/interactions` / `test` |
+| **Check Status & Health** | `./local.sh --status` | `./cloudrun.sh --status` / `status` |
+| **Open Tester Web UI** | `./local.sh --ui` / `--tester` | `./cloudrun.sh --tester` / `--ui` |
+| **Record Debug Trace** | `./local.sh --trace-start [PROXY]` / `--trace-stop` | `./cloudrun.sh --trace-start [PROXY]` / `--trace-stop` |
+| **Reset Emulator State** | `./local.sh --reset` | `./cloudrun.sh --reset` / `reset` |
 | **Recreate Container** | `./local.sh --recreate` | — |
 | **Clean Generated Assets** | `./local.sh --clean` | — |
 | **Stop All Services** | `./local.sh --stop` | — |

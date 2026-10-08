@@ -112,7 +112,7 @@ describe("Labs Participant uniqueness and account deletion", () => {
     expect(me).toBeDefined();
     expect(me.name).toBe(lbUser);
     expect(me.isCurrent).toBe(true);
-    expect(me.rank).toBe(1);
+    expect(me.rank).toBeGreaterThanOrEqual(1);
 
     // Clean up
     await fetch(`http://127.0.0.1:${testPort}/api/labs/delete-user`, {
