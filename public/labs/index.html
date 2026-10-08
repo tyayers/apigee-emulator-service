@@ -24,6 +24,16 @@
           <span class="brand-pill">Codelab</span>
         </div>
       </div>
+      <a href="/" class="btn btn-secondary btn-sm" title="Back to Deployments Hub" style="margin-left: 12px; display:inline-flex; align-items:center; gap:4px; text-decoration:none; font-size:12px; font-weight:600;">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+        </svg>
+        <span>Deployments Hub</span>
+      </a>
+      <div style="display:inline-flex; align-items:center; margin-left:8px; background:var(--surface-color, #1e293b); border:1px solid var(--border-color, #334155); border-radius:6px; padding:3px 8px;" title="Current active deployment scope">
+        <span style="font-size:11px; text-transform:uppercase; color:var(--text-secondary, #94a3b8); margin-right:6px; font-weight:600;">Deployment:</span>
+        <select id="lab-deployment-select" style="font-size:12px; font-weight:600; background:transparent; color:var(--text-primary, #f1f5f9); border:none; outline:none; cursor:pointer; max-width:180px; text-overflow:ellipsis;"></select>
+      </div>
     </div>
 
     <!-- Stepper Progress Bar Summary -->

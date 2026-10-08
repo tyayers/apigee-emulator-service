@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apigee Emulator - Deployments Hub</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="stylesheet" href="/style.css?v=6">
+  <link rel="stylesheet" href="/deployments.css?v=2">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2394a3b8%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><polyline points=%2216 18 22 12 16 6%22/><polyline points=%228 6 2 12 8 18%22/></svg>">
+  <script>
+    (function() {
+      try {
+        var savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'light' || savedTheme === 'dark') {
+          document.documentElement.setAttribute('data-theme', savedTheme);
+        } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        } else {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-icon">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+        </span>
+        <div>
+          <h1>Apigee Emulator Hub</h1>
+          <p class="subtitle">Multi-Deployment Management &amp; Runtime Overview</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="header-center">
+      <nav class="view-nav">
+        <a href="/" class="nav-tab active" title="Deployments Overview & Manager" style="text-decoration:none; display:inline-flex; align-items:center;">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"/>
+            <rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/>
+            <rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          Deployments Hub
+        </a>
+        <a id="nav-btn-open-tester" href="/tester/" class="nav-tab" title="Proxy API Tester & Live Trace Inspector" style="text-decoration:none; display:inline-flex; align-items:center;">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="16 18 22 12 16 6"/>
+            <polyline points="8 6 2 12 8 18"/>
+          </svg>
+          API Tester
+        </a>
+        <a id="nav-btn-open-labs" href="/labs/" class="nav-tab" title="Interactive Quicklabs Codelabs Experience" style="text-decoration:none; display:inline-flex; align-items:center;">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          </svg>
+          Skills Labs
+        </a>
+        <a href="/tester/?view=analytics" class="nav-tab" title="Apigee & AI Usage Analytics" style="text-decoration:none; display:inline-flex; align-items:center;">
+          <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 20V10M12 20V4M6 20v-6"/>
+          </svg>
+          Analytics
+        </a>
+      </nav>
+
+      <div id="emulator-status-badge" class="status-badge status-loading">
+        <span class="status-dot"></span>
+        <span id="emulator-status-text">Checking Emulator...</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <button id="btn-deploy-all-header" class="btn btn-primary" title="Deploy all loaded deployments to emulator together">
+        <svg class="btn-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        Deploy All
+      </button>
+
+      <button id="btn-theme-toggle" class="btn btn-outline" title="Switch between dark and light themes" aria-label="Toggle light and dark mode">
+        <svg id="theme-icon-sun" class="btn-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1" x2="12" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1" y1="12" x2="3" y2="12"/>
+          <line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+        <svg id="theme-icon-moon" class="btn-icon-svg hidden" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="hub-container">
+    <!-- Hero / Headline Bar -->
+    <section class="hub-hero">
+      <div class="hub-hero-text">
+        <h2>Multi-Deployment Runtime Hub</h2>
+        <p>Deploy, manage, and explore multiple Apigee deployments simultaneously in your local emulator. Test proxies and codelabs individually with scoped suites.</p>
+      </div>
+      <div class="hub-hero-actions">
+        <button id="btn-toggle-load-panel" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          Load Deployment
+        </button>
+        <button id="btn-run-all-tests-global" class="btn btn-outline">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          Run All Tests
+        </button>
+      </div>
+    </section>
+
+    <!-- KPI / Stats Overview Cards -->
+    <section class="hub-stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(99, 102, 241, 0.15); color: #818cf8;">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+          </svg>
+        </div>
+        <div class="stat-content">
+          <div class="stat-value" id="stat-total-deployments">0</div>
+          <div class="stat-label">Loaded Deployments</div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(16, 185, 129, 0.15); color: #34d399;">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/>
+          </svg>
+        </div>
+        <div class="stat-content">
+          <div class="stat-value" id="stat-active-proxies">0</div>
+          <div class="stat-label">Active Proxies in Runtime</div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+        </div>
+        <div class="stat-content">
+          <div class="stat-value" id="stat-total-tests">0</div>
+          <div class="stat-label">Automated Tests</div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(14, 165, 233, 0.15); color: #38bdf8;">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 20V10M12 20V4M6 20v-6"/>
+          </svg>
+        </div>
+        <div class="stat-content">
+          <div class="stat-value" id="stat-total-requests">0</div>
+          <div class="stat-label">Processed Requests</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Deployments Section -->
+    <section class="hub-deployments-section">
+      <div class="section-header">
+        <div class="section-title-wrap">
+          <h3>Loaded Deployments</h3>
+          <span class="badge" id="badge-deployment-count">0</span>
+        </div>
+        <div class="section-filters">
+          <input type="text" id="input-search-deployments" class="form-control-compact" placeholder="Search deployments & proxies..." style="min-width:220px;">
+          <select id="filter-deploy-status" class="form-control-compact">
+            <option value="all">All Deployments</option>
+            <option value="deployed">Deployed Only</option>
+            <option value="not-deployed">Not Deployed</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Deployments Grid -->
+      <div class="deployments-grid" id="deployments-grid">
+        <div class="loading-state-card">
+          <div class="modal-spinner"></div>
+          <p>Loading deployments...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Analytics & Activity Section -->
+    <section class="card hub-analytics-section" style="margin-top: 2rem;">
+      <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 20V10M12 20V4M6 20v-6"/>
+          </svg>
+          <span style="font-weight:600; font-size:14px;">Runtime Analytics &amp; Activity Overview</span>
+        </div>
+        <a href="/tester/?view=analytics" class="btn btn-outline btn-sm" style="text-decoration:none;">View Full Analytics &rarr;</a>
+      </div>
+      <div class="card-body">
+        <div class="analytics-metrics-row">
+          <div class="analytic-chip">
+            <span class="chip-label">Total Calls</span>
+            <span class="chip-value" id="analytics-total-calls">0</span>
+          </div>
+          <div class="analytic-chip">
+            <span class="chip-label">Success Rate</span>
+            <span class="chip-value" id="analytics-success-rate">100%</span>
+          </div>
+          <div class="analytic-chip">
+            <span class="chip-label">Avg Latency</span>
+            <span class="chip-value" id="analytics-avg-latency">0 ms</span>
+          </div>
+          <div class="analytic-chip">
+            <span class="chip-label">AI Tokens</span>
+            <span class="chip-value" id="analytics-total-tokens">0</span>
+          </div>
+        </div>
+
+        <div class="recent-requests-wrap" style="margin-top: 1rem;">
+          <h4 style="font-size: 13px; font-weight:600; color:var(--text-secondary); margin-bottom:8px;">Recent Gateway Requests</h4>
+          <div class="table-responsive">
+            <table class="requests-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Proxy</th>
+                  <th>Method</th>
+                  <th>Status</th>
+                  <th>Latency</th>
+                  <th>Tokens</th>
+                </tr>
+              </thead>
+              <tbody id="recent-requests-tbody">
+                <tr>
+                  <td colspan="6" class="text-muted" style="text-align:center; padding:16px;">No request telemetry recorded yet. Run a test to view live data.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Load Deployment Modal Dialog -->
+  <div class="hub-modal-overlay hidden" id="modal-load-deployment">
+    <div class="hub-modal-dialog load-modal-dialog">
+      <div class="hub-modal-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div class="modal-icon-badge">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </div>
+          <div>
+            <h3 style="margin:0; font-size:16px; font-weight:700; color:var(--text-primary);">Load New Deployment</h3>
+            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text-secondary);">Import an Apigee Templater deployment from a remote URL, YAML file, or raw text</p>
+          </div>
+        </div>
+        <button id="btn-close-load-modal" class="modal-close-btn" title="Close dialog">&times;</button>
+      </div>
+
+      <div class="hub-modal-body">
+        <div class="load-tabs">
+          <button class="load-tab-btn active" data-tab="tab-url">From URL</button>
+          <button class="load-tab-btn" data-tab="tab-upload">Upload YAML File</button>
+          <button class="load-tab-btn" data-tab="tab-paste">Paste YAML Content</button>
+        </div>
+
+        <!-- Tab 1: From URL -->
+        <div class="load-tab-content active" id="tab-url">
+          <label class="form-label" for="input-deployment-url">Deployment YAML URL (e.g. GitHub raw URL)</label>
+          <div class="input-with-action">
+            <input type="text" id="input-deployment-url" class="form-control" placeholder="https://raw.githubusercontent.com/.../deployment.yaml">
+            <button id="btn-load-url" class="btn btn-primary">Fetch &amp; Load</button>
+          </div>
+          <div class="sample-urls-row">
+            <span style="font-size:11px; color:var(--text-secondary); font-weight:500;">Quick Sample:</span>
+            <button type="button" class="sample-url-chip" data-url="https://raw.githubusercontent.com/gcp-samples/apigee-template-repository/refs/heads/main/tests/deployments/ai-deployment-1.yaml">
+              ai-deployment-1.yaml (AI Gateway Sample)
+            </button>
+          </div>
+        </div>
+
+        <!-- Tab 2: Upload File -->
+        <div class="load-tab-content" id="tab-upload">
+          <div class="upload-dropzone" id="upload-dropzone">
+            <input type="file" id="file-upload-input" accept=".yaml,.yml" style="display:none;">
+            <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <p style="font-size:14px; font-weight:600; margin:6px 0 2px;">Click to browse or drag &amp; drop a YAML file here</p>
+            <span class="text-muted" style="font-size:12px;">Supported extensions: .yaml, .yml</span>
+          </div>
+          <div id="upload-file-info" class="upload-file-info hidden">
+            <span id="upload-file-name" style="font-weight:600; font-family:var(--font-mono); font-size:12px;"></span>
+            <button id="btn-submit-upload" class="btn btn-primary btn-sm">Load Uploaded File</button>
+          </div>
+        </div>
+
+        <!-- Tab 3: Paste YAML -->
+        <div class="load-tab-content" id="tab-paste">
+          <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:10px;">
+            <label class="form-label" for="input-paste-filename">Deployment Identifier / Filename (optional)</label>
+            <input type="text" id="input-paste-filename" class="form-control" placeholder="e.g. custom-ai-deployment.yaml">
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px;">
+            <label class="form-label" for="textarea-paste-yaml">Deployment YAML Content</label>
+            <textarea id="textarea-paste-yaml" class="form-control code-editor-box" placeholder="Paste Apigee Templater deployment YAML content here..." rows="9"></textarea>
+          </div>
+          <div style="margin-top:10px; display:flex; justify-content:flex-end;">
+            <button id="btn-load-pasted" class="btn btn-primary">Load Pasted Deployment</button>
+          </div>
+        </div>
+
+        <div class="load-options-bar">
+          <label class="custom-checkbox-label">
+            <input type="checkbox" id="chk-auto-deploy-loaded" checked>
+            <span>Deploy to Apigee Emulator immediately upon loading</span>
+          </label>
+        </div>
+
+        <div id="load-status-alert" class="alert-box hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- YAML Viewer Modal -->
+  <div class="hub-modal-overlay hidden" id="modal-yaml-viewer">
+    <div class="hub-modal-dialog">
+      <div class="hub-modal-header">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="16 18 22 12 16 6"/>
+            <polyline points="8 6 2 12 8 18"/>
+          </svg>
+          <span id="modal-yaml-title" style="font-weight:600;">Deployment YAML</span>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button id="btn-copy-modal-yaml" class="btn btn-outline btn-sm">Copy YAML</button>
+          <button id="btn-close-modal-yaml" class="btn btn-icon btn-sm" title="Close Modal">&times;</button>
+        </div>
+      </div>
+      <div class="hub-modal-body">
+        <pre><code id="modal-yaml-content">Loading...</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/deployments.js?v=3"></script>
+</body>
+</html>

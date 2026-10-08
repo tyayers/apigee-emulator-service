@@ -1,5 +1,6 @@
 import path from "path";
 import fs from "fs";
+import * as YAML from "yaml";
 import { EmulatorClient } from "./emulator.ts";
 import { BundleManager } from "./bundle-manager.ts";
 import { DeploymentDeployer } from "./deployer.ts";
@@ -41,8 +42,8 @@ export class EmulatorServer {
   public hostMode: "local" | "remote" = "local";
   public customRemoteHost: string = process.env.APIGEE_REMOTE_HOST || "https://34-8-196-4.nip.io";
 
-  private isDeploying: boolean = false;
-  private deployMessage: string = "";
+  private isDeploying: boolean = true;
+  private deployMessage: string = "Emulator proxies deploying...";
   private lastTestDataUpload?: string;
   private lastTestDataStatus?: string;
   private isWarmingUp: boolean = false;
@@ -117,7 +118,7 @@ export class EmulatorServer {
       throw new Error(`Failed to bind to any port between ${this.port} and ${currentPort}`);
     }
 
-    const webUiUrl = `http://localhost:${this.port}/tester/`;
+    const webUiUrl = `http://localhost:${this.port}/`;
     try {
       fs.writeFileSync(path.join(process.cwd(), ".local_url"), webUiUrl, "utf-8");
     } catch (_) {}
@@ -141,7 +142,8 @@ export class EmulatorServer {
     });
 
     console.log(`[Server] Apigee Emulator Manager running on port ${this.port}`);
-    console.log(`[Server] Web UI: ${webUiUrl}`);
+    console.log(`[Server] Deployments Hub: ${webUiUrl}`);
+    console.log(`[Server] API Tester: http://localhost:${this.port}/tester/`);
     console.log(`[Server] Skills Labs: http://localhost:${this.port}/labs/`);
 
     // Auto-deploy in background if emulator is already online
@@ -179,24 +181,32 @@ export class EmulatorServer {
     }
 
     if (!isOnline) {
+      this.isDeploying = false;
+      this.deployMessage = "";
       console.log("[AutoDeploy] Emulator did not come online within timeout, skipping auto-deploy");
       return;
     }
 
     try {
-      console.log("[AutoDeploy] Apigee emulator is online. Deploying default configuration...");
-      const depFile = path.join(this.dataDir, "deployments", "deployment-1.yaml");
-      if (fs.existsSync(depFile)) {
-        const yamlContent = fs.readFileSync(depFile, "utf-8");
-        await this.executeDeploy({ yaml: yamlContent, reset: true });
+      this.isDeploying = true;
+      this.deployMessage = "Emulator proxies deploying...";
+      console.log("[AutoDeploy] Apigee emulator is online. Deploying all configured deployments...");
+      const depDir = path.join(this.dataDir, "deployments");
+      const depFiles = fs.existsSync(depDir)
+        ? fs.readdirSync(depDir).filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
+        : [];
+
+      if (depFiles.length > 0) {
+        await this.deployer.convertAndDeployAll({ reset: true });
       } else {
         await this.executeDeploy({ all: true, reset: true });
       }
-      await syncCassandraDeveloperAppKeys(this.dataDir);
-      console.log("[AutoDeploy] Auto-deployment and Cassandra sync completed successfully");
+      console.log("[AutoDeploy] Auto-deployment of all deployments completed successfully");
     } catch (err) {
       console.warn("[AutoDeploy] Auto-deployment warning:", err);
     } finally {
+      this.isDeploying = false;
+      this.deployMessage = "";
       // Always pre-warm proxies on initialization to eliminate first-call latency
       setTimeout(() => this.warmupFirstTestPerProxy(), 500);
     }
@@ -223,12 +233,24 @@ export class EmulatorServer {
       return new Response("ok", { status: 200 });
     }
 
-    // Redirect root to /tester/, /labs to /labs/
-    if (url.pathname === "/" || url.pathname === "/manage" || url.pathname === "/manage/" || url.pathname === "/tester") {
-      return Response.redirect(`${url.origin}/tester/`, 302);
+    // Root dashboard & manage paths -> Deployments Hub
+    if (url.pathname === "/" || url.pathname === "/manage" || url.pathname === "/manage/") {
+      const homeFile = path.join(this.publicDir, "deployments.html");
+      if (fs.existsSync(homeFile)) {
+        return new Response(Bun.file(homeFile));
+      }
     }
+
+    // Redirect /tester to /tester/ (preserving query string)
+    if (url.pathname === "/tester") {
+      const search = url.search || "";
+      return Response.redirect(`${url.origin}/tester/${search}`, 302);
+    }
+
+    // Redirect /labs or /lab to /labs/ (preserving query string)
     if (url.pathname === "/labs" || url.pathname === "/lab" || url.pathname === "/lab/") {
-      return Response.redirect(`${url.origin}/labs/`, 302);
+      const search = url.search || "";
+      return Response.redirect(`${url.origin}/labs/${search}`, 302);
     }
 
     // Viewer and Trace HTML files
@@ -255,10 +277,9 @@ export class EmulatorServer {
       return await this.handleApi(apiPath, req, url);
     }
 
-    // Static Web UI Files under /tester/ or /manage/
-    if (url.pathname.startsWith("/tester/") || url.pathname.startsWith("/manage/")) {
-      const prefix = url.pathname.startsWith("/tester/") ? "/tester/" : "/manage/";
-      let subPath = url.pathname.slice(prefix.length);
+    // Static Web UI Files under /tester/
+    if (url.pathname.startsWith("/tester/")) {
+      let subPath = url.pathname.slice("/tester/".length);
       if (!subPath || subPath === "/") subPath = "index.html";
 
       const localFile = path.join(this.publicDir, subPath);
@@ -266,7 +287,7 @@ export class EmulatorServer {
         return new Response(Bun.file(localFile));
       }
 
-      // SPA fallback to index.html
+      // SPA fallback to index.html (Tester)
       const indexFile = path.join(this.publicDir, "index.html");
       if (fs.existsSync(indexFile)) {
         return new Response(Bun.file(indexFile));
@@ -293,6 +314,15 @@ export class EmulatorServer {
       const indexFile = path.join(this.publicDir, "labs", "index.html");
       if (fs.existsSync(indexFile)) {
         return new Response(Bun.file(indexFile));
+      }
+    }
+
+    // Root static files (e.g. deployments.js, deployments.css, style.css, etc.)
+    const cleanPath = url.pathname.replace(/^\/+/, "");
+    if (cleanPath) {
+      const rootStaticFile = path.join(this.publicDir, cleanPath);
+      if (fs.existsSync(rootStaticFile) && !fs.statSync(rootStaticFile).isDirectory()) {
+        return new Response(Bun.file(rootStaticFile));
       }
     }
 
@@ -381,23 +411,293 @@ export class EmulatorServer {
 
     // 6. GET /deployments
     if (subPath === "deployments" && method === "GET") {
-      return this.jsonResponse(this.deploymentManager.listDeployments());
+      const health = await this.emulator.checkHealth();
+      const activeNames = health.activeProxies.map((p) => p.name);
+      return this.jsonResponse(this.deploymentManager.listDeployments(activeNames));
     }
 
-    // 7. GET /tests
+    // 6b. POST /deployments/load (Load from URL, file upload, or YAML paste)
+    if (subPath === "deployments/load" && method === "POST") {
+      try {
+        const body = (await req.json()) as any;
+        let yamlContent = "";
+        let filename = body.filename || "";
+        let sourceType: "url" | "upload" | "paste" = body.sourceType || "paste";
+        let sourceUrl = body.url || undefined;
+
+        if (body.url) {
+          sourceType = "url";
+          sourceUrl = body.url;
+          console.log(`[Deployments] Fetching deployment YAML from URL: ${body.url}`);
+          const fetchRes = await fetch(body.url);
+          if (!fetchRes.ok) {
+            return this.jsonResponse(
+              { success: false, error: `Failed to fetch deployment from URL: HTTP ${fetchRes.status} ${fetchRes.statusText}` },
+              400,
+            );
+          }
+          yamlContent = await fetchRes.text();
+          if (!filename) {
+            try {
+              const u = new URL(body.url);
+              filename = path.basename(u.pathname);
+            } catch {
+              filename = "remote-deployment.yaml";
+            }
+          }
+        } else if (body.yaml) {
+          yamlContent = body.yaml;
+        } else {
+          return this.jsonResponse({ success: false, error: "Either 'url' or 'yaml' must be provided" }, 400);
+        }
+
+        if (!yamlContent.trim()) {
+          return this.jsonResponse({ success: false, error: "Empty YAML content" }, 400);
+        }
+
+        const parsed = YAML.parse(yamlContent);
+        if (!parsed || typeof parsed !== "object") {
+          return this.jsonResponse({ success: false, error: "Invalid YAML content syntax" }, 400);
+        }
+
+        if (!filename) {
+          filename = parsed.name ? `${parsed.name}.yaml` : "custom-deployment.yaml";
+        }
+        if (!filename.endsWith(".yaml") && !filename.endsWith(".yml")) {
+          filename += ".yaml";
+        }
+
+        const savedDep = this.deploymentManager.saveDeployment(filename, yamlContent, {
+          sourceType,
+          sourceUrl,
+          description: parsed.description,
+        });
+
+        let deployResult = null;
+        const shouldDeploy = body.deploy !== false;
+        if (shouldDeploy) {
+          this.isDeploying = true;
+          this.deployMessage = "Emulator proxies deploying...";
+          try {
+            console.log(`[Deployments] Deploying newly loaded deployment '${savedDep.id}' to emulator...`);
+            deployResult = await this.deployer.convertAndDeploy(yamlContent, {
+              reset: false,
+              merge: true,
+              deployAllExisting: true,
+            });
+            setTimeout(() => this.warmupFirstTestPerProxy(), 500);
+          } finally {
+            this.isDeploying = false;
+            this.deployMessage = "";
+          }
+        }
+
+        const health = await this.emulator.checkHealth();
+        const activeNames = health.activeProxies.map((p) => p.name);
+        const updatedDep = this.deploymentManager.getDeployment(savedDep.id, activeNames);
+
+        return this.jsonResponse({
+          success: true,
+          message: `Deployment '${savedDep.name}' loaded successfully${shouldDeploy ? " and deployed to emulator" : ""}`,
+          deployment: updatedDep || savedDep,
+          deployResult,
+        });
+      } catch (err: any) {
+        console.error("[Deployments] Error loading deployment:", err);
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      }
+    }
+
+    // 6c. POST /deployments/deploy-all
+    if (subPath === "deployments/deploy-all" && method === "POST") {
+      this.isDeploying = true;
+      this.deployMessage = "Emulator proxies deploying...";
+      try {
+        const body = (await req.json().catch(() => ({}))) as any;
+        const deployResult = await this.deployer.convertAndDeployAll({
+          reset: body.reset !== false,
+        });
+        setTimeout(() => this.warmupFirstTestPerProxy(), 500);
+        return this.jsonResponse({
+          success: true,
+          message: `All deployments converted and deployed together (${deployResult.totalDeployed} proxies active)`,
+          deployResult,
+        });
+      } catch (err: any) {
+        return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+      } finally {
+        this.isDeploying = false;
+        this.deployMessage = "";
+      }
+    }
+
+    // 6d. GET /deployments/:id, GET /deployments/:id/yaml, POST /deployments/:id/deploy, POST /deployments/:id/tests/run, DELETE /deployments/:id
+    if (subPath.startsWith("deployments/")) {
+      const rest = subPath.slice("deployments/".length);
+      const parts = rest.split("/").filter(Boolean);
+      const depId = decodeURIComponent(parts[0]);
+
+      // GET /deployments/:id/yaml
+      if (parts[1] === "yaml" && method === "GET") {
+        const yamlStr = this.deploymentManager.getDeploymentYaml(depId);
+        if (!yamlStr) {
+          return this.jsonResponse({ error: "Deployment YAML not found" }, 404);
+        }
+        return new Response(yamlStr, {
+          headers: { "Content-Type": "text/yaml; charset=utf-8" },
+        });
+      }
+
+      // POST /deployments/:id/deploy
+      if (parts[1] === "deploy" && method === "POST") {
+        this.isDeploying = true;
+        this.deployMessage = "Emulator proxies deploying...";
+        try {
+          const yamlContent = this.deploymentManager.getDeploymentYaml(depId);
+          if (!yamlContent) {
+            return this.jsonResponse({ success: false, error: `Deployment '${depId}' not found` }, 404);
+          }
+          const body = (await req.json().catch(() => ({}))) as any;
+          const reset = body.reset === true;
+          const deployResult = await this.deployer.convertAndDeploy(yamlContent, {
+            reset,
+            merge: !reset,
+            deployAllExisting: !reset,
+          });
+          setTimeout(() => this.warmupFirstTestPerProxy(), 500);
+          return this.jsonResponse({
+            success: true,
+            message: `Deployment '${depId}' deployed successfully to emulator`,
+            deployResult,
+          });
+        } catch (err: any) {
+          return this.jsonResponse({ success: false, error: err.message || String(err) }, 500);
+        } finally {
+          this.isDeploying = false;
+          this.deployMessage = "";
+        }
+      }
+
+      // POST /deployments/:id/tests/run
+      if (parts[1] === "tests" && parts[2] === "run" && method === "POST") {
+        let runReq: TestsRunRequest = {};
+        try {
+          runReq = (await req.json()) as TestsRunRequest;
+        } catch {}
+        runReq.deployment = depId;
+        const tests = this.deploymentManager.loadAllTests(depId);
+        const startTime = Date.now();
+        const results: TestRunResult[] = [];
+        let passedCount = 0;
+        let failedCount = 0;
+
+        for (const tc of tests) {
+          const effectiveTargetHost = runReq.targetHost || (this.hostMode === "remote" ? this.customRemoteHost : undefined);
+          const testReq: TestRequest = {
+            proxy: tc.proxy,
+            method: tc.verb || "GET",
+            path: tc.path,
+            headers: tc.headers,
+            body: tc.payload || tc.body,
+            recordTrace: true,
+            testName: tc.name,
+            assertions: tc.assertions,
+            injectGoogleToken: tc.injectGoogleToken,
+            targetHost: effectiveTargetHost,
+          };
+
+          const resp = await this.proxyTester.execute(testReq);
+          if (tc.assertions && tc.assertions.length > 0) {
+            resp.assertions = evaluateAssertions(tc.assertions, resp);
+            resp.passed = resp.assertions.every((a) => a.passed);
+          } else {
+            resp.passed = resp.statusCode < 400 && !resp.error;
+          }
+
+          const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          resp.testRunId = runId;
+
+          const runResult: TestRunResult = {
+            id: runId,
+            testName: tc.name,
+            proxy: tc.proxy,
+            deployment: tc.deployment || depId,
+            timestamp: new Date().toISOString(),
+            passed: resp.passed,
+            statusCode: resp.statusCode,
+            statusText: resp.statusText,
+            durationMs: resp.durationMs,
+            request: resp.request || testReq,
+            response: resp,
+            assertions: resp.assertions,
+            traceSessionId: resp.traceSessionId,
+            traceData: resp.traceData,
+            error: resp.error,
+          };
+
+          this.testHistory.record(runResult);
+          results.push(runResult);
+
+          if (resp.passed) passedCount++;
+          else failedCount++;
+        }
+
+        // Record test run summary in metadata
+        this.deploymentManager.recordTestRun(depId, {
+          total: results.length,
+          passed: passedCount,
+          failed: failedCount,
+          timestamp: new Date().toISOString(),
+        });
+
+        const response: TestsRunResponse = {
+          total: results.length,
+          passed: passedCount,
+          failed: failedCount,
+          durationMs: Date.now() - startTime,
+          results,
+        };
+        return this.jsonResponse(response);
+      }
+
+      // DELETE /deployments/:id
+      if (parts.length === 1 && method === "DELETE") {
+        const deleted = this.deploymentManager.deleteDeployment(depId);
+        return this.jsonResponse({
+          success: deleted,
+          message: deleted ? `Deployment '${depId}' deleted successfully` : `Deployment '${depId}' not found`,
+        });
+      }
+
+      // GET /deployments/:id
+      if (parts.length === 1 && method === "GET") {
+        const health = await this.emulator.checkHealth();
+        const activeNames = health.activeProxies.map((p) => p.name);
+        const dep = this.deploymentManager.getDeployment(depId, activeNames);
+        if (!dep) {
+          return this.jsonResponse({ error: `Deployment '${depId}' not found` }, 404);
+        }
+        dep.rawYaml = this.deploymentManager.getDeploymentYaml(depId) || undefined;
+        return this.jsonResponse(dep);
+      }
+    }
+
+    // 7. GET /tests (Supports ?deployment=<id>)
     if (subPath === "tests" && method === "GET") {
-      return this.jsonResponse(this.deploymentManager.loadAllTests());
+      const depFilter = url.searchParams.get("deployment") || url.searchParams.get("dep") || undefined;
+      return this.jsonResponse(this.deploymentManager.loadAllTests(depFilter));
     }
 
     // 7b. GET /config/host
     if (subPath === "config/host" && method === "GET") {
+      const depFilter = url.searchParams.get("deployment") || url.searchParams.get("dep") || undefined;
       return this.jsonResponse({
         localHost: this.emulator.runtimeUrl,
         defaultRemoteHost: this.customRemoteHost,
         remoteHost: this.customRemoteHost,
         activeHost: this.hostMode === "remote" ? this.customRemoteHost : this.emulator.runtimeUrl,
         mode: this.hostMode,
-        deploymentCredentials: this.deploymentManager.getDeploymentCredentials(),
+        deploymentCredentials: this.deploymentManager.getDeploymentCredentials(depFilter),
       });
     }
 
@@ -422,7 +722,7 @@ export class EmulatorServer {
       }
     }
 
-    // 8. POST /tests/run
+    // 8. POST /tests/run (Supports runReq.deployment or ?deployment=<id>)
     if (subPath === "tests/run" && method === "POST") {
       let runReq: TestsRunRequest = {};
       try {
@@ -430,7 +730,8 @@ export class EmulatorServer {
       } catch {
         // ignore
       }
-      const allTests = this.deploymentManager.loadAllTests();
+      const targetDeployment = runReq.deployment || url.searchParams.get("deployment") || url.searchParams.get("dep") || undefined;
+      const allTests = this.deploymentManager.loadAllTests(targetDeployment);
       const startTime = Date.now();
       const results: TestRunResult[] = [];
       let passedCount = 0;
@@ -520,6 +821,32 @@ export class EmulatorServer {
 
         if (resp.passed) passedCount++;
         else failedCount++;
+      }
+
+      // Record test run stats in deployment metadata
+      if (targetDeployment) {
+        this.deploymentManager.recordTestRun(targetDeployment, {
+          total: results.length,
+          passed: passedCount,
+          failed: failedCount,
+          timestamp: new Date().toISOString(),
+        });
+      } else {
+        const byDep: Record<string, { total: number; passed: number; failed: number }> = {};
+        for (const r of results) {
+          if (r.deployment) {
+            if (!byDep[r.deployment]) byDep[r.deployment] = { total: 0, passed: 0, failed: 0 };
+            byDep[r.deployment].total++;
+            if (r.passed) byDep[r.deployment].passed++;
+            else byDep[r.deployment].failed++;
+          }
+        }
+        for (const [depId, stat] of Object.entries(byDep)) {
+          this.deploymentManager.recordTestRun(depId, {
+            ...stat,
+            timestamp: new Date().toISOString(),
+          });
+        }
       }
 
       const response: TestsRunResponse = {

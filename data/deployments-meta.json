@@ -1,0 +1,16 @@
+{
+  "test-deployment-1": {
+    "lastTestRun": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "timestamp": "2026-10-08T15:04:05.099Z"
+    }
+  },
+  "ai-deployment-1": {
+    "sourceType": "url",
+    "sourceUrl": "https://raw.githubusercontent.com/gcp-samples/apigee-template-repository/refs/heads/main/tests/deployments/ai-deployment-1.yaml",
+    "createdAt": "2026-10-08T15:06:50.302Z",
+    "updatedAt": "2026-10-08T15:06:50.302Z"
+  }
+}

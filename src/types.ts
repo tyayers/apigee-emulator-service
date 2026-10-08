@@ -50,12 +50,39 @@ export interface TestCase {
 }
 
 export interface DeploymentConfig {
+  id: string;
   name: string;
+  displayName?: string;
   filePath: string;
-  templates?: string[];
+  sourceType?: "file" | "url" | "upload" | "paste";
+  sourceUrl?: string;
+  description?: string;
+  proxies: string[];
+  templates?: any[];
+  features?: any[];
   products?: any[];
   users?: any[];
   tests?: TestCase[];
+  testsCount?: number;
+  rawYaml?: string;
+  deployed?: boolean;
+  activeProxyCount?: number;
+  totalProxyCount?: number;
+  createdAt?: string;
+  lastTestRun?: {
+    total: number;
+    passed: number;
+    failed: number;
+    timestamp: string;
+  };
+}
+
+export interface LoadDeploymentRequest {
+  sourceType?: "url" | "upload" | "paste";
+  url?: string;
+  yaml?: string;
+  filename?: string;
+  deploy?: boolean;
 }
 
 export interface TestRequest {
@@ -137,6 +164,7 @@ export interface DeployResponse {
 export interface TestsRunRequest {
   proxy?: string;
   testName?: string;
+  deployment?: string;
   targetHost?: string;
 }
 

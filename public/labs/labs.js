@@ -17,6 +17,9 @@
     targetHostMode: 'local',
     remoteHostUrl: 'https://34-8-196-4.nip.io',
     localHostUrl: 'http://localhost:8888',
+    deployments: [],
+    currentDeploymentId: null,
+    currentDeployment: null,
   };
 
   // Known Header Explanations for Apigee Gateway
@@ -1800,6 +1803,105 @@
     });
   }
 
+  async function fetchDeployments() {
+    try {
+      const resp = await fetch('/api/deployments');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      state.deployments = data || [];
+
+      const urlParams = new URLSearchParams(window.location.search);
+      let depParam = urlParams.get('deployment') || urlParams.get('deploymentId') || urlParams.get('dep');
+
+      if (depParam) {
+        state.currentDeployment = state.deployments.find(d =>
+          (d.id && d.id.toLowerCase() === depParam.toLowerCase()) ||
+          (d.name && d.name.toLowerCase() === depParam.toLowerCase())
+        ) || null;
+      }
+
+      if (!state.currentDeployment && state.deployments.length > 0) {
+        state.currentDeployment = state.deployments[state.deployments.length - 1];
+      }
+
+      if (state.currentDeployment) {
+        state.currentDeploymentId = state.currentDeployment.id;
+        if (urlParams.get('deployment') !== state.currentDeployment.id) {
+          urlParams.set('deployment', state.currentDeployment.id);
+          window.history.replaceState({}, '', `${window.location.pathname}?${urlParams.toString()}${window.location.hash}`);
+        }
+      }
+
+      renderLabDeploymentSelect();
+    } catch (e) {
+      console.warn('Failed to fetch deployments in labs:', e);
+    }
+  }
+
+  function renderLabDeploymentSelect() {
+    const sel = document.getElementById('lab-deployment-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+
+    if (state.deployments.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No deployments';
+      sel.appendChild(opt);
+      return;
+    }
+
+    state.deployments.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.id;
+      const testCnt = (d.tests || []).length;
+      opt.textContent = `${d.displayName || d.name} (${testCnt} test${testCnt === 1 ? '' : 's'})`;
+      if (state.currentDeploymentId && d.id === state.currentDeploymentId) {
+        opt.selected = true;
+      }
+      sel.appendChild(opt);
+    });
+
+    sel.onchange = async (e) => {
+      const selectedId = e.target.value;
+      if (!selectedId || selectedId === state.currentDeploymentId) return;
+
+      const dep = state.deployments.find(d => d.id === selectedId);
+      if (!dep) return;
+
+      state.currentDeployment = dep;
+      state.currentDeploymentId = dep.id;
+
+      const urlParams = new URLSearchParams(window.location.search);
+      urlParams.set('deployment', dep.id);
+      window.history.replaceState({}, '', `${window.location.pathname}?${urlParams.toString()}${window.location.hash}`);
+
+      await loadLabTests();
+      showToast(`Switched lab to deployment '${dep.displayName || dep.name}'`);
+    };
+  }
+
+  async function loadLabTests() {
+    try {
+      const depQuery = state.currentDeploymentId ? `?deployment=${encodeURIComponent(state.currentDeploymentId)}` : '';
+      const resp = await fetch(`/api/tests${depQuery}`);
+      const tests = await resp.json();
+      if (Array.isArray(tests) && tests.length > 0) {
+        state.tests = tests;
+        state.currentStepIndex = 0;
+        state.testResults = {};
+        renderStepperRibbon();
+        selectStep(0);
+      } else {
+        state.tests = [];
+        renderStepperRibbon();
+        showToast('No tests configured for this deployment', 'warning');
+      }
+    } catch {
+      showToast('Error loading deployment tests from /api/tests', 'danger');
+    }
+  }
+
   // Initialize Application
   async function init() {
     setupTheme();
@@ -1823,19 +1925,8 @@
     }
     updateLabHostSwitcherUI();
 
-    try {
-      const resp = await fetch('/api/tests');
-      const tests = await resp.json();
-      if (Array.isArray(tests) && tests.length > 0) {
-        state.tests = tests;
-        renderStepperRibbon();
-        selectStep(0);
-      } else {
-        showToast('No deployment tests loaded from server', 'warning');
-      }
-    } catch {
-      showToast('Error loading deployment tests from /api/tests', 'danger');
-    }
+    await fetchDeployments();
+    await loadLabTests();
 
     // Prompt participant onboarding if first visit
     if (!state.participant && state.targetHostMode !== 'remote') {

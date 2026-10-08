@@ -407,7 +407,7 @@ start_server() {
     if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
       resolve_active_port
       echo -e "${YELLOW}Apigee Emulator Service is already running (PID: $old_pid).${NC}"
-      echo -e "  • ${BOLD}Web UI:${NC}  ${GREEN}http://localhost:${PORT}/tester/${NC}"
+      echo -e "  • ${BOLD}Web UI:${NC}  ${GREEN}http://localhost:${PORT}/${NC}"
       echo -e "  • ${BOLD}Hint:${NC}    Call ${CYAN}./local.sh stop${NC} to stop all services.\n"
       return 0
     fi
@@ -457,7 +457,7 @@ start_server() {
     local p
     for ((p=PORT; p<=PORT+10; p++)); do
       if is_tester_service "$p"; then
-        final_url="http://localhost:${p}/tester/"
+        final_url="http://localhost:${p}/"
         echo "$final_url" > "$URL_FILE" 2>/dev/null || true
         break 2
       fi
@@ -518,7 +518,7 @@ deploy_resource() {
   bun run src/index.ts --deploy "$target" $reset_flag --no-server
 
   echo -e "\n${GREEN}Deployment finished successfully.${NC}"
-  echo -e "Open tester UI: ${CYAN}http://localhost:${PORT}/tester/${NC}"
+  echo -e "Open Hub UI: ${CYAN}http://localhost:${PORT}/${NC}"
 }
 
 deploy_all() {
@@ -591,7 +591,7 @@ check_status() {
   echo -e "  • ${BOLD}Tester Service:${NC}   " $([ -n "$tester_pid" ] && echo "Running (PID: $tester_pid)" || echo "Not running")
   echo -e "  • ${BOLD}Management API:${NC}   $EMULATOR_MGMT_URL"
   echo -e "  • ${BOLD}Runtime Port:${NC}     $EMULATOR_RUNTIME_URL"
-  echo -e "  • ${BOLD}Tester Port:${NC}      http://localhost:${PORT}/tester/"
+  echo -e "  • ${BOLD}Web UI:${NC}           http://localhost:${PORT}/"
   if [ -n "$PROJECT_ID" ]; then
     echo -e "  • ${BOLD}GCP Project:${NC}      ${CYAN}$PROJECT_ID${NC}"
   fi
@@ -725,7 +725,7 @@ stop_trace() {
   rm -f "$SESSION_FILE"
   echo -e "${GREEN}Transactions saved to trace.json.${NC}"
   resolve_active_port
-  echo -e "Open ${CYAN}http://localhost:${PORT}/tester/${NC} to visualize."
+  echo -e "Open ${CYAN}http://localhost:${PORT}/${NC} to visualize."
 }
 
 # ------------------------------------------------------------------------------
@@ -828,7 +828,7 @@ interactive_menu() {
     5) check_status ;;
     6)
       resolve_active_port
-      local url="http://localhost:${PORT}/tester/"
+      local url="http://localhost:${PORT}/"
       echo -e "Opening ${CYAN}$url${NC}..."
       if command -v xdg-open &>/dev/null; then
         xdg-open "$url" 2>/dev/null || true
@@ -997,11 +997,11 @@ case "$COMMAND" in
     ;;
   ui)
     resolve_active_port
-    echo -e "Web UI URL: ${CYAN}http://localhost:${PORT}/tester/${NC}"
+    echo -e "Web UI URL: ${CYAN}http://localhost:${PORT}/${NC}"
     if command -v xdg-open &>/dev/null; then
-      xdg-open "http://localhost:${PORT}/tester/" 2>/dev/null || true
+      xdg-open "http://localhost:${PORT}/" 2>/dev/null || true
     elif command -v open &>/dev/null; then
-      open "http://localhost:${PORT}/tester/" 2>/dev/null || true
+      open "http://localhost:${PORT}/" 2>/dev/null || true
     fi
     ;;
   reset)

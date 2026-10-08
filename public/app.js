@@ -27,6 +27,9 @@
     targetHostMode: 'local',
     remoteHostUrl: 'https://34-8-196-4.nip.io',
     localHostUrl: 'http://localhost:8888',
+    deployments: [],
+    currentDeploymentId: null,
+    currentDeployment: null,
   };
 
   // SVG Icons (Monochromatic)
@@ -42,6 +45,8 @@
 
   // DOM Elements
   const el = {
+    selectActiveDeployment: document.getElementById('select-active-deployment'),
+    navLinkLabs: document.getElementById('nav-link-labs'),
     btnToggleSidebar: document.getElementById('btn-toggle-sidebar'),
     btnCloseSidebar: document.getElementById('btn-close-sidebar'),
     sidebarOverlay: document.getElementById('sidebar-overlay'),
@@ -493,6 +498,7 @@
     updateHostSwitcherUI();
     setupAnalyticsEventListeners();
     setupMobileDrawer();
+    setupDeploymentSwitcher();
     initDefaultHeaders();
     await loadInitialData();
     fetchAnalyticsSummary();
@@ -619,7 +625,115 @@
     });
   }
 
+  async function fetchDeployments() {
+    try {
+      const resp = await fetch(`${API_BASE}/deployments`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      state.deployments = data || [];
+
+      const urlParams = new URLSearchParams(window.location.search);
+      let depParam = urlParams.get('deployment') || urlParams.get('deploymentId') || urlParams.get('dep');
+
+      if (depParam) {
+        state.currentDeployment = state.deployments.find(d => 
+          (d.id && d.id.toLowerCase() === depParam.toLowerCase()) || 
+          (d.name && d.name.toLowerCase() === depParam.toLowerCase())
+        ) || null;
+      }
+
+      // Default to the last deployment if not specified or not found
+      if (!state.currentDeployment && state.deployments.length > 0) {
+        state.currentDeployment = state.deployments[state.deployments.length - 1];
+      }
+
+      if (state.currentDeployment) {
+        state.currentDeploymentId = state.currentDeployment.id;
+        if (urlParams.get('deployment') !== state.currentDeployment.id) {
+          urlParams.set('deployment', state.currentDeployment.id);
+          const newUrl = `${window.location.pathname}?${urlParams.toString()}${window.location.hash}`;
+          window.history.replaceState({}, '', newUrl);
+        }
+      }
+
+      renderDeploymentSwitcher();
+    } catch (err) {
+      console.error('Failed to fetch deployments:', err);
+    }
+  }
+
+  function renderDeploymentSwitcher() {
+    if (!el.selectActiveDeployment) return;
+    el.selectActiveDeployment.innerHTML = '';
+
+    if (state.deployments.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No deployments loaded';
+      el.selectActiveDeployment.appendChild(opt);
+      return;
+    }
+
+    state.deployments.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.id;
+      const proxyCnt = (d.proxies || []).length;
+      opt.textContent = `${d.displayName || d.name} (${proxyCnt} proxies)`;
+      if (state.currentDeploymentId && d.id === state.currentDeploymentId) {
+        opt.selected = true;
+      }
+      el.selectActiveDeployment.appendChild(opt);
+    });
+
+    if (el.navLinkLabs && state.currentDeploymentId) {
+      el.navLinkLabs.href = `/labs/?deployment=${encodeURIComponent(state.currentDeploymentId)}`;
+    }
+  }
+
+  function setupDeploymentSwitcher() {
+    if (!el.selectActiveDeployment) return;
+    el.selectActiveDeployment.addEventListener('change', async (e) => {
+      const selectedId = e.target.value;
+      if (!selectedId || selectedId === state.currentDeploymentId) return;
+
+      const dep = state.deployments.find(d => d.id === selectedId);
+      if (!dep) return;
+
+      state.currentDeployment = dep;
+      state.currentDeploymentId = dep.id;
+
+      const urlParams = new URLSearchParams(window.location.search);
+      urlParams.set('deployment', dep.id);
+      urlParams.delete('proxy'); // reset proxy selection on deployment switch
+      const newUrl = `${window.location.pathname}?${urlParams.toString()}${window.location.hash}`;
+      window.history.replaceState({}, '', newUrl);
+
+      if (el.navLinkLabs) {
+        el.navLinkLabs.href = `/labs/?deployment=${encodeURIComponent(dep.id)}`;
+      }
+
+      // Re-fetch and re-render scoped tests and views for newly selected deployment
+      state.selectedProxyName = null;
+      state.selectedTest = null;
+      await fetchTests();
+      renderActiveProxies();
+      renderBundles();
+      renderProducts();
+      renderApps();
+
+      // Auto-select first proxy of new deployment if available
+      const firstProxy = (dep.proxies && dep.proxies[0]) || null;
+      if (firstProxy) {
+        selectProxy(firstProxy, true);
+      }
+
+      showToast(`Switched view to deployment '${dep.displayName || dep.name}'`);
+    });
+  }
+
   async function loadInitialData() {
+    await fetchDeployments();
+
     await Promise.all([
       fetchStatus(),
       fetchTests(),
@@ -635,13 +749,24 @@
     const proxyFromUrl = urlParams.get('proxy');
     if (proxyFromUrl) {
       selectProxy(proxyFromUrl, false);
-    } else if (state.activeProxies.length > 0) {
-      // Default to first active proxy without overwriting URL
-      const first = state.activeProxies[0];
-      const name = first.name || first.Name;
-      if (name) selectProxy(name, false);
     } else {
-      fetchTestHistory('');
+      // Find first proxy belonging to current deployment
+      let targetProxy = null;
+      if (state.currentDeployment && Array.isArray(state.currentDeployment.proxies) && state.currentDeployment.proxies.length > 0) {
+        const allowed = new Set(state.currentDeployment.proxies.map(p => p.toLowerCase()));
+        const match = state.activeProxies.find(p => allowed.has((p.name || p.Name || '').toLowerCase()));
+        if (match) targetProxy = match.name || match.Name;
+        else targetProxy = state.currentDeployment.proxies[0];
+      } else if (state.activeProxies.length > 0) {
+        const first = state.activeProxies[0];
+        targetProxy = first.name || first.Name;
+      }
+
+      if (targetProxy) {
+        selectProxy(targetProxy, false);
+      } else {
+        fetchTestHistory('');
+      }
     }
   }
 
@@ -1127,7 +1252,10 @@
       }
 
       // Update UI
-      if (data.online) {
+      if (data.isDeploying) {
+        el.statusBadge.className = 'status-badge status-loading';
+        el.statusText.textContent = data.deployMessage || 'Emulator proxies deploying...';
+      } else if (data.online) {
         el.statusBadge.className = 'status-badge status-online';
         const proxyCount = state.activeProxies.length;
         el.statusText.textContent = `Emulator Ready (${proxyCount} deployed)`;
@@ -1168,7 +1296,8 @@
 
   async function fetchTests() {
     try {
-      const resp = await fetch(`${API_BASE}/tests`);
+      const depQuery = state.currentDeploymentId ? `?deployment=${encodeURIComponent(state.currentDeploymentId)}` : '';
+      const resp = await fetch(`${API_BASE}/tests${depQuery}`);
       if (!resp.ok) return;
       const data = await resp.json();
       
@@ -1793,14 +1922,20 @@
 
   // Render Functions
   function renderActiveProxies() {
-    el.activeProxiesCount.textContent = state.activeProxies.length;
-    if (state.activeProxies.length === 0) {
-      el.activeProxiesList.innerHTML = '<li class="empty-state">No proxies currently deployed.</li>';
+    let list = state.activeProxies;
+    if (state.currentDeployment && Array.isArray(state.currentDeployment.proxies) && state.currentDeployment.proxies.length > 0) {
+      const allowed = new Set(state.currentDeployment.proxies.map(p => p.toLowerCase()));
+      list = state.activeProxies.filter(p => allowed.has((p.name || p.Name || '').toLowerCase()));
+    }
+
+    el.activeProxiesCount.textContent = list.length;
+    if (list.length === 0) {
+      el.activeProxiesList.innerHTML = '<li class="empty-state">No proxies deployed for this deployment.</li>';
       return;
     }
 
     el.activeProxiesList.innerHTML = '';
-    state.activeProxies.forEach(p => {
+    list.forEach(p => {
       const name = p.name || p.Name || '';
       const displayName = getProxyDisplayName(name) || p.displayName || p.DisplayName || name;
       const basePath = p.basePath || p.BasePath || (name ? '/' + name.toLowerCase() : '');
@@ -1836,14 +1971,21 @@
 
   function renderBundles() {
     if (!el.bundlesList || !el.bundlesCount) return;
-    el.bundlesCount.textContent = state.bundles.length;
-    if (state.bundles.length === 0) {
-      el.bundlesList.innerHTML = '<li class="empty-state">No bundles found in data/bundles</li>';
+
+    let list = state.bundles;
+    if (state.currentDeployment && Array.isArray(state.currentDeployment.proxies) && state.currentDeployment.proxies.length > 0) {
+      const allowed = new Set(state.currentDeployment.proxies.map(p => p.toLowerCase()));
+      list = state.bundles.filter(b => allowed.has((b.proxyName || '').toLowerCase()));
+    }
+
+    el.bundlesCount.textContent = list.length;
+    if (list.length === 0) {
+      el.bundlesList.innerHTML = '<li class="empty-state">No bundles for this deployment</li>';
       return;
     }
 
     el.bundlesList.innerHTML = '';
-    state.bundles.forEach(b => {
+    list.forEach(b => {
       const li = document.createElement('li');
       li.className = 'bundle-item';
       const proxyName = b.proxyName || '';
@@ -3275,7 +3417,11 @@
       const resp = await fetch(`${API_BASE}/tests/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proxy, targetHost }),
+        body: JSON.stringify({
+          proxy,
+          targetHost,
+          deployment: state.currentDeploymentId || undefined,
+        }),
       });
 
       if (!resp.ok) {

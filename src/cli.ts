@@ -164,4 +164,8 @@ export async function runCli(): Promise<void> {
   // Start the HTTP server
   const server = new EmulatorServer({ port: customPort });
   await server.start();
+
+  // Keep event loop alive indefinitely
+  setInterval(() => {}, 60000);
+  await new Promise(() => {});
 }

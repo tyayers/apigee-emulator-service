@@ -806,10 +806,10 @@ for fname, subdir in [('products.json', 'products'), ('developers.json', 'develo
 
   echo -e "\n${BOLD}================================================================${NC}"
   echo -e "${BOLD}Cloud Run Service URL:${NC} ${CYAN}$cr_url${NC}"
-  echo -e "${BOLD}Apigee Emulator Tester UI:${NC} ${GREEN}$cr_url/tester/${NC}"
+  echo -e "${BOLD}Apigee Deployments Hub:${NC} ${GREEN}$cr_url/${NC}"
   echo -e "${BOLD}Apigee Labs UI:${NC} ${GREEN}$cr_url/labs/${NC}"
   echo -e "${BOLD}Next Steps:${NC}"
-  echo -e "  1. Open ${GREEN}$cr_url/labs/${NC} or ${GREEN}$cr_url/tester/${NC} in your browser."
+  echo -e "  1. Open ${GREEN}$cr_url/${NC} or ${GREEN}$cr_url/labs/${NC} in your browser."
   echo -e "  2. Or deploy additional deployments via CLI:"
   echo -e "     \033[1;32m./cloudrun.sh data/deployments/deployment-1.yaml\033[0m"
   echo -e "${BOLD}================================================================${NC}\n"
@@ -838,13 +838,13 @@ check_status() {
     echo -e "${RED}Failed (HTTP $hz_code)${NC}"
   fi
 
-  echo -ne "  ${BOLD}Tester UI (/tester/):${NC} "
+  echo -ne "  ${BOLD}Deployments Hub (/):${NC} "
   local mg_code
-  mg_code=$(curl_cr -s -o /dev/null -w "%{http_code}" "$cr_url/tester/" 2>/dev/null || true)
+  mg_code=$(curl_cr -s -o /dev/null -w "%{http_code}" "$cr_url/" 2>/dev/null || true)
   if [ "$mg_code" = "200" ]; then
-    echo -e "${GREEN}Available ($cr_url/tester/)${NC}"
+    echo -e "${GREEN}Available ($cr_url/)${NC}"
   else
-    echo -e "${YELLOW}HTTP $mg_code ($cr_url/tester/)${NC}"
+    echo -e "${YELLOW}HTTP $mg_code ($cr_url/)${NC}"
   fi
 
   echo -ne "  ${BOLD}Emulator Management (/v1/emulator/tree):${NC} "
@@ -1684,7 +1684,7 @@ interactive_menu() {
   echo -e "  ${BOLD}7)${NC} Test proxy traffic (/testproxy)"
   echo -e "  ${BOLD}8)${NC} Start trace recording"
   echo -e "  ${BOLD}9)${NC} Stop trace recording & save trace.json"
-  echo -e " ${BOLD}10)${NC} ${CYAN}Open Apigee Emulator Tester Web UI${NC} (/tester/)"
+  echo -e " ${BOLD}10)${NC} ${CYAN}Open Apigee Deployments Hub Web UI${NC} (/)"
   echo -e "  ${BOLD}Q)${NC} Quit"
   echo ""
 
@@ -1724,9 +1724,9 @@ interactive_menu() {
     10)
       local cr_url
       cr_url=$(get_service_url)
-      echo -e "${BOLD}Apigee Emulator Tester UI:${NC} ${GREEN}$cr_url/tester/${NC}"
+      echo -e "${BOLD}Apigee Deployments Hub:${NC} ${GREEN}$cr_url/${NC}"
       if command -v xdg-open &>/dev/null; then
-        xdg-open "$cr_url/tester/" 2>/dev/null || true
+        xdg-open "$cr_url/" 2>/dev/null || true
       fi
       ;;
     [Qq])
@@ -1952,11 +1952,11 @@ if [ -n "$COMMAND" ]; then
     url)
       get_service_url
       ;;
-    tester|manage)
+    tester|manage|ui|hub)
       cr_url=$(get_service_url)
-      echo -e "${BOLD}Apigee Emulator Tester UI:${NC} ${GREEN}$cr_url/tester/${NC}"
+      echo -e "${BOLD}Apigee Deployments Hub:${NC} ${GREEN}$cr_url/${NC}"
       if command -v xdg-open &>/dev/null; then
-        xdg-open "$cr_url/tester/" 2>/dev/null || true
+        xdg-open "$cr_url/" 2>/dev/null || true
       fi
       ;;
     logs)

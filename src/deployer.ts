@@ -49,6 +49,8 @@ export class DeploymentDeployer {
       reset?: boolean;
       environment?: string;
       substituteVars?: boolean;
+      merge?: boolean;
+      deployAllExisting?: boolean;
     } = {},
   ): Promise<DeployResponse> {
     const startTime = Date.now();
@@ -233,9 +235,24 @@ export class DeploymentDeployer {
       }
     }
     if (emulatorProducts.length > 0) {
+      let finalProducts = emulatorProducts;
+      const productsFile = path.join(productsDir, "products.json");
+      if (options.merge !== false && fs.existsSync(productsFile)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(productsFile, "utf-8"));
+          const map = new Map<string, any>();
+          for (const ep of existing) {
+            if (ep?.name) map.set(ep.name.toLowerCase(), ep);
+          }
+          for (const np of emulatorProducts) {
+            if (np?.name) map.set(np.name.toLowerCase(), np);
+          }
+          finalProducts = Array.from(map.values());
+        } catch {}
+      }
       fs.writeFileSync(
-        path.join(productsDir, "products.json"),
-        JSON.stringify(emulatorProducts, null, 2),
+        productsFile,
+        JSON.stringify(finalProducts, null, 2),
         "utf-8",
       );
     }
@@ -289,16 +306,48 @@ export class DeploymentDeployer {
       emulatorApps.push(...apps);
     }
     if (emulatorDevelopers.length > 0) {
+      let finalDevs = emulatorDevelopers;
+      const devsFile = path.join(devDir, "developers.json");
+      if (options.merge !== false && fs.existsSync(devsFile)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(devsFile, "utf-8"));
+          const map = new Map<string, any>();
+          for (const ed of existing) {
+            const key = (ed.email || ed.userName || "").toLowerCase();
+            if (key) map.set(key, ed);
+          }
+          for (const nd of emulatorDevelopers) {
+            const key = (nd.email || nd.userName || "").toLowerCase();
+            if (key) map.set(key, nd);
+          }
+          finalDevs = Array.from(map.values());
+        } catch {}
+      }
       fs.writeFileSync(
-        path.join(devDir, "developers.json"),
-        JSON.stringify(emulatorDevelopers, null, 2),
+        devsFile,
+        JSON.stringify(finalDevs, null, 2),
         "utf-8",
       );
     }
     if (emulatorApps.length > 0) {
+      let finalApps = emulatorApps;
+      const appsFile = path.join(devAppsDir, "developerapps.json");
+      if (options.merge !== false && fs.existsSync(appsFile)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(appsFile, "utf-8"));
+          const map = new Map<string, any>();
+          for (const ea of existing) {
+            if (ea?.name) map.set(ea.name.toLowerCase(), ea);
+          }
+          for (const na of emulatorApps) {
+            if (na?.name) map.set(na.name.toLowerCase(), na);
+          }
+          finalApps = Array.from(map.values());
+        } catch {}
+      }
       fs.writeFileSync(
-        path.join(devAppsDir, "developerapps.json"),
-        JSON.stringify(emulatorApps, null, 2),
+        appsFile,
+        JSON.stringify(finalApps, null, 2),
         "utf-8",
       );
     }
@@ -311,9 +360,24 @@ export class DeploymentDeployer {
         emulatorMaps.push(m);
       }
     }
+    const mapsFile = path.join(mapsDir, "maps.json");
+    let finalMaps = emulatorMaps;
+    if (options.merge !== false && fs.existsSync(mapsFile) && emulatorMaps.length > 0) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(mapsFile, "utf-8"));
+        const map = new Map<string, any>();
+        for (const em of existing) {
+          if (em?.name) map.set(em.name.toLowerCase(), em);
+        }
+        for (const nm of emulatorMaps) {
+          if (nm?.name) map.set(nm.name.toLowerCase(), nm);
+        }
+        finalMaps = Array.from(map.values());
+      } catch {}
+    }
     fs.writeFileSync(
-      path.join(mapsDir, "maps.json"),
-      JSON.stringify(emulatorMaps, null, 2),
+      mapsFile,
+      JSON.stringify(finalMaps, null, 2),
       "utf-8",
     );
 
@@ -349,17 +413,100 @@ export class DeploymentDeployer {
       }
     }
 
+    // Determine target proxies for bundling:
+    // If deployAllExisting is true, deploy all available bundles in data/bundles
+    let targetProxyNames = allProxyNames;
+    if (options.deployAllExisting) {
+      const availableBundles = await this.bundleManager.listBundles();
+      targetProxyNames = Array.from(
+        new Set([...allProxyNames, ...availableBundles.map((b) => b.proxyName)])
+      );
+    }
+
     // 9. Build testdata.zip and upload to emulator
     console.log("[Deployer] Uploading test data bundle to emulator...");
-    const testDataZip = await this.bundleManager.buildTestDataBundle(allProxyNames);
+    const testDataZip = await this.bundleManager.buildTestDataBundle(targetProxyNames);
     await this.emulatorClient.setupTestData(testDataZip);
 
     // 10. Build environment bundle zip and deploy
-    console.log(`[Deployer] Deploying ${allProxyNames.length} proxies to environment '${environment}'...`);
-    const { zipBuffer, deployedProxyNames } = await this.bundleManager.buildEnvironmentBundle(allProxyNames);
+    console.log(`[Deployer] Deploying ${targetProxyNames.length} proxies to environment '${environment}'...`);
+    const { zipBuffer, deployedProxyNames } = await this.bundleManager.buildEnvironmentBundle(targetProxyNames);
     const revision = await this.emulatorClient.deployBundle(environment, zipBuffer);
 
     // 11. Sync Cassandra keys
+    await syncCassandraDeveloperAppKeys(this.dataDir);
+
+    const activeProxies = await this.emulatorClient.getDeploymentTree();
+    const durationMs = Date.now() - startTime;
+
+    return {
+      success: true,
+      revision: revision || "1",
+      deployed: activeProxies,
+      totalDeployed: deployedProxyNames.length,
+      deployedCount: deployedProxyNames.length,
+      durationMs,
+    };
+  }
+
+  public async convertAndDeployAll(
+    options: {
+      reset?: boolean;
+      environment?: string;
+    } = {},
+  ): Promise<DeployResponse> {
+    const startTime = Date.now();
+    const depDir = path.join(this.dataDir, "deployments");
+    if (!fs.existsSync(depDir)) {
+      throw new Error("No deployments directory found");
+    }
+
+    const files = fs.readdirSync(depDir).filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"));
+    if (files.length === 0) {
+      throw new Error("No deployment YAML files found in deployments directory");
+    }
+
+    console.log(`[Deployer] Converting all ${files.length} deployment(s)...`);
+
+    // Reset emulator before conversion if requested
+    if (options.reset !== false) {
+      try {
+        console.log("[Deployer] Resetting emulator before deploying all...");
+        await this.emulatorClient.reset();
+      } catch (err) {
+        console.warn("[Deployer] Warning during emulator reset:", err);
+      }
+    }
+
+    // Convert each deployment (with reset=false, merge=true)
+    for (const file of files) {
+      const filePath = path.join(depDir, file);
+      try {
+        console.log(`[Deployer] Processing deployment file: ${file}`);
+        const content = fs.readFileSync(filePath, "utf-8");
+        await this.convertAndDeploy(content, {
+          reset: false,
+          merge: true,
+          deployAllExisting: false,
+          environment: options.environment,
+        });
+      } catch (err) {
+        console.error(`[Deployer] Error processing deployment ${file}:`, err);
+      }
+    }
+
+    // Now gather all bundles in data/bundles to deploy them all together
+    const availableBundles = await this.bundleManager.listBundles();
+    const allDeployedNames = availableBundles.map((b) => b.proxyName);
+    console.log(`[Deployer] Packaging and deploying all ${allDeployedNames.length} proxies together...`);
+
+    const testDataZip = await this.bundleManager.buildTestDataBundle(allDeployedNames);
+    await this.emulatorClient.setupTestData(testDataZip);
+
+    const environment = options.environment || "test";
+    const { zipBuffer, deployedProxyNames } = await this.bundleManager.buildEnvironmentBundle(allDeployedNames);
+    const revision = await this.emulatorClient.deployBundle(environment, zipBuffer);
+
     await syncCassandraDeveloperAppKeys(this.dataDir);
 
     const activeProxies = await this.emulatorClient.getDeploymentTree();
